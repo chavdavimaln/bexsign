@@ -1,0 +1,168 @@
+# ==============================
+# Node / React / Vite
+# ==============================
+
+node_modules/
+**/node_modules/
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# ==============================
+# Build / Production
+# ==============================
+
+dist/
+**/dist/
+
+build/
+**/build/
+
+out/
+**/out/
+
+.next/
+.nuxt/
+.output/
+
+coverage/
+.nyc_output/
+
+# ==============================
+# Vite
+# ==============================
+
+.vite/
+
+# ==============================
+# React
+# ==============================
+
+.cache/
+
+# ==============================
+# IDE / Editors
+# ==============================
+
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+.idea/
+*.iml
+
+# ==============================
+# OS Files
+# ==============================
+
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ==============================
+# Logs
+# ==============================
+
+*.log
+logs/
+**/logs/
+
+# ==============================
+# Temporary Files
+# ==============================
+
+tmp/
+temp/
+*.tmp
+*.temp
+
+# ==============================
+# Runtime
+# ==============================
+
+*.pid
+*.seed
+
+# ==============================
+# Testing
+# ==============================
+
+.nyc_output/
+coverage/
+
+# ==============================
+# Cache
+# ==============================
+
+.eslintcache
+.stylelintcache
+.cache/
+.parcel-cache/
+
+# ==============================
+# TypeScript
+# ==============================
+
+*.tsbuildinfo
+
+# ==============================
+# Local configuration
+# ==============================
+
+*.local
+
+# ==============================
+# Backup files
+# ==============================
+
+*.bak
+*.backup
+*~
+
+# ==============================
+# Archives / Large generated files
+# ==============================
+
+*.zip
+*.rar
+*.7z
+*.tar
+*.gz
+
+# ==============================
+# Database / Local data
+# ==============================
+
+*.sqlite
+*.sqlite3
+*.db
+
+# ==============================
+# WordPress
+# ==============================
+
+wp-content/uploads/
+wp-content/cache/
+wp-content/upgrade/
+wp-content/backups/
+
+# ==============================
+# PHP / Composer
+# ==============================
+
+vendor/
+
+# ==============================
+# Secrets / Certificates
+# ==============================
+
+*.pem
+*.key
+*.crt
