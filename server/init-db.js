@@ -1,6 +1,7 @@
 const mysql = require('mysql2/promise');
 const fs = require('fs');
 const path = require('path');
+const bcrypt = require('bcryptjs');
 require('dotenv').config();
 
 async function initDatabase() {
@@ -11,7 +12,7 @@ async function initDatabase() {
     const dbName = process.env.DB_NAME || 'db_bex_sign';
 
     try {
-        // Step 1: Connect to MySQL server (without selecting a DB first)
+        // Step 1: Connect to MySQL server
         const connection = await mysql.createConnection({
             host,
             user,
@@ -31,7 +32,19 @@ async function initDatabase() {
 
         console.log('[Antigravity] Database and all tables successfully created/verified!');
         
-        // Step 4: Verify created tables
+        // Step 4: Seed default test user credentials
+        const hashedPassword = await bcrypt.hash('Password123', 10);
+        const [existing] = await connection.query(`SELECT * FROM \`${dbName}\`.users WHERE email = 'admin@bexsign.com'`);
+        if (existing.length === 0) {
+            await connection.query(
+                `INSERT INTO \`${dbName}\`.users (first_name, last_name, email, password, company, job_title) 
+                 VALUES ('Manu', 'Yadav', 'admin@bexsign.com', ?, 'Ola Digital Health', 'Administrator')`,
+                [hashedPassword]
+            );
+            console.log('[Antigravity] Seeded default test user: admin@bexsign.com / Password123');
+        }
+
+        // Step 5: Verify created tables
         const [tables] = await connection.query(`SHOW TABLES FROM \`${dbName}\``);
         console.log(`[Antigravity] Tables present in ${dbName}:`, tables.map(t => Object.values(t)[0]));
 

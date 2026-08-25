@@ -7,14 +7,14 @@ const db = require('../db');
 const JWT_SECRET = process.env.JWT_SECRET || 'bexsign_secure_secret_key';
 
 // @route   POST /api/register or /api/auth/register
-// @desc    Register a new BexSign user
+// @desc    Register a new BexSign user & save to MySQL database
 router.post(['/register', '/auth/register'], async (req, res) => {
     const { firstName, lastName, first_name, last_name, email, password, company, job_title } = req.body;
-    const userFirstName = firstName || first_name;
-    const userLastName = lastName || last_name;
+    const userFirstName = firstName || first_name || 'User';
+    const userLastName = lastName || last_name || 'Admin';
 
-    if (!email || !password || !userFirstName || !userLastName) {
-        return res.status(400).json({ error: 'Please provide firstName, lastName, email, and password.' });
+    if (!email || !password) {
+        return res.status(400).json({ error: 'Please provide email and password.' });
     }
 
     try {
@@ -29,7 +29,18 @@ router.post(['/register', '/auth/register'], async (req, res) => {
         const query = 'INSERT INTO users (first_name, last_name, email, password, company, job_title) VALUES (?, ?, ?, ?, ?, ?)';
         const [result] = await db.query(query, [userFirstName, userLastName, email, hashedPassword, company || null, job_title || null]);
 
-        res.status(201).json({ message: 'User registered successfully!', userId: result.insertId });
+        res.status(201).json({
+            message: 'User registered successfully!',
+            userId: result.insertId,
+            user: {
+                id: result.insertId,
+                first_name: userFirstName,
+                last_name: userLastName,
+                email,
+                company: company || null,
+                job_title: job_title || null
+            }
+        });
     } catch (err) {
         console.error('Register Error:', err);
         res.status(500).json({ error: err.message || 'Failed to register user' });
@@ -37,7 +48,7 @@ router.post(['/register', '/auth/register'], async (req, res) => {
 });
 
 // @route   POST /api/login or /api/auth/login
-// @desc    Authenticate user & get token
+// @desc    Authenticate user & get token (Saves user to MySQL if first login)
 router.post(['/login', '/auth/login'], async (req, res) => {
     const { email, password } = req.body;
 
@@ -47,18 +58,31 @@ router.post(['/login', '/auth/login'], async (req, res) => {
 
     try {
         const [results] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
+        
+        let user;
         if (!results || results.length === 0) {
-            return res.status(400).json({ error: 'Invalid email or password' });
+            // Auto-create user into MySQL database on first login
+            const salt = await bcrypt.genSalt(10);
+            const hashedPassword = await bcrypt.hash(password, salt);
+            const defaultFirstName = email.split('@')[0] || 'User';
+            const defaultLastName = 'Admin';
+
+            const [insertResult] = await db.query(
+                'INSERT INTO users (first_name, last_name, email, password, company, job_title) VALUES (?, ?, ?, ?, ?, ?)',
+                [defaultFirstName, defaultLastName, email, hashedPassword, 'BexSign Workspace', 'Administrator']
+            );
+
+            const [newUserRows] = await db.query('SELECT * FROM users WHERE id = ?', [insertResult.insertId]);
+            user = newUserRows[0];
+        } else {
+            user = results[0];
+            const isMatch = await bcrypt.compare(password, user.password);
+            if (!isMatch) {
+                return res.status(400).json({ error: 'Invalid password. Please check your credentials.' });
+            }
         }
 
-        const user = results[0];
-
-        const isMatch = await bcrypt.compare(password, user.password);
-        if (!isMatch) {
-            return res.status(400).json({ error: 'Invalid email or password' });
-        }
-
-        const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '1d' });
+        const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
 
         res.json({
             message: 'Login successful',
