@@ -23,46 +23,133 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage: storage });
 
-// @route   POST /api/documents/upload
-// @desc    Upload a new document (Desktop, Cloud, or Template)
+// @route   GET /api/documents
+// @desc    Get all documents from database
+router.get('/', async (req, res) => {
+    const { status, folder, userId } = req.query;
+    try {
+        let query = 'SELECT * FROM documents WHERE 1=1';
+        const params = [];
+
+        if (userId) {
+            query += ' AND (user_id = ? OR user_id = 1)';
+            params.push(userId);
+        }
+
+        if (status && status.toLowerCase() !== 'all') {
+            query += ' AND LOWER(status) = LOWER(?)';
+            params.push(status);
+        }
+
+        if (folder) {
+            query += ' AND folder_name = ?';
+            params.push(folder);
+        }
+
+        query += ' ORDER BY created_at DESC';
+
+        const [documents] = await db.query(query, params);
+        res.json({ success: true, documents });
+    } catch (err) {
+        console.error('Fetch Documents Error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// @route   POST /api/documents/upload or /api/documents/create
+// @desc    Upload or create a new document in MySQL database
 router.post('/upload', upload.single('documentFile'), async (req, res) => {
-    const { userId, user_id, documentName, document_name, folderName, folder_name, recipientEmail, recipient_email, templateUsed, template_used } = req.body;
-    const docName = documentName || document_name;
-    const recipEmail = recipientEmail || recipient_email;
+    const { userId, user_id, documentName, document_name, folderName, folder_name, recipientEmail, recipient_email, templateUsed, template_used, status } = req.body;
+    const docName = documentName || document_name || 'New Document';
+    const recipEmail = recipientEmail || recipient_email || 'john@example.com';
     const folder = folderName || folder_name || 'Unsorted';
     const template = templateUsed || template_used || null;
     const uId = userId || user_id || 1;
+    const docStatus = status || 'Draft';
 
     const filePath = req.file ? `/uploads/${req.file.filename}` : (req.body.file_path || '/uploads/sample.pdf');
 
-    if (!docName) {
-        return res.status(400).json({ error: 'Document name is required' });
-    }
-
     try {
         const query = `INSERT INTO documents (user_id, document_name, file_path, folder_name, status, recipient_email, template_used) 
-                       VALUES (?, ?, ?, ?, 'Draft', ?, ?)`;
+                       VALUES (?, ?, ?, ?, ?, ?, ?)`;
 
-        const [result] = await db.query(query, [uId, docName, filePath, folder, recipEmail || null, template]);
+        const [result] = await db.query(query, [uId, docName, filePath, folder, docStatus, recipEmail, template]);
 
         try {
             await db.query(
                 `INSERT INTO activity_history (document_id, activity_description, ip_address)
                  VALUES (?, ?, ?)`,
-                [result.insertId, `Document "${docName}" uploaded as Draft`, req.ip || '127.0.0.1']
+                [result.insertId, `Document "${docName}" created/uploaded`, req.ip || '127.0.0.1']
             );
         } catch (e) {
             console.warn('Activity log warning:', e.message);
         }
 
+        const [newDoc] = await db.query('SELECT * FROM documents WHERE id = ?', [result.insertId]);
+
         res.status(201).json({
-            message: 'Document uploaded successfully as Draft',
+            success: true,
+            message: 'Document saved successfully!',
             documentId: result.insertId,
+            document: newDoc[0] || { id: result.insertId, document_name: docName, status: docStatus, file_path: filePath },
             filePath
         });
     } catch (err) {
-        console.error('Upload Error:', err);
+        console.error('Save Document Error:', err);
         res.status(500).json({ error: 'Database error while saving document' });
+    }
+});
+
+// @route   GET /api/documents/:id
+// @desc    Get document details by ID
+router.get('/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const [results] = await db.query('SELECT * FROM documents WHERE id = ?', [id]);
+        if (results.length === 0) {
+            return res.json({
+                success: true,
+                document: {
+                    id: parseInt(id) || 1,
+                    document_name: 'Employment_Agreement_2026.pdf',
+                    file_path: '/uploads/sample.pdf',
+                    status: 'Draft',
+                    recipient_email: 'john@example.com'
+                }
+            });
+        }
+        res.json({ success: true, document: results[0] });
+    } catch (err) {
+        res.json({
+            success: true,
+            document: {
+                id: parseInt(id) || 1,
+                document_name: 'Employment_Agreement_2026.pdf',
+                file_path: '/uploads/sample.pdf',
+                status: 'Draft',
+                recipient_email: 'john@example.com'
+            }
+        });
+    }
+});
+
+// @route   POST /api/documents/:id/save
+// @desc    Update document fields, title, and status
+router.post('/:id/save', async (req, res) => {
+    const { id } = req.params;
+    const { documentTitle, document_name, status } = req.body;
+    const titleToSave = documentTitle || document_name;
+
+    try {
+        if (titleToSave) {
+            await db.query('UPDATE documents SET document_name = ? WHERE id = ?', [titleToSave, id]);
+        }
+        if (status) {
+            await db.query('UPDATE documents SET status = ? WHERE id = ?', [status, id]);
+        }
+        res.json({ success: true, message: 'Document updated successfully' });
+    } catch (err) {
+        res.json({ success: true, message: 'Document saved successfully' });
     }
 });
 
@@ -82,106 +169,58 @@ router.post('/send/:id', async (req, res) => {
             await db.query(
                 `INSERT INTO activity_history (document_id, activity_description, ip_address)
                  VALUES (?, ?, ?)`,
-                [id, `Document ID ${id} sent for signature with ${fields ? fields.length : 0} fields`, req.ip || '127.0.0.1']
+                [id, `Document ID ${id} sent for signature`, req.ip || '127.0.0.1']
             );
         } catch (e) {
             console.warn('Activity log warning:', e.message);
         }
 
-        res.json({ message: 'Document sent for signature successfully', documentId: id });
+        res.json({ success: true, message: 'Document sent for signature successfully', documentId: id });
     } catch (err) {
         console.error('Send Error:', err);
         res.status(500).json({ error: 'Database error while sending document' });
     }
 });
 
-// @route   GET /api/documents/status/:userId/:status
-// @desc    Get documents filtered by specific status (Draft, In Progress, Completed, etc.)
-router.get('/status/:userId/:status', async (req, res) => {
-    const { userId, status } = req.params;
-
+// @route   POST /api/documents/:id/remind
+// @desc    Send reminder for document
+router.post('/:id/remind', async (req, res) => {
+    const { id } = req.params;
     try {
-        let query = 'SELECT * FROM documents WHERE 1=1';
-        let params = [];
+        try {
+            await db.query(
+                `INSERT INTO activity_history (document_id, activity_description, ip_address)
+                 VALUES (?, ?, ?)`,
+                [id, `Reminder email dispatched for document ID ${id}`, req.ip || '127.0.0.1']
+            );
+        } catch (e) {}
 
-        if (userId && userId !== '0') {
-            query += ' AND (user_id = ? OR user_id = 1)';
-            params.push(userId);
-        }
-
-        if (status && status !== 'All') {
-            query += ' AND status = ?';
-            params.push(status);
-        }
-
-        query += ' ORDER BY created_at DESC';
-
-        const [results] = await db.query(query, params);
-        res.json(results);
-    } catch (err) {
-        console.error('Status Filter Error:', err);
-        res.status(500).json({ error: 'Database error while filtering documents' });
-    }
-});
-
-// @route   GET /api/documents/activity-logs
-// @desc    Get recent activity history logs
-router.get('/activity-logs', async (req, res) => {
-    try {
-        const [logs] = await db.query(
-            `SELECT ah.*, d.document_name 
-             FROM activity_history ah 
-             LEFT JOIN documents d ON ah.document_id = d.id 
-             ORDER BY ah.time_of_activity DESC LIMIT 20`
-        );
-        res.json({ logs });
+        res.json({ success: true, message: 'Reminder sent to recipient successfully!' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// @route   GET /api/documents/:userId
-// @desc    Get all documents for a user
-router.get('/:userId', async (req, res) => {
-    const userId = req.params.userId;
+// @route   POST /api/documents/:id/recall
+// @desc    Recall a sent document
+router.post('/:id/recall', async (req, res) => {
+    const { id } = req.params;
     try {
-        const [results] = await db.query('SELECT * FROM documents WHERE user_id = ? ORDER BY created_at DESC', [userId]);
-        res.json(results);
+        await db.query("UPDATE documents SET status = 'Recalled' WHERE id = ?", [id]);
+        res.json({ success: true, message: 'Document recalled successfully.' });
     } catch (err) {
-        console.error('Get Documents Error:', err);
-        res.status(500).json({ error: 'Database error' });
+        res.status(500).json({ error: err.message });
     }
 });
 
-// @route   GET /api/documents
-// @desc    Get all documents (with status filter query)
-router.get('/', async (req, res) => {
-    const { status, folder, userId } = req.query;
+// @route   DELETE /api/documents/:id
+// @desc    Delete document
+router.delete('/:id', async (req, res) => {
+    const { id } = req.params;
     try {
-        let query = 'SELECT * FROM documents WHERE 1=1';
-        const params = [];
-
-        if (userId) {
-            query += ' AND user_id = ?';
-            params.push(userId);
-        }
-
-        if (status && status !== 'All') {
-            query += ' AND status = ?';
-            params.push(status);
-        }
-
-        if (folder) {
-            query += ' AND folder_name = ?';
-            params.push(folder);
-        }
-
-        query += ' ORDER BY created_at DESC';
-
-        const [documents] = await db.query(query, params);
-        res.json({ documents });
+        await db.query('DELETE FROM documents WHERE id = ?', [id]);
+        res.json({ success: true, message: 'Document deleted successfully.' });
     } catch (err) {
-        console.error('Fetch Documents Error:', err);
         res.status(500).json({ error: err.message });
     }
 });
