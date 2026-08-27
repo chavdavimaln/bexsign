@@ -1,6 +1,6 @@
 -- BexSign Complete Database Schema (MySQL 8.0+)
-CREATE DATABASE IF NOT EXISTS db_bex_sign;
-USE db_bex_sign;
+CREATE DATABASE IF NOT EXISTS db_bex_signature;
+USE db_bex_signature;
 
 -- 1. Users
 CREATE TABLE IF NOT EXISTS users (
@@ -45,9 +45,13 @@ CREATE TABLE IF NOT EXISTS user_profiles (
 CREATE TABLE IF NOT EXISTS documents (
   id INT AUTO_INCREMENT PRIMARY KEY,
   user_id INT NOT NULL,
-  title VARCHAR(255) NOT NULL,
-  status ENUM('draft', 'scheduled', 'in_progress', 'completed', 'declined', 'expired', 'recalled', 'trashed', 'failed') DEFAULT 'draft',
+  document_name VARCHAR(255) NOT NULL,
+  file_path VARCHAR(255) NULL,
+  folder_name VARCHAR(150) DEFAULT 'General',
+  status ENUM('Draft', 'Scheduled', 'In Progress', 'Completed', 'Declined', 'Expired', 'Recalled', 'Trashed', 'Failed') DEFAULT 'Draft',
   signing_order ENUM('parallel', 'sequential') DEFAULT 'parallel',
+  recipient_email VARCHAR(255) NULL,
+  template_used VARCHAR(150) NULL,
   custom_message TEXT,
   reminder_days INT DEFAULT 3,
   expiration_days INT DEFAULT 30,
@@ -160,7 +164,17 @@ CREATE TABLE IF NOT EXISTS signature_events (
   FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
 );
 
--- 13. Templates
+-- 13. Activity History
+CREATE TABLE IF NOT EXISTS activity_history (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  document_id INT NOT NULL,
+  activity_description TEXT NOT NULL,
+  ip_address VARCHAR(45),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+);
+
+-- 14. Templates
 CREATE TABLE IF NOT EXISTS templates (
   id INT AUTO_INCREMENT PRIMARY KEY,
   user_id INT NOT NULL,
@@ -171,7 +185,7 @@ CREATE TABLE IF NOT EXISTS templates (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- 14. Template Fields
+-- 15. Template Fields
 CREATE TABLE IF NOT EXISTS template_fields (
   id INT AUTO_INCREMENT PRIMARY KEY,
   template_id INT NOT NULL,
@@ -183,7 +197,7 @@ CREATE TABLE IF NOT EXISTS template_fields (
   FOREIGN KEY (template_id) REFERENCES templates(id) ON DELETE CASCADE
 );
 
--- 15. Template Roles
+-- 16. Template Roles
 CREATE TABLE IF NOT EXISTS template_roles (
   id INT AUTO_INCREMENT PRIMARY KEY,
   template_id INT NOT NULL,
@@ -192,7 +206,7 @@ CREATE TABLE IF NOT EXISTS template_roles (
   FOREIGN KEY (template_id) REFERENCES templates(id) ON DELETE CASCADE
 );
 
--- 16. Contacts
+-- 17. Contacts
 CREATE TABLE IF NOT EXISTS contacts (
   id INT AUTO_INCREMENT PRIMARY KEY,
   user_id INT NOT NULL,
@@ -205,7 +219,7 @@ CREATE TABLE IF NOT EXISTS contacts (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- 17. Notifications
+-- 18. Notifications
 CREATE TABLE IF NOT EXISTS notifications (
   id INT AUTO_INCREMENT PRIMARY KEY,
   user_id INT NOT NULL,
@@ -217,7 +231,7 @@ CREATE TABLE IF NOT EXISTS notifications (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- 18. Notification Preferences
+-- 19. Notification Preferences
 CREATE TABLE IF NOT EXISTS notification_preferences (
   id INT AUTO_INCREMENT PRIMARY KEY,
   user_id INT NOT NULL UNIQUE,
@@ -231,7 +245,7 @@ CREATE TABLE IF NOT EXISTS notification_preferences (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- 19. Emails
+-- 20. Emails
 CREATE TABLE IF NOT EXISTS emails (
   id INT AUTO_INCREMENT PRIMARY KEY,
   recipient_email VARCHAR(255) NOT NULL,
@@ -240,7 +254,7 @@ CREATE TABLE IF NOT EXISTS emails (
   sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 20. Email Templates
+-- 21. Email Templates
 CREATE TABLE IF NOT EXISTS email_templates (
   id INT AUTO_INCREMENT PRIMARY KEY,
   template_key VARCHAR(100) UNIQUE NOT NULL,
@@ -248,7 +262,7 @@ CREATE TABLE IF NOT EXISTS email_templates (
   html_body TEXT NOT NULL
 );
 
--- 21. Email Logs
+-- 22. Email Logs
 CREATE TABLE IF NOT EXISTS email_logs (
   id INT AUTO_INCREMENT PRIMARY KEY,
   recipient_email VARCHAR(255) NOT NULL,
@@ -258,7 +272,7 @@ CREATE TABLE IF NOT EXISTS email_logs (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 22. Email Queue
+-- 23. Email Queue
 CREATE TABLE IF NOT EXISTS email_queue (
   id INT AUTO_INCREMENT PRIMARY KEY,
   recipient_email VARCHAR(255) NOT NULL,
@@ -269,7 +283,7 @@ CREATE TABLE IF NOT EXISTS email_queue (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 23. Activity Logs
+-- 24. Activity Logs
 CREATE TABLE IF NOT EXISTS activity_logs (
   id INT AUTO_INCREMENT PRIMARY KEY,
   user_id INT NULL,
@@ -279,7 +293,7 @@ CREATE TABLE IF NOT EXISTS activity_logs (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 24. Audit Logs
+-- 25. Audit Logs
 CREATE TABLE IF NOT EXISTS audit_logs (
   id INT AUTO_INCREMENT PRIMARY KEY,
   document_id INT NOT NULL,
@@ -289,7 +303,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
 );
 
--- 25. Reports
+-- 26. Reports
 CREATE TABLE IF NOT EXISTS reports (
   id INT AUTO_INCREMENT PRIMARY KEY,
   user_id INT NOT NULL,
@@ -299,7 +313,7 @@ CREATE TABLE IF NOT EXISTS reports (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- 26. Scheduled Reports
+-- 27. Scheduled Reports
 CREATE TABLE IF NOT EXISTS scheduled_reports (
   id INT AUTO_INCREMENT PRIMARY KEY,
   user_id INT NOT NULL,
@@ -309,7 +323,7 @@ CREATE TABLE IF NOT EXISTS scheduled_reports (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- 27. API Keys
+-- 28. API Keys
 CREATE TABLE IF NOT EXISTS api_keys (
   id INT AUTO_INCREMENT PRIMARY KEY,
   user_id INT NOT NULL,
@@ -320,7 +334,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- 28. API Logs
+-- 29. API Logs
 CREATE TABLE IF NOT EXISTS api_logs (
   id INT AUTO_INCREMENT PRIMARY KEY,
   api_key_id INT NULL,
@@ -330,7 +344,7 @@ CREATE TABLE IF NOT EXISTS api_logs (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 29. Webhooks
+-- 30. Webhooks
 CREATE TABLE IF NOT EXISTS webhooks (
   id INT AUTO_INCREMENT PRIMARY KEY,
   user_id INT NOT NULL,
@@ -341,7 +355,7 @@ CREATE TABLE IF NOT EXISTS webhooks (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- 30. Integrations
+-- 31. Integrations
 CREATE TABLE IF NOT EXISTS integrations (
   id INT AUTO_INCREMENT PRIMARY KEY,
   user_id INT NOT NULL,
@@ -352,7 +366,7 @@ CREATE TABLE IF NOT EXISTS integrations (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- 31. Delegates
+-- 32. Delegates
 CREATE TABLE IF NOT EXISTS delegates (
   id INT AUTO_INCREMENT PRIMARY KEY,
   user_id INT NOT NULL,
@@ -364,7 +378,7 @@ CREATE TABLE IF NOT EXISTS delegates (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- 32. Failed Access Logs
+-- 33. Failed Access Logs
 CREATE TABLE IF NOT EXISTS failed_access_logs (
   id INT AUTO_INCREMENT PRIMARY KEY,
   ip_address VARCHAR(45) NOT NULL,
@@ -372,7 +386,7 @@ CREATE TABLE IF NOT EXISTS failed_access_logs (
   attempt_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 33. Document Validity
+-- 34. Document Validity
 CREATE TABLE IF NOT EXISTS document_validity (
   id INT AUTO_INCREMENT PRIMARY KEY,
   document_id INT NOT NULL,
@@ -383,7 +397,7 @@ CREATE TABLE IF NOT EXISTS document_validity (
   FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
 );
 
--- 34. Trash
+-- 35. Trash
 CREATE TABLE IF NOT EXISTS trash (
   id INT AUTO_INCREMENT PRIMARY KEY,
   document_id INT NOT NULL,
@@ -393,7 +407,7 @@ CREATE TABLE IF NOT EXISTS trash (
   FOREIGN KEY (deleted_by) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- 35. Portals & Portal Users
+-- 36. Portals & Portal Users
 CREATE TABLE IF NOT EXISTS portals (
   id INT AUTO_INCREMENT PRIMARY KEY,
   portal_name VARCHAR(150) NOT NULL,
@@ -409,7 +423,7 @@ CREATE TABLE IF NOT EXISTS portal_users (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- 36. Announcements
+-- 38. Announcements
 CREATE TABLE IF NOT EXISTS announcements (
   id INT AUTO_INCREMENT PRIMARY KEY,
   title VARCHAR(255) NOT NULL,

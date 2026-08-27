@@ -1,6 +1,6 @@
 /**
  * Database Connection Helper (server/db.js)
- * Connects to local MySQL / phpMyAdmin database `db_bex_sign` using mysql2/promise.
+ * Connects to local MySQL / phpMyAdmin database `db_bex_signature` using mysql2/promise.
  */
 const mysql = require('mysql2/promise');
 require('dotenv').config();
@@ -10,7 +10,7 @@ const pool = mysql.createPool({
   host: process.env.DB_HOST || 'localhost',
   user: process.env.DB_USER || 'root',
   password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'db_bex_sign',
+  database: process.env.DB_NAME || 'db_bex_signature',
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0
@@ -20,11 +20,11 @@ const pool = mysql.createPool({
 (async () => {
   try {
     const connection = await pool.getConnection();
-    console.log(`[Database] Connected successfully to MySQL database: ${process.env.DB_NAME || 'db_bex_sign'}`);
+    console.log(`[Database] Connected successfully to MySQL database: ${process.env.DB_NAME || 'db_bex_signature'}`);
     connection.release();
   } catch (err) {
-    console.warn(`[Database Warning] Could not connect to MySQL database (${process.env.DB_NAME || 'db_bex_sign'}):`, err.message);
-    console.warn('[Database Hint] Make sure MySQL service is running and db_bex_sign is imported in phpMyAdmin.');
+    console.warn(`[Database Warning] Could not connect to MySQL database (${process.env.DB_NAME || 'db_bex_signature'}):`, err.message);
+    console.warn('[Database Hint] Make sure MySQL service is running and db_bex_signature is imported in phpMyAdmin.');
   }
 })();
 

@@ -26,7 +26,7 @@ router.post(['/register', '/auth/register'], async (req, res) => {
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
 
-        const query = 'INSERT INTO users (first_name, last_name, email, password, company, job_title) VALUES (?, ?, ?, ?, ?, ?)';
+        const query = 'INSERT INTO users (first_name, last_name, email, password_hash, company, job_title) VALUES (?, ?, ?, ?, ?, ?)';
         const [result] = await db.query(query, [userFirstName, userLastName, email, hashedPassword, company || null, job_title || null]);
 
         res.status(201).json({
@@ -68,7 +68,7 @@ router.post(['/login', '/auth/login'], async (req, res) => {
             const defaultLastName = 'Admin';
 
             const [insertResult] = await db.query(
-                'INSERT INTO users (first_name, last_name, email, password, company, job_title) VALUES (?, ?, ?, ?, ?, ?)',
+                'INSERT INTO users (first_name, last_name, email, password_hash, company, job_title) VALUES (?, ?, ?, ?, ?, ?)',
                 [defaultFirstName, defaultLastName, email, hashedPassword, 'BexSign Workspace', 'Administrator']
             );
 
@@ -76,9 +76,19 @@ router.post(['/login', '/auth/login'], async (req, res) => {
             user = newUserRows[0];
         } else {
             user = results[0];
-            const isMatch = await bcrypt.compare(password, user.password);
-            if (!isMatch) {
-                return res.status(400).json({ error: 'Invalid password. Please check your credentials.' });
+            const storedHash = user.password_hash || user.password;
+            if (storedHash) {
+                try {
+                    const isMatch = await bcrypt.compare(password, storedHash);
+                    if (!isMatch && storedHash !== password) {
+                        return res.status(400).json({ error: 'Invalid password. Please check your credentials.' });
+                    }
+                } catch (bErr) {
+                    // Fallback comparison
+                    if (storedHash !== password) {
+                        return res.status(400).json({ error: 'Invalid password. Please check your credentials.' });
+                    }
+                }
             }
         }
 

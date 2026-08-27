@@ -1,124 +1,136 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
+import { Calendar, Filter, Download, BarChart2, PieChart, ChevronDown, CheckCircle2 } from 'lucide-react';
 
 export default function Reports() {
-  const [stats, setStats] = useState([]);
-  const [timeline, setTimeline] = useState([]);
-  const [activeTab, setActiveTab] = useState('Reports');
+  const [dateRange, setDateRange] = useState('21-Aug-2026 - 27-Aug-2026');
+  const [showExportMenu, setShowExportMenu] = useState(false);
 
-  const fallbackStats = [
-    { status: 'Completed', count: 12 },
-    { status: 'In Progress', count: 5 },
-    { status: 'Draft', count: 3 },
-    { status: 'Declined', count: 1 }
+  const reportsData = [
+    { name: 'Document Sign 4', owner: 'manu.yadav@oladigital.health', type: 'Others', sentOn: 'Aug 27, 2026 02:36', status: 'IN PROGRESS', statusColor: 'bg-amber-100 text-amber-800' },
+    { name: 'First sign.pdf', owner: 'manu.yadav@oladigital.health', type: 'Others', sentOn: 'Aug 27, 2026 01:59', status: 'COMPLETED', statusColor: 'bg-[#00a884]/20 text-[#00a884]' },
+    { name: 'Document Sign', owner: 'manu.yadav@oladigital.health', type: 'Others', sentOn: 'Aug 27, 2026 00:52', status: 'COMPLETED', statusColor: 'bg-[#00a884]/20 text-[#00a884]' },
+    { name: 'Document Sign', owner: 'manu.yadav@oladigital.health', type: 'Others', sentOn: 'Aug 25, 2026 00:04', status: 'IN PROGRESS', statusColor: 'bg-amber-100 text-amber-800' }
   ];
-
-  const fallbackTimeline = [
-    { document_name: 'Agreement.pdf', status: 'Completed', recipient_email: 'akash@bexcodeservices.com', activity_description: 'Document signed by recipient', time_of_activity: '2026-08-25T18:30:00Z' },
-    { document_name: 'Contract_v2.pdf', status: 'In Progress', recipient_email: 'client@example.com', activity_description: 'Document sent for signature', time_of_activity: '2026-08-24T14:15:00Z' }
-  ];
-
-  useEffect(() => {
-    fetchStats();
-    fetchTimeline();
-  }, []);
-
-  const fetchStats = async () => {
-    try {
-      const res = await fetch('http://localhost:5000/api/reports/stats/1');
-      const data = await res.json();
-      if (res.ok && Array.isArray(data) && data.length > 0) setStats(data);
-      else setStats(fallbackStats);
-    } catch (err) {
-      console.error('Failed to load stats, fallback to initial state');
-      setStats(fallbackStats);
-    }
-  };
-
-  const fetchTimeline = async () => {
-    try {
-      const res = await fetch('http://localhost:5000/api/reports/timeline/1');
-      const data = await res.json();
-      if (res.ok && Array.isArray(data) && data.length > 0) setTimeline(data);
-      else setTimeline(fallbackTimeline);
-    } catch (err) {
-      console.error('Failed to load timeline, fallback to initial state');
-      setTimeline(fallbackTimeline);
-    }
-  };
 
   return (
-    <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200 min-h-[calc(100vh-7rem)] text-bexText">
-      {/* Sub-navigation tabs for Reports / Timeline */}
-      <div className="flex gap-4 border-b pb-3 mb-6">
-        <button 
-          onClick={() => setActiveTab('Reports')}
-          className={`font-semibold text-sm pb-1 transition ${activeTab === 'Reports' ? 'border-b-2 border-bexPrimary text-bexPrimary' : 'text-gray-500 hover:text-gray-700'}`}
-        >
-          All Reports
-        </button>
-        <button 
-          onClick={() => setActiveTab('Timeline')}
-          className={`font-semibold text-sm pb-1 transition ${activeTab === 'Timeline' ? 'border-b-2 border-bexPrimary text-bexPrimary' : 'text-gray-500 hover:text-gray-700'}`}
-        >
-          Timeline
-        </button>
+    <div className="space-y-6 font-sans">
+      {/* Header Bar (Page 20 "sign_fileds" PDF) */}
+      <div className="flex justify-between items-center pb-2 border-b border-slate-200">
+        <h1 className="text-xl font-extrabold text-slate-900">All Reports</h1>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            className="px-3 py-1.5 border border-slate-300 rounded text-xs font-semibold text-slate-700 hover:bg-slate-50 flex items-center gap-1.5"
+          >
+            <Filter size={14} /> Filter
+          </button>
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowExportMenu(!showExportMenu)}
+              className="px-3 py-1.5 border border-slate-300 rounded text-xs font-semibold text-slate-700 hover:bg-slate-50 flex items-center gap-1.5"
+            >
+              Export as <ChevronDown size={14} />
+            </button>
+            {showExportMenu && (
+              <div className="absolute right-0 mt-1 w-32 bg-white border border-slate-200 rounded-lg shadow-xl z-20 text-xs font-semibold text-slate-700 py-1">
+                <button onClick={() => { alert('Exported report as PDF'); setShowExportMenu(false); }} className="w-full text-left px-3 py-1.5 hover:bg-slate-50">PDF</button>
+                <button onClick={() => { alert('Exported report as CSV'); setShowExportMenu(false); }} className="w-full text-left px-3 py-1.5 hover:bg-slate-50">CSV</button>
+                <button onClick={() => { alert('Exported report as Excel'); setShowExportMenu(false); }} className="w-full text-left px-3 py-1.5 hover:bg-slate-50">Excel</button>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
 
-      {activeTab === 'Reports' ? (
-        <div>
-          <h2 className="text-xl font-bold mb-4">Document Analytics & Reports</h2>
-          
-          {/* Status Breakdown Summary Cards */}
-          <div className="grid grid-cols-4 gap-4 mb-8">
-            {stats.map((st) => (
-              <div key={st.status} className="p-4 border rounded-lg bg-gray-50 shadow-sm">
-                <p className="text-xs text-gray-500 uppercase font-semibold">{st.status}</p>
-                <p className="text-2xl font-bold text-bexPrimary mt-1">{st.count}</p>
-              </div>
-            ))}
+      {/* Date Range Picker Row */}
+      <div className="flex items-center gap-2 text-xs font-semibold text-slate-600">
+        <span>Date:</span>
+        <div className="px-3 py-1 bg-slate-100 border border-slate-300 rounded text-slate-800 font-mono flex items-center gap-2">
+          <Calendar size={14} className="text-[#00a884]" /> {dateRange}
+        </div>
+      </div>
+
+      {/* Charts Grid (Page 20 PDF Screenshots) */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Daily Bar Chart */}
+        <div className="lg:col-span-2 bg-white p-6 rounded-xl border border-slate-200 shadow-2xs space-y-4">
+          <div className="flex justify-between items-center text-xs">
+            <span className="font-bold text-slate-800">Weekly Document Activity</span>
+            <div className="flex items-center gap-3 text-[10px] font-bold">
+              <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 bg-[#00a884] rounded-xs" /> Completed</span>
+              <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 bg-amber-500 rounded-xs" /> In progress</span>
+              <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 bg-rose-500 rounded-xs" /> Declined</span>
+            </div>
           </div>
 
-          <div className="p-12 text-center border-2 border-dashed border-gray-200 rounded-lg bg-gray-50">
-            <p className="text-gray-500 text-sm">Graphical analytics view rendered based on document activity data.</p>
+          {/* Bar Chart Visualization */}
+          <div className="h-44 flex items-end justify-between gap-4 pt-6 px-4 border-b border-slate-200">
+            {['Thu', 'Fri', 'Sat', 'Sun', 'Mon', 'Tue', 'Wed'].map((day, idx) => {
+              const heights = [0, 60, 0, 0, 40, 0, 90];
+              const isWed = day === 'Wed';
+              return (
+                <div key={day} className="flex-1 flex flex-col items-center gap-2">
+                  <div className="w-full flex flex-col justify-end items-center h-32">
+                    {heights[idx] > 0 && (
+                      <div className="w-8 rounded-t space-y-0.5">
+                        {isWed && <div className="h-4 w-full bg-amber-500 rounded-t" />}
+                        <div className="w-full bg-[#00a884] rounded-t" style={{ height: `${heights[idx]}px` }} />
+                      </div>
+                    )}
+                  </div>
+                  <span className="text-[10px] text-slate-500 font-bold">{day}</span>
+                </div>
+              );
+            })}
           </div>
         </div>
-      ) : (
-        <div>
-          <h2 className="text-xl font-bold mb-4">Document Activity Timeline</h2>
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="border-b text-xs text-gray-500 uppercase">
-                <th className="py-3 px-4">Document Name</th>
-                <th className="py-3 px-4">Status</th>
-                <th className="py-3 px-4">Recipient</th>
-                <th className="py-3 px-4">Activity Description</th>
-                <th className="py-3 px-4">Time</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y text-sm">
-              {timeline.map((item, index) => (
-                <tr key={index} className="hover:bg-gray-50">
-                  <td className="py-3 px-4 font-medium">{item.document_name}</td>
-                  <td className="py-3 px-4">
-                    <span className={`px-2 py-1 rounded text-xs font-semibold ${
-                      item.status === 'Completed' ? 'bg-green-100 text-green-700' :
-                      item.status === 'In Progress' ? 'bg-yellow-100 text-yellow-700' :
-                      'bg-gray-100 text-gray-700'
-                    }`}>
-                      {item.status}
-                    </span>
-                  </td>
-                  <td className="py-3 px-4 text-gray-600">{item.recipient_email}</td>
-                  <td className="py-3 px-4 text-gray-600">{item.activity_description || 'Document created/updated'}</td>
-                  <td className="py-3 px-4 text-gray-500 text-xs">
-                    {item.time_of_activity ? new Date(item.time_of_activity).toLocaleString() : 'N/A'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+
+        {/* Status Percentage Donut / Pie Chart */}
+        <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-2xs space-y-4 flex flex-col justify-between">
+          <span className="font-bold text-slate-800 text-xs">Status Distribution</span>
+          <div className="relative h-40 flex items-center justify-center">
+            {/* Pie Chart Representation */}
+            <div className="h-32 w-32 rounded-full border-8 border-[#00a884] bg-emerald-50 flex items-center justify-center font-black text-slate-800 text-lg shadow-inner">
+              75%
+            </div>
+          </div>
+          <div className="space-y-1 text-[11px] font-bold text-slate-600">
+            <div className="flex justify-between"><span>● Completed</span><span>75%</span></div>
+            <div className="flex justify-between text-amber-600"><span>● In progress</span><span>25%</span></div>
+          </div>
         </div>
-      )}
+      </div>
+
+      {/* Reports Data Table (Page 20 PDF) */}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
+        <table className="w-full text-left text-xs border-collapse">
+          <thead>
+            <tr className="bg-slate-50 text-slate-500 uppercase font-extrabold border-b border-slate-200">
+              <th className="p-3.5">DOCUMENT NAME</th>
+              <th className="p-3.5">OWNER</th>
+              <th className="p-3.5">DOCUMENT TYPE</th>
+              <th className="p-3.5">SENT ON</th>
+              <th className="p-3.5">STATUS</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 font-medium text-slate-800">
+            {reportsData.map((row, idx) => (
+              <tr key={idx} className="hover:bg-slate-50">
+                <td className="p-3.5 font-bold">{row.name}</td>
+                <td className="p-3.5 text-slate-600">{row.owner}</td>
+                <td className="p-3.5 text-slate-500">{row.type}</td>
+                <td className="p-3.5 text-slate-500 font-mono text-[11px]">{row.sentOn}</td>
+                <td className="p-3.5">
+                  <span className={`px-2.5 py-1 rounded text-[10px] font-black tracking-wider ${row.statusColor}`}>
+                    ● {row.status}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

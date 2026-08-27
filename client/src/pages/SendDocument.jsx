@@ -1,32 +1,39 @@
 import React, { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Send, Plus, Users, ShieldCheck, Clock, Mail, CheckCircle2, ArrowLeft, X, Lock, FileText, UserCheck, Eye } from 'lucide-react';
+import { Send, Plus, Users, ShieldCheck, Clock, Mail, CheckCircle2, ArrowLeft, X, Lock, FileText, UserCheck, Eye, Sliders, ChevronDown } from 'lucide-react';
 
 export default function SendDocument() {
   const { id } = useParams();
   const navigate = useNavigate();
 
-  const [signingOrder, setSigningOrder] = useState('parallel'); // parallel or sequential
+  const [documentName, setDocumentName] = useState('Document Sign 4');
+  const [signingOrder, setSigningOrder] = useState(true); // true = send in order (sequential)
   const [recipients, setRecipients] = useState([
-    { id: 1, name: 'John Doe', email: 'john@example.com', role: 'Signer', auth: 'Passcode', passcode: '123456', privateNote: 'Please review section 3 before signing.' },
-    { id: 2, name: 'Sarah Connor', email: 'sarah@example.com', role: 'Approver', auth: 'Email OTP', passcode: '', privateNote: '' }
+    { id: 1, name: 'Vimal Chavda', email: 'vimal@bexcodeservices.com', role: 'Needs to sign', auth: 'Email OTP', passcode: '', privateNote: 'Private note', fieldCount: 2 },
+    { id: 2, name: 'Dhruv patel', email: 'dhruv@bexcodeservices.com', role: 'Needs to sign', auth: 'None', passcode: '', privateNote: '', fieldCount: 3 }
   ]);
 
-  const [message, setMessage] = useState('Please review and execute this agreement at your earliest convenience.');
-  const [reminderDays, setReminderDays] = useState('3');
-  const [expirationDays, setExpirationDays] = useState('30');
+  const [noteToAll, setNoteToAll] = useState('Note to all recipients');
+  const [daysToComplete, setDaysToComplete] = useState('15');
+  const [agreementValidUntil, setAgreementValidUntil] = useState('Forever');
+  const [documentType, setDocumentType] = useState('Others');
+  const [folder, setFolder] = useState('None');
+  const [description, setDescription] = useState('Description setting');
+  const [allowComments, setAllowComments] = useState(false);
+  const [autoReminders, setAutoReminders] = useState(true);
+  const [reminderEveryDays, setReminderEveryDays] = useState('5');
+  const [showMoreSettings, setShowMoreSettings] = useState(true);
 
   // Modals
   const [showAddRecipientModal, setShowAddRecipientModal] = useState(false);
-  const [showConfirmModal, setShowConfirmModal] = useState(false);
-  const [newRecipient, setNewRecipient] = useState({ name: '', email: '', role: 'Signer', auth: 'Passcode', passcode: '', privateNote: '' });
-  const [confirmedReady, setConfirmedReady] = useState(false);
+  const [showConfirmDetailsModal, setShowConfirmDetailsModal] = useState(false);
+  const [newRecipient, setNewRecipient] = useState({ name: '', email: '', role: 'Needs to sign', auth: 'Email OTP', passcode: '', privateNote: '' });
 
   const handleAddRecipient = (e) => {
     e.preventDefault();
     if (!newRecipient.name || !newRecipient.email) return;
-    setRecipients([...recipients, { ...newRecipient, id: Date.now() }]);
-    setNewRecipient({ name: '', email: '', role: 'Signer', auth: 'Passcode', passcode: '', privateNote: '' });
+    setRecipients([...recipients, { ...newRecipient, id: Date.now(), fieldCount: 2 }]);
+    setNewRecipient({ name: '', email: '', role: 'Needs to sign', auth: 'Email OTP', passcode: '', privateNote: '' });
     setShowAddRecipientModal(false);
   };
 
@@ -34,30 +41,33 @@ export default function SendDocument() {
     setRecipients(recipients.filter(r => r.id !== recId));
   };
 
-  const handleSendDocument = async () => {
-    if (!confirmedReady) {
-      alert('Please check the confirmation box before sending.');
-      return;
-    }
-
+  const handleConfirmAndSend = async () => {
     try {
       await fetch(`http://localhost:5000/api/documents/send/${id || 1}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ recipients, signingOrder, message, reminderDays, expirationDays })
+        body: JSON.stringify({
+          documentName,
+          recipients,
+          signingOrder,
+          noteToAll,
+          daysToComplete,
+          autoReminders,
+          reminderEveryDays
+        })
       });
     } catch (e) {
       console.warn('Send fallback:', e);
     }
 
-    setShowConfirmModal(false);
+    setShowConfirmDetailsModal(false);
     navigate('/documents/sent/in-progress');
   };
 
   return (
-    <div className="max-w-5xl mx-auto space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+    <div className="max-w-4xl mx-auto space-y-6 font-sans">
+      {/* Header Bar */}
+      <div className="flex items-center justify-between border-b pb-4">
         <div>
           <button
             onClick={() => navigate(`/documents/${id || 1}/edit`)}
@@ -65,180 +75,260 @@ export default function SendDocument() {
           >
             <ArrowLeft size={14} /> Back to Document Field Editor
           </button>
-          <h1 className="text-2xl font-extrabold text-slate-900">Zoho Sign Workflow Dispatch</h1>
-          <p className="text-xs text-slate-500 mt-1">Configure multi-role recipients, passcode security, and automated reminders.</p>
+          <h1 className="text-xl font-extrabold text-slate-900">Edit document details</h1>
         </div>
-        <button
-          onClick={() => setShowConfirmModal(true)}
-          className="btn-primary px-6 py-2.5 rounded-lg font-extrabold text-sm shadow-md flex items-center gap-2"
-        >
-          <Send size={18} /> Send Document Now
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => navigate('/documents/all')}
+            className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-bold text-slate-700 hover:bg-slate-50"
+          >
+            Save & close
+          </button>
+          <button
+            onClick={() => setShowConfirmDetailsModal(true)}
+            className="bg-[#00a884] hover:bg-[#008f70] text-white px-6 py-2 rounded-lg font-extrabold text-xs shadow-md flex items-center gap-2"
+          >
+            <Send size={15} /> Continue
+          </button>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* Left Column: Recipients & Signing Order */}
-        <div className="md:col-span-2 space-y-6">
-          {/* Recipients Section with Zoho Sign Roles */}
-          <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-2xs space-y-4">
-            <div className="flex justify-between items-center pb-3 border-b border-slate-100">
-              <div>
-                <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
-                  <Users className="text-[#E71414]" size={18} /> Recipients & Roles (Zoho Sign Standard)
-                </h2>
-                <p className="text-xs text-slate-500 mt-0.5">Assign Signer, In-Person Signer, Approver, or CC roles.</p>
-              </div>
-              <button
-                onClick={() => setShowAddRecipientModal(true)}
-                className="text-xs font-bold text-[#E71414] hover:underline flex items-center gap-1"
-              >
-                <Plus size={14} /> Add Recipient
-              </button>
+      {/* Main Form Container */}
+      <div className="bg-white rounded-xl border border-slate-200 p-8 shadow-2xs space-y-6">
+        {/* Document Card Thumbnail (Page 14 PDF) */}
+        <div>
+          <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">Add documents</label>
+          <div className="flex items-center gap-4">
+            <div className="h-28 w-24 border border-slate-300 bg-slate-900 rounded p-2 text-[8px] text-white flex flex-col justify-center items-center shadow">
+              <FileText size={24} className="text-emerald-400 mb-1" />
+              <span className="truncate w-full text-center">Test Document 1</span>
             </div>
+            <div className="flex-1 space-y-1">
+              <label className="block text-xs font-bold text-slate-700">Document name</label>
+              <input
+                type="text"
+                value={documentName}
+                onChange={(e) => setDocumentName(e.target.value)}
+                className="w-72 p-2 bg-slate-50 border border-slate-300 rounded text-xs font-semibold"
+              />
+            </div>
+          </div>
+        </div>
 
-            <div className="space-y-3">
-              {recipients.map((rec, index) => (
-                <div key={rec.id} className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <span className="h-7 w-7 rounded-full bg-red-100 text-[#E71414] font-bold text-xs flex items-center justify-center">
-                        {index + 1}
-                      </span>
-                      <div>
-                        <p className="font-bold text-slate-900 text-sm flex items-center gap-1.5">
-                          {rec.name}
-                          {rec.role === 'Signer' && <span className="bg-blue-100 text-blue-800 text-[10px] px-2 py-0.5 rounded font-extrabold uppercase">Signer</span>}
-                          {rec.role === 'In-Person Signer' && <span className="bg-purple-100 text-purple-800 text-[10px] px-2 py-0.5 rounded font-extrabold uppercase">In-Person Host</span>}
-                          {rec.role === 'Approver' && <span className="bg-amber-100 text-amber-800 text-[10px] px-2 py-0.5 rounded font-extrabold uppercase">Approver</span>}
-                          {rec.role === 'CC' && <span className="bg-slate-200 text-slate-700 text-[10px] px-2 py-0.5 rounded font-extrabold uppercase">CC Copy</span>}
-                        </p>
-                        <p className="text-xs text-slate-500">{rec.email}</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs px-2.5 py-1 rounded font-semibold flex items-center gap-1">
-                        <Lock size={12} /> {rec.auth} {rec.passcode ? `(${rec.passcode})` : ''}
-                      </span>
-                      <button onClick={() => removeRecipient(rec.id)} className="text-slate-400 hover:text-red-600 p-1">
-                        <X size={16} />
-                      </button>
-                    </div>
-                  </div>
+        {/* Recipients Section (Page 14 PDF) */}
+        <div className="space-y-3">
+          <div className="flex justify-between items-center pb-2 border-b">
+            <div className="flex items-center gap-3">
+              <h2 className="text-sm font-bold text-slate-900">Recipients</h2>
+              <label className="flex items-center gap-1.5 text-xs font-bold text-slate-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={signingOrder}
+                  onChange={(e) => setSigningOrder(e.target.checked)}
+                  className="accent-[#00a884]"
+                /> Send in order
+              </label>
+            </div>
+            <button
+              onClick={() => setShowAddRecipientModal(true)}
+              className="text-xs font-bold text-[#00a884] hover:underline flex items-center gap-1"
+            >
+              <Plus size={14} /> Add Recipient
+            </button>
+          </div>
 
-                  {rec.privateNote && (
-                    <div className="pl-10 text-xs text-slate-600 bg-amber-50/60 p-2 rounded border border-amber-100 italic">
-                      <strong>Private Note:</strong> "{rec.privateNote}"
-                    </div>
-                  )}
+          {recipients.map((rec, idx) => (
+            <div key={rec.id} className="p-4 border border-slate-200 rounded-xl bg-slate-50/70 space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3 flex-1">
+                  <span className="text-xs font-mono font-bold text-slate-400">:: {idx + 1}</span>
+                  <input
+                    type="text"
+                    value={rec.email}
+                    readOnly
+                    className="flex-1 p-2 bg-white border border-slate-300 rounded text-xs font-medium"
+                  />
+                  <input
+                    type="text"
+                    value={rec.name}
+                    readOnly
+                    className="flex-1 p-2 bg-white border border-slate-300 rounded text-xs font-medium"
+                  />
+                  <span className="px-3 py-1 bg-slate-200 text-slate-700 rounded text-xs font-bold">
+                    {rec.role}
+                  </span>
+                  <span className="px-3 py-1 bg-white border border-slate-300 text-slate-700 rounded text-xs font-semibold">
+                    Email
+                  </span>
                 </div>
-              ))}
-            </div>
-          </div>
+                <div className="flex items-center gap-2">
+                  <button className="px-3 py-1 border border-slate-300 bg-white hover:bg-slate-100 rounded text-xs font-semibold">
+                    Customize
+                  </button>
+                  <button onClick={() => removeRecipient(rec.id)} className="text-slate-400 hover:text-red-600 p-1">
+                    <X size={16} />
+                  </button>
+                </div>
+              </div>
 
-          {/* Signing Order Section */}
-          <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-2xs space-y-4">
-            <h2 className="text-base font-bold text-slate-900">Signing Order Strategy</h2>
-            <div className="grid grid-cols-2 gap-4">
-              <button
-                onClick={() => setSigningOrder('parallel')}
-                className={`p-4 rounded-xl border text-left transition ${
-                  signingOrder === 'parallel'
-                    ? 'border-[#E71414] bg-red-50 text-[#E71414]'
-                    : 'border-slate-200 bg-white hover:bg-slate-50'
-                }`}
-              >
-                <div className="font-bold text-sm">Parallel Signing</div>
-                <div className="text-xs text-slate-500 mt-1">All recipients receive the document simultaneously.</div>
-              </button>
-
-              <button
-                onClick={() => setSigningOrder('sequential')}
-                className={`p-4 rounded-xl border text-left transition ${
-                  signingOrder === 'sequential'
-                    ? 'border-[#E71414] bg-red-50 text-[#E71414]'
-                    : 'border-slate-200 bg-white hover:bg-slate-50'
-                }`}
-              >
-                <div className="font-bold text-sm">Sequential Signing (1 → 2 → 3)</div>
-                <div className="text-xs text-slate-500 mt-1">Recipients receive sign requests one after another in order.</div>
-              </button>
+              {/* Sub-rows for Private Note & Authentication */}
+              <div className="pl-8 space-y-1 text-xs text-slate-600">
+                {rec.privateNote && (
+                  <p className="flex items-center gap-1 text-amber-700">
+                    🔒 <strong>Private message :</strong> {rec.privateNote}
+                  </p>
+                )}
+                {rec.auth !== 'None' && (
+                  <p className="flex items-center gap-1 text-emerald-700 font-medium">
+                    🔑 <strong>Authentication ({rec.auth}):</strong> {rec.email}
+                  </p>
+                )}
+              </div>
             </div>
-          </div>
+          ))}
         </div>
 
-        {/* Right Column: Message & Reminders */}
-        <div className="space-y-6">
-          <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-2xs space-y-4">
-            <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
-              <Mail className="text-[#E71414]" size={18} /> Email Message
-            </h2>
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">Message to Recipients</label>
-              <textarea
-                rows={4}
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
-                className="w-full p-3 bg-slate-50 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-[#E71414] focus:outline-none"
-              ></textarea>
+        {/* More Settings Dropdown (Page 14 PDF) */}
+        <div className="border-t border-slate-200 pt-4 space-y-4">
+          <button
+            type="button"
+            onClick={() => setShowMoreSettings(!showMoreSettings)}
+            className="text-xs font-bold text-slate-800 flex items-center gap-1 hover:text-[#00a884]"
+          >
+            More settings <ChevronDown size={14} className={`transform transition ${showMoreSettings ? 'rotate-180' : ''}`} />
+          </button>
+
+          {showMoreSettings && (
+            <div className="grid grid-cols-2 gap-4 text-xs">
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Days to complete</label>
+                <input
+                  type="number"
+                  value={daysToComplete}
+                  onChange={(e) => setDaysToComplete(e.target.value)}
+                  className="w-full p-2 bg-slate-50 border border-slate-300 rounded font-semibold"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Agreement valid until</label>
+                <select
+                  value={agreementValidUntil}
+                  onChange={(e) => setAgreementValidUntil(e.target.value)}
+                  className="w-full p-2 bg-slate-50 border border-slate-300 rounded font-semibold"
+                >
+                  <option value="Forever">Forever</option>
+                  <option value="1 Year">1 Year</option>
+                  <option value="3 Years">3 Years</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Document type</label>
+                <select
+                  value={documentType}
+                  onChange={(e) => setDocumentType(e.target.value)}
+                  className="w-full p-2 bg-slate-50 border border-slate-300 rounded font-semibold"
+                >
+                  <option value="Others">Others</option>
+                  <option value="Sales Contract">Sales Contract</option>
+                  <option value="NDA">NDA</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Folder</label>
+                <select
+                  value={folder}
+                  onChange={(e) => setFolder(e.target.value)}
+                  className="w-full p-2 bg-slate-50 border border-slate-300 rounded font-semibold"
+                >
+                  <option value="None">None</option>
+                  <option value="Legal">Legal</option>
+                  <option value="HR">HR</option>
+                </select>
+              </div>
+
+              <div className="col-span-2">
+                <label className="block font-bold text-slate-700 mb-1">Description</label>
+                <input
+                  type="text"
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  className="w-full p-2 bg-slate-50 border border-slate-300 rounded"
+                />
+              </div>
             </div>
+          )}
+
+          <div className="space-y-3 pt-2 text-xs">
+            <label className="flex items-center gap-2 text-slate-700 font-semibold cursor-pointer">
+              <input
+                type="checkbox"
+                checked={allowComments}
+                onChange={(e) => setAllowComments(e.target.checked)}
+                className="accent-[#00a884]"
+              /> Allow recipient comments
+            </label>
+
+            <div className="space-y-1">
+              <label className="flex items-center gap-2 text-slate-700 font-semibold cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={autoReminders}
+                  onChange={(e) => setAutoReminders(e.target.checked)}
+                  className="accent-[#00a884]"
+                /> Automatic reminders
+              </label>
+              <p className="text-[10px] text-slate-400 pl-6">Automatic reminders will only be delivered via email.</p>
+            </div>
+
+            {autoReminders && (
+              <div className="pl-6 flex items-center gap-2">
+                <span className="text-slate-600">Send a reminder every</span>
+                <input
+                  type="number"
+                  value={reminderEveryDays}
+                  onChange={(e) => setReminderEveryDays(e.target.value)}
+                  className="w-16 p-1 bg-slate-50 border border-slate-300 rounded font-bold text-center"
+                />
+                <span className="text-slate-600">day(s)</span>
+              </div>
+            )}
           </div>
 
-          <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-2xs space-y-4">
-            <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
-              <Clock className="text-[#E71414]" size={18} /> Reminders & Expiration
-            </h2>
-
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">Automated Reminders</label>
-              <select
-                value={reminderDays}
-                onChange={(e) => setReminderDays(e.target.value)}
-                className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-medium"
-              >
-                <option value="1">Every 1 day</option>
-                <option value="3">Every 3 days</option>
-                <option value="5">Every 5 days</option>
-                <option value="7">Every 7 days</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">Expiration Period</label>
-              <select
-                value={expirationDays}
-                onChange={(e) => setExpirationDays(e.target.value)}
-                className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-medium"
-              >
-                <option value="7">7 Days</option>
-                <option value="15">15 Days</option>
-                <option value="30">30 Days</option>
-                <option value="60">60 Days</option>
-              </select>
-            </div>
+          <div className="pt-4 border-t">
+            <label className="block text-xs font-bold text-slate-700 mb-1">Note to all recipients</label>
+            <textarea
+              rows={3}
+              value={noteToAll}
+              onChange={(e) => setNoteToAll(e.target.value)}
+              className="w-full p-3 bg-slate-50 border border-slate-300 rounded text-xs focus:ring-2 focus:ring-[#00a884]"
+            ></textarea>
           </div>
         </div>
       </div>
 
-      {/* Add Recipient Popup Modal (Zoho Sign Standard) */}
+      {/* Add Recipient Modal */}
       {showAddRecipientModal && (
         <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <form onSubmit={handleAddRecipient} className="bg-white text-slate-900 rounded-xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
-            <div className="flex justify-between items-center pb-3 border-b border-slate-100">
-              <h3 className="text-base font-bold text-slate-900">Add Recipient (Zoho Sign Standard)</h3>
+          <form onSubmit={handleAddRecipient} className="bg-white text-slate-900 rounded-xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
+            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+              <h3 className="text-sm font-bold text-slate-900">Add Recipient</h3>
               <button type="button" onClick={() => setShowAddRecipientModal(false)} className="text-slate-400 hover:text-slate-700">
                 <X size={18} />
               </button>
             </div>
 
-            <div className="space-y-3 text-xs">
+            <div className="space-y-3">
               <div>
                 <label className="block font-bold text-slate-700 mb-1">Full Name</label>
                 <input
                   type="text"
                   value={newRecipient.name}
                   onChange={(e) => setNewRecipient({ ...newRecipient, name: e.target.value })}
-                  placeholder="e.g. Sarah Connor"
-                  className="w-full border border-slate-300 rounded-lg p-2.5"
+                  placeholder="e.g. Vimal Chavda"
+                  className="w-full border border-slate-300 rounded p-2"
                   required
                 />
               </div>
@@ -249,8 +339,8 @@ export default function SendDocument() {
                   type="email"
                   value={newRecipient.email}
                   onChange={(e) => setNewRecipient({ ...newRecipient, email: e.target.value })}
-                  placeholder="sarah@example.com"
-                  className="w-full border border-slate-300 rounded-lg p-2.5"
+                  placeholder="vimal@bexcodeservices.com"
+                  className="w-full border border-slate-300 rounded p-2"
                   required
                 />
               </div>
@@ -261,12 +351,12 @@ export default function SendDocument() {
                   <select
                     value={newRecipient.role}
                     onChange={(e) => setNewRecipient({ ...newRecipient, role: e.target.value })}
-                    className="w-full border border-slate-300 rounded-lg p-2.5 font-semibold"
+                    className="w-full border border-slate-300 rounded p-2 font-semibold"
                   >
-                    <option value="Signer">Signer (Must Sign)</option>
-                    <option value="In-Person Signer">In-Person Signer (Host)</option>
-                    <option value="Approver">Approver (Must Approve)</option>
-                    <option value="CC">Receive a Copy (CC)</option>
+                    <option value="Needs to sign">Needs to sign</option>
+                    <option value="In-person signer">In-person signer</option>
+                    <option value="Approver">Approver</option>
+                    <option value="Receive a copy">Receive a copy</option>
                   </select>
                 </div>
 
@@ -275,9 +365,8 @@ export default function SendDocument() {
                   <select
                     value={newRecipient.auth}
                     onChange={(e) => setNewRecipient({ ...newRecipient, auth: e.target.value })}
-                    className="w-full border border-slate-300 rounded-lg p-2.5 font-semibold"
+                    className="w-full border border-slate-300 rounded p-2 font-semibold"
                   >
-                    <option value="Passcode">Access Passcode</option>
                     <option value="Email OTP">Email OTP</option>
                     <option value="SMS OTP">SMS OTP</option>
                     <option value="None">None</option>
@@ -285,40 +374,23 @@ export default function SendDocument() {
                 </div>
               </div>
 
-              {newRecipient.auth === 'Passcode' && (
-                <div>
-                  <label className="block font-bold text-slate-700 mb-1">Secret Access Passcode</label>
-                  <input
-                    type="text"
-                    value={newRecipient.passcode}
-                    onChange={(e) => setNewRecipient({ ...newRecipient, passcode: e.target.value })}
-                    placeholder="e.g. 123456"
-                    className="w-full border border-slate-300 rounded-lg p-2.5 font-mono"
-                  />
-                </div>
-              )}
-
               <div>
-                <label className="block font-bold text-slate-700 mb-1">Private Note (Optional)</label>
+                <label className="block font-bold text-slate-700 mb-1">Private message (Optional)</label>
                 <input
                   type="text"
                   value={newRecipient.privateNote}
                   onChange={(e) => setNewRecipient({ ...newRecipient, privateNote: e.target.value })}
-                  placeholder="Private message visible only to this recipient..."
-                  className="w-full border border-slate-300 rounded-lg p-2.5"
+                  placeholder="Private note for recipient..."
+                  className="w-full border border-slate-300 rounded p-2"
                 />
               </div>
             </div>
 
             <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => setShowAddRecipientModal(false)}
-                className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-semibold"
-              >
+              <button type="button" onClick={() => setShowAddRecipientModal(false)} className="px-4 py-1.5 border border-slate-300 rounded text-xs font-semibold">
                 Cancel
               </button>
-              <button type="submit" className="btn-primary px-5 py-2 rounded-lg text-xs font-bold">
+              <button type="submit" className="bg-[#00a884] text-white px-5 py-1.5 rounded text-xs font-bold">
                 Add Recipient
               </button>
             </div>
@@ -326,40 +398,50 @@ export default function SendDocument() {
         </div>
       )}
 
-      {/* Confirmation Popup Modal */}
-      {showConfirmModal && (
-        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white text-slate-900 rounded-xl max-w-md w-full p-6 shadow-2xl border border-slate-200">
-            <h3 className="text-lg font-bold text-slate-900 mb-2">Send Document Confirmation</h3>
-            <p className="text-xs text-slate-600 mb-4">
-              You are about to send document to {recipients.length} recipients via {signingOrder} signing workflow.
-            </p>
-
-            <div className="p-3 bg-red-50 border border-red-100 rounded-lg flex items-center gap-2 mb-4">
-              <input
-                type="checkbox"
-                id="confirmReady"
-                checked={confirmedReady}
-                onChange={(e) => setConfirmedReady(e.target.checked)}
-                className="accent-[#E71414]"
-              />
-              <label htmlFor="confirmReady" className="text-xs font-bold text-slate-800">
-                I confirm the document is ready for dispatch.
-              </label>
+      {/* Confirm Details Pre-Send Modal (Page 10 PDF) */}
+      {showConfirmDetailsModal && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white text-slate-900 rounded-xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 font-sans text-xs">
+            <div className="flex justify-between items-center pb-2 border-b">
+              <h3 className="text-sm font-bold text-slate-900">Confirm details</h3>
+              <button onClick={() => setShowConfirmDetailsModal(false)} className="text-slate-400 hover:text-slate-700">
+                <X size={18} />
+              </button>
             </div>
 
-            <div className="flex justify-end gap-2">
+            <p className="text-slate-600">Please verify the number of fields added for each recipient and confirm:</p>
+
+            <div className="border border-slate-200 rounded-lg overflow-hidden">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="bg-slate-50 text-slate-500 uppercase font-bold border-b">
+                    <th className="p-3">Recipient</th>
+                    <th className="p-3 text-right">Fields</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 font-semibold text-slate-800">
+                  {recipients.map((rec) => (
+                    <tr key={rec.id}>
+                      <td className="p-3">{rec.email}</td>
+                      <td className="p-3 text-right font-mono font-bold text-[#00a884]">{rec.fieldCount}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-3 border-t">
               <button
-                onClick={() => setShowConfirmModal(false)}
-                className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-semibold"
+                onClick={() => setShowConfirmDetailsModal(false)}
+                className="px-4 py-2 border border-slate-300 rounded text-xs font-semibold text-slate-700 hover:bg-slate-50"
               >
                 Cancel
               </button>
               <button
-                onClick={handleSendDocument}
-                className="btn-primary px-5 py-2 rounded-lg text-xs font-extrabold"
+                onClick={handleConfirmAndSend}
+                className="bg-[#00a884] hover:bg-[#008f70] text-white px-5 py-2 rounded text-xs font-extrabold"
               >
-                Send Document
+                Confirm and send
               </button>
             </div>
           </div>
