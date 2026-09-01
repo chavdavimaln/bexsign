@@ -52,16 +52,16 @@ export default function Settings() {
   };
 
   return (
-    <div className="flex bg-white rounded-lg shadow-sm border border-gray-200 min-h-[calc(100vh-7rem)] text-bexText">
+    <div className="flex flex-col md:flex-row bg-white rounded-xl shadow-2xs border border-slate-200 min-h-[calc(100vh-7rem)] text-slate-800">
       {/* Settings Sub-Sidebar */}
-      <div className="w-64 border-r border-gray-200 p-4 shrink-0">
-        <h3 className="font-bold text-md mb-3 text-bexPrimary">Settings</h3>
-        <ul className="space-y-1 text-sm">
+      <div className="w-full md:w-64 border-b md:border-b-0 md:border-r border-slate-200 p-4 shrink-0">
+        <h3 className="font-bold text-md mb-3 text-[#E71414]">Settings</h3>
+        <ul className="flex flex-wrap md:flex-col gap-1 text-sm">
           {['Profile', 'Integrations', 'Notifications', 'Contacts', 'Trash', 'Developer Settings'].map((tab) => (
             <li key={tab}>
               <button 
                 onClick={() => setActiveTab(tab)}
-                className={`w-full text-left px-3 py-2 rounded transition ${activeTab === tab ? 'bg-red-50 text-bexPrimary font-semibold' : 'text-gray-600 hover:bg-gray-50'}`}
+                className={`w-full text-left px-3 py-2 rounded-lg transition text-xs font-semibold ${activeTab === tab ? 'bg-red-50 text-[#E71414] font-bold' : 'text-slate-600 hover:bg-slate-50'}`}
               >
                 {tab}
               </button>
@@ -71,7 +71,7 @@ export default function Settings() {
       </div>
 
       {/* Main Settings Content */}
-      <div className="flex-1 p-8">
+      <div className="flex-1 p-4 sm:p-8 min-w-0">
         {activeTab === 'Profile' && (
           <div>
             <h2 className="text-xl font-bold mb-6">My Profile</h2>

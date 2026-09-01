@@ -74,28 +74,34 @@ export default function Templates() {
       </div>
 
       {templates.length === 0 ? (
-        <div className="text-center py-24 border-2 border-dashed border-gray-200 rounded-lg mt-6">
+        <div className="text-center py-24 border-2 border-dashed border-gray-200 rounded-xl mt-6 bg-white">
           <p className="text-gray-500 text-sm">No data available.</p>
         </div>
       ) : (
-        <table className="w-full text-left mt-6 border-collapse">
-          <thead>
-            <tr className="border-b text-xs text-gray-500 uppercase">
-              <th className="py-3 px-4">Template Name</th>
-              <th className="py-3 px-4">Active Sign Forms</th>
-              <th className="py-3 px-4">Last Modified On</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y text-sm">
-            {templates.map((t) => (
-              <tr key={t.id} className="hover:bg-gray-50">
-                <td className="py-3 px-4 font-medium">{t.template_name}</td>
-                <td className="py-3 px-4">{t.active_sign_forms ?? 1}</td>
-                <td className="py-3 px-4 text-gray-500 text-xs">{new Date(t.last_modified || t.created_at || Date.now()).toLocaleString()}</td>
+        <div className="bg-white rounded-xl border border-slate-200 shadow-2xs mt-6 w-full overflow-hidden">
+          <table className="w-full text-left border-collapse table-fixed">
+            <thead>
+              <tr className="bg-slate-50 border-b border-slate-200 text-xs text-slate-500 font-extrabold uppercase">
+                <th className="py-3.5 px-4 w-[50%] sm:w-[48%] leading-tight">Template Name</th>
+                <th className="py-3.5 px-4 w-[25%] sm:w-[24%] leading-tight">Active Sign Forms</th>
+                <th className="py-3.5 px-4 w-[25%] sm:w-[28%] whitespace-nowrap leading-tight">Last Modified On</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="divide-y divide-slate-100 text-xs sm:text-sm">
+              {templates.map((t) => (
+                <tr key={t.id} className="hover:bg-slate-50 transition">
+                  <td className="py-3.5 px-4 font-bold text-slate-900 break-words leading-snug align-middle">
+                    {t.template_name}
+                  </td>
+                  <td className="py-3.5 px-4 text-slate-600 align-middle">{t.active_sign_forms ?? 1}</td>
+                  <td className="py-3.5 px-4 text-slate-500 text-xs font-mono whitespace-nowrap align-middle">
+                    {new Date(t.last_modified || t.created_at || Date.now()).toLocaleString()}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       {/* Create Template Modal Popup */}

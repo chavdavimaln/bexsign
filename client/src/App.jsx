@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 
 // Layout
 import Layout from './components/Layout';
+import GlobalAlertModal from './components/GlobalAlertModal';
 
 // Auth Pages
 import Login from './pages/Login';
@@ -13,7 +14,10 @@ import Dashboard from './pages/Dashboard';
 import CreateDocument from './pages/CreateDocument';
 import RichTextDocumentEditor from './components/RichTextDocumentEditor';
 import DocumentEditor from './pages/DocumentEditor';
+import DocumentDetails from './pages/DocumentDetails';
 import SendDocument from './pages/SendDocument';
+import SendForSignatures from './pages/SendForSignatures';
+import EmailInvitationPreview from './pages/EmailInvitationPreview';
 import DocumentsList from './pages/DocumentsList';
 import PublicSigning from './pages/PublicSigning';
 import SignYourself from './pages/SignYourself';
@@ -49,15 +53,18 @@ export default function App() {
           <Route path="/documents/sent/:statusFilter" element={<DocumentsList />} />
           <Route path="/documents/received" element={<DocumentsList />} />
           <Route path="/documents/received/:statusFilter" element={<DocumentsList />} />
-          <Route path="/documents/create" element={<CreateDocument />} />
+          <Route path="/documents/create" element={<SendForSignatures />} />
           <Route path="/documents/create-editor" element={<RichTextDocumentEditor />} />
+          <Route path="/documents/:id" element={<DocumentDetails />} />
+          <Route path="/documents/:id/details" element={<DocumentDetails />} />
           <Route path="/documents/:id/edit" element={<DocumentEditor />} />
-          <Route path="/documents/:id/send" element={<SendDocument />} />
+          <Route path="/documents/:id/send" element={<SendForSignatures />} />
+          <Route path="/documents/:id/email-preview" element={<EmailInvitationPreview />} />
 
           {/* Quick Actions Shortcuts */}
-          <Route path="/send-for-signatures" element={<CreateDocument />} />
+          <Route path="/send-for-signatures" element={<SendForSignatures />} />
           <Route path="/sign-yourself" element={<SignYourself />} />
-          <Route path="/signatures" element={<CreateDocument />} />
+          <Route path="/signatures" element={<SendForSignatures />} />
 
           {/* Templates & Reports */}
           <Route path="/templates" element={<Templates />} />
@@ -77,6 +84,7 @@ export default function App() {
         {/* Fallback Catch-all */}
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
+      <GlobalAlertModal />
     </Router>
   );
 }

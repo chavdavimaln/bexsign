@@ -430,3 +430,67 @@ CREATE TABLE IF NOT EXISTS announcements (
   content TEXT NOT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 39. Document Identifiers (BexSign Generated Unique IDs & Electronic Stamp Tracking)
+CREATE TABLE IF NOT EXISTS document_identifiers (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  document_id INT NOT NULL,
+  bexsign_doc_id VARCHAR(100) NOT NULL UNIQUE,
+  prefix VARCHAR(20) DEFAULT 'BEX-DOC',
+  year INT DEFAULT 2026,
+  seq_number INT NOT NULL,
+  unique_hash VARCHAR(64) NOT NULL,
+  signer_name VARCHAR(150) DEFAULT 'Vimal Chavda',
+  signer_email VARCHAR(255) DEFAULT 'vimal@bexcodeservices.com',
+  signature_style VARCHAR(50) DEFAULT 'font-signature-1',
+  signature_status ENUM('Draft', 'In Progress', 'Completed', 'Recalled', 'Expired') DEFAULT 'Draft',
+  audit_ip VARCHAR(45) DEFAULT '223.181.69.208',
+  audit_hash VARCHAR(100) DEFAULT 'SHA256-CERTIFIED-ELECTRONIC-RECORD',
+  qr_payload TEXT NULL,
+  signed_at DATETIME NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_bexsign_doc_id (bexsign_doc_id),
+  INDEX idx_document_id (document_id),
+  FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+);
+
+-- Seed initial records into document_identifiers
+INSERT IGNORE INTO document_identifiers 
+(document_id, bexsign_doc_id, prefix, year, seq_number, unique_hash, signer_name, signer_email, signature_status, signed_at) 
+VALUES
+(1, 'BEX-DOC-2026-0001-361682B4-ERZWVA2U19FQKOU0LTHEPYMCRKHTZR2MFDEBT65NAG', 'BEX-DOC', 2026, 1, '361682B4-ERZWVA2U19FQKOU0LTHEPYMCRKHTZR2MFDEBT65NAG', 'Vimal Chavda', 'vimal@bexcodeservices.com', 'Completed', '2026-08-26 16:29:34'),
+(2, 'BEX-DOC-2026-0002-482719A1-XZM9VWP8L23KQRT7JBVTYUN08OPQRS56FGHJKL89', 'BEX-DOC', 2026, 2, '482719A1-XZM9VWP8L23KQRT7JBVTYUN08OPQRS56FGHJKL89', 'Dhruv patel', 'dhruv@bexcodeservices.com', 'Completed', '2026-08-27 10:14:22'),
+(3, 'BEX-DOC-2026-0003-792015C3-KLMNOPQ845RSTUVW912XYZABC345DEF678GHI012', 'BEX-DOC', 2026, 3, '792015C3-KLMNOPQ845RSTUVW912XYZABC345DEF678GHI012', 'Vimal Chavda', 'vimal@bexcodeservices.com', 'In Progress', NULL),
+(4, 'BEX-DOC-2026-0004-920184F5-BCDEFGHIJKLMNOPQRSTUVWXYZA1234567890BCDEF', 'BEX-DOC', 2026, 4, '920184F5-BCDEFGHIJKLMNOPQRSTUVWXYZA1234567890BCDEF', 'Vimal Chavda', 'vimal@bexcodeservices.com', 'In Progress', NULL),
+(5, 'BEX-DOC-2026-0005-A1B2C3D4-E5F6G7H8I9J0K1L2M3N4O5P6Q7R8S9T0U1V2W3X4', 'BEX-DOC', 2026, 5, 'A1B2C3D4-E5F6G7H8I9J0K1L2M3N4O5P6Q7R8S9T0U1V2W3X4', 'Manu Yadav', 'manu.yadav@oladigital.health', 'Draft', NULL),
+(6, 'BEX-DOC-2026-0006-BWTDWUUD-T8GXL5TEDYMZAPXCWXX5K71290348719238471293', 'BEX-DOC', 2026, 6, 'BWTDWUUD-T8GXL5TEDYMZAPXCWXX5K71290348719238471293', 'Vimal Chavda', 'vimal@bexcodeservices.com', 'Draft', NULL);
+
+-- 40. Employee Signatures (Employee ID & Signature Stamps)
+CREATE TABLE IF NOT EXISTS employee_signatures (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  employee_id VARCHAR(50) NOT NULL UNIQUE,
+  employee_name VARCHAR(150) NOT NULL,
+  employee_email VARCHAR(255) NOT NULL,
+  designation VARCHAR(100) DEFAULT 'Software Specialist',
+  department VARCHAR(100) DEFAULT 'Engineering',
+  initials VARCHAR(10) DEFAULT 'VC',
+  signature_id VARCHAR(100) NOT NULL UNIQUE,
+  signature_image LONGTEXT NULL,
+  signature_style VARCHAR(50) DEFAULT 'font-signature-1',
+  status ENUM('Active', 'Inactive', 'Revoked') DEFAULT 'Active',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_employee_id (employee_id),
+  INDEX idx_signature_id (signature_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Seed initial records into employee_signatures
+INSERT IGNORE INTO employee_signatures
+(employee_id, employee_name, employee_email, designation, department, initials, signature_id, signature_style)
+VALUES
+('EMP001', 'Vimal Chavda', 'vimal@bexcodeservices.com', 'Lead Systems Engineer', 'Engineering', 'VC', 'BEX-SIGN-VC-EMP001-2026-361682B4', 'font-signature-1'),
+('EMP002', 'Manu Yadav', 'manu.yadav@oladigital.health', 'Operations Director', 'Operations', 'MY', 'BEX-SIGN-MY-EMP002-2026-781920A1', 'font-signature-2'),
+('EMP003', 'Dhruv Patel', 'dhruv@bexcodeservices.com', 'Quality Lead', 'Quality Assurance', 'DP', 'BEX-SIGN-DP-EMP003-2026-928371C3', 'font-signature-1');
+
+

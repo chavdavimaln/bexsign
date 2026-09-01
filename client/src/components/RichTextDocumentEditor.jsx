@@ -96,13 +96,20 @@ export default function RichTextDocumentEditor({ onBack }) {
       });
       const data = await res.json();
       if (data.documentId) {
-        navigate(`/documents/${data.documentId}/edit`);
+        navigate(`/documents/${data.documentId}/send`, {
+          state: {
+            fromCreate: true,
+            docName: fileName,
+            docContent: htmlContent,
+            docId: data.documentId
+          }
+        });
       } else {
-        navigate('/documents/1/edit');
+        navigate('/send-for-signatures');
       }
     } catch (e) {
       console.warn('Save fallback:', e);
-      navigate('/documents/1/edit');
+      navigate('/send-for-signatures');
     }
   };
 

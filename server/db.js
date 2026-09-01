@@ -22,6 +22,13 @@ const pool = mysql.createPool({
     const connection = await pool.getConnection();
     console.log(`[Database] Connected successfully to MySQL database: ${process.env.DB_NAME || 'db_bex_signature'}`);
     connection.release();
+    // Ensure document_identifiers table exists and is properly seeded
+    try {
+      const { ensureDocumentIdentifiersTable } = require('./utils/documentIdentifier');
+      await ensureDocumentIdentifiersTable();
+    } catch (e) {
+      console.warn('[Database] document_identifiers auto-setup:', e.message);
+    }
   } catch (err) {
     console.warn(`[Database Warning] Could not connect to MySQL database (${process.env.DB_NAME || 'db_bex_signature'}):`, err.message);
     console.warn('[Database Hint] Make sure MySQL service is running and db_bex_signature is imported in phpMyAdmin.');

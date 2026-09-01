@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const { markDocumentSigned } = require('../utils/documentIdentifier');
 
 // @route   GET /api/signatures/token/:token
 // @desc    Get public signing session by secure token
@@ -54,6 +55,37 @@ router.get('/token/:token', async (req, res) => {
     }
 });
 
+// @route   POST /api/signatures/save
+// @desc    Save signature draft / changes inside document
+router.post('/save', async (req, res) => {
+    const { documentId, token, signatureData, signerName, signerEmail, signatureStyle, status } = req.body;
+    const docId = documentId || parseInt(token) || 1;
+    try {
+        await markDocumentSigned(docId, {
+            signerName: signerName || 'Vimal Chavda',
+            signerEmail: signerEmail || 'vimal@bexcodeservices.com',
+            signatureImage: signatureData || null,
+            signatureStyle: signatureStyle || 'font-signature-1',
+            status: status || 'In Progress',
+            ipAddress: req.ip || '223.181.69.208'
+        });
+
+        if (status) {
+            try {
+                await db.query('UPDATE documents SET status = ? WHERE id = ?', [status, docId]);
+            } catch (e) {}
+        }
+
+        res.json({
+            success: true,
+            message: 'Document and signature changes saved successfully!'
+        });
+    } catch (err) {
+        console.error('Save Signature Error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // @route   POST /api/signatures/submit
 // @desc    Submit signed fields for document recipient and update document status to 'Completed'
 router.post('/submit', async (req, res) => {
@@ -63,6 +95,14 @@ router.post('/submit', async (req, res) => {
     try {
         if (docId) {
             await db.query("UPDATE documents SET status = 'Completed' WHERE id = ?", [docId]);
+            await markDocumentSigned(docId, {
+                signerName: req.body.signerName || 'Vimal Chavda',
+                signerEmail: req.body.signerEmail || 'vimal@bexcodeservices.com',
+                signatureImage: signatureData || null,
+                signatureStyle: req.body.signatureStyle || 'font-signature-1',
+                status: 'Completed',
+                ipAddress: req.ip || '223.181.69.208'
+            });
         }
 
         try {

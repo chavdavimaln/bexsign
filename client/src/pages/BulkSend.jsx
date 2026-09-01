@@ -78,30 +78,32 @@ export default function BulkSend() {
             <Table size={18} className="text-[#E71414]" /> 2. CSV Columns Mapping & Recipient Preview ({sampleData.length} Envelopes)
           </h2>
 
-          <div className="border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
-            <table className="w-full text-left text-xs border-collapse">
+          <div className="border border-slate-200 bg-white rounded-xl shadow-2xs w-full overflow-hidden">
+            <table className="w-full text-left text-xs border-collapse table-fixed">
               <thead>
-                <tr className="bg-slate-50 text-slate-500 uppercase font-bold border-b">
-                  <th className="p-3">Row</th>
-                  <th className="p-3">Signer Name</th>
-                  <th className="p-3">Signer Email</th>
-                  <th className="p-3">Company</th>
-                  <th className="p-3 text-right">Status</th>
+              <tr className="bg-slate-50 text-slate-500 uppercase font-bold border-b">
+                <th className="p-3 w-[14%] sm:w-[10%] md:w-[8%] whitespace-nowrap">Row</th>
+                <th className="p-3 w-[32%] sm:w-[28%] md:w-[26%] leading-tight">Signer Name</th>
+                <th className="p-3 w-[36%] sm:w-[32%] md:w-[28%] leading-tight">Signer Email</th>
+                <th className="p-3 hidden md:table-cell md:w-[24%] leading-tight">Company</th>
+                <th className="p-3 text-right w-[18%] sm:w-[16%] md:w-[14%] whitespace-nowrap">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 font-medium">
+              {sampleData.map((row, idx) => (
+                <tr key={idx} className="hover:bg-slate-50 transition">
+                  <td className="p-3 text-slate-400 font-mono whitespace-nowrap align-middle">#{idx + 1}</td>
+                  <td className="p-3 font-bold text-slate-900 break-words leading-snug align-middle">{row.name}</td>
+                  <td className="p-3 text-slate-600 break-all leading-snug align-middle">
+                    {row.email}
+                  </td>
+                  <td className="p-3 text-slate-600 hidden md:table-cell break-words leading-snug align-middle">{row.company}</td>
+                  <td className="p-3 text-right whitespace-nowrap align-middle">
+                    <span className="bg-emerald-100 text-emerald-800 text-[10px] px-2 py-0.5 rounded font-extrabold inline-block">Ready</span>
+                  </td>
                 </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 font-medium">
-                {sampleData.map((row, idx) => (
-                  <tr key={idx} className="hover:bg-slate-50">
-                    <td className="p-3 text-slate-400 font-mono">#{idx + 1}</td>
-                    <td className="p-3 font-bold text-slate-900">{row.name}</td>
-                    <td className="p-3 text-slate-600">{row.email}</td>
-                    <td className="p-3 text-slate-600">{row.company}</td>
-                    <td className="p-3 text-right">
-                      <span className="bg-emerald-100 text-emerald-800 text-[10px] px-2 py-0.5 rounded font-extrabold">Ready</span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
+              ))}
+            </tbody>
             </table>
           </div>
         </div>

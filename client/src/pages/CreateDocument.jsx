@@ -65,7 +65,7 @@ export default function CreateDocument() {
       </div>
 
       {/* Source Selection Tabs (Including Image 2 Rich Text Content Editor Tab) */}
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         <button
           onClick={() => setActiveTab('desktop')}
           className={`p-4 rounded-xl border flex flex-col items-center gap-2 font-semibold text-sm transition ${

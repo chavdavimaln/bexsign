@@ -1,6 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Send, Plus, Users, ShieldCheck, Clock, Mail, CheckCircle2, ArrowLeft, X, Lock, FileText, UserCheck, Eye, Sliders, ChevronDown } from 'lucide-react';
+import { Send, Plus, Users, ShieldCheck, Clock, Mail, CheckCircle2, ArrowLeft, X, Lock, FileText, UserCheck, Eye, Sliders, ChevronDown, FileCheck, Download } from 'lucide-react';
+import SignatureStamp from '../components/SignatureStamp';
+import { generateBexsignId } from '../utils/documentId';
+import { generateAndDownloadPdf } from '../utils/pdfGenerator';
+import { showPopupAlert } from '../components/GlobalAlertModal';
 
 export default function SendDocument() {
   const { id } = useParams();
@@ -23,6 +27,44 @@ export default function SendDocument() {
   const [autoReminders, setAutoReminders] = useState(true);
   const [reminderEveryDays, setReminderEveryDays] = useState('5');
   const [showMoreSettings, setShowMoreSettings] = useState(true);
+
+  // Signature Attachment & PDF Delivery (Task 1 & Task 2)
+  const [attachSignature, setAttachSignature] = useState(true);
+  const [senderSignatureName, setSenderSignatureName] = useState('Manu Yadav');
+  const [emailPdfCopy, setEmailPdfCopy] = useState(true);
+
+  // Load drafted document data when continuing a draft
+  useEffect(() => {
+    if (id) {
+      fetchDraftDetails();
+    }
+  }, [id]);
+
+  const fetchDraftDetails = async () => {
+    try {
+      const res = await fetch(`http://localhost:5000/api/documents/${id}`);
+      const data = await res.json();
+      if (data.success && data.document) {
+        setDocumentName(data.document.document_name || data.document.title || 'Document');
+        if (data.document.recipient_email || data.document.recipient) {
+          setRecipients([
+            {
+              id: 1,
+              name: data.document.recipient_name || 'Vimal Chavda',
+              email: data.document.recipient_email || data.document.recipient || 'vimal@bexcodeservices.com',
+              role: 'Needs to sign',
+              auth: 'Email OTP',
+              passcode: '',
+              privateNote: '',
+              fieldCount: 2
+            }
+          ]);
+        }
+      }
+    } catch (e) {
+      console.warn('Draft load fallback:', e);
+    }
+  };
 
   // Modals
   const [showAddRecipientModal, setShowAddRecipientModal] = useState(false);
@@ -307,6 +349,67 @@ export default function SendDocument() {
             ></textarea>
           </div>
         </div>
+
+        {/* Official Signature Attachment & PDF Delivery Options (Task 1 & Task 2) */}
+        <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-2xs space-y-4">
+          <div className="flex items-center justify-between border-b pb-3">
+            <div>
+              <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+                <FileCheck size={16} className="text-[#00a884]" /> Official Signature Attachment & PDF Email Delivery
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">Attach verified electronic signature stamp and generate PDF for email delivery</p>
+            </div>
+            <span className="text-[10px] font-black uppercase tracking-wider text-[#00a884] bg-emerald-50 px-2.5 py-1 rounded border border-emerald-200">
+              Verified Stamp
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center">
+            <div className="space-y-3 text-xs">
+              <label className="flex items-center gap-2 text-slate-800 font-bold cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={attachSignature}
+                  onChange={(e) => setAttachSignature(e.target.checked)}
+                  className="accent-[#00a884] h-4 w-4 rounded"
+                />
+                <span>Attach verified sender signature stamp</span>
+              </label>
+
+              <label className="flex items-center gap-2 text-slate-800 font-bold cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={emailPdfCopy}
+                  onChange={(e) => setEmailPdfCopy(e.target.checked)}
+                  className="accent-[#00a884] h-4 w-4 rounded"
+                />
+                <span>Generate & email signed PDF copy to all recipients upon dispatch</span>
+              </label>
+
+              <div className="pt-2">
+                <label className="block font-bold text-slate-700 mb-1">Signer Name on Attachment</label>
+                <input
+                  type="text"
+                  value={senderSignatureName}
+                  onChange={(e) => setSenderSignatureName(e.target.value)}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg font-semibold text-xs text-slate-900"
+                  placeholder="Signer name"
+                />
+              </div>
+            </div>
+
+            {/* Live Signature Attachment Preview Matching User Image */}
+            <div className="p-4 bg-slate-50/80 rounded-xl border border-slate-200 flex flex-col items-center justify-center space-y-2">
+              <span className="text-[10px] font-extrabold uppercase text-slate-500 tracking-wider">Live Signature Attachment Format</span>
+              <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-2xs">
+                <SignatureStamp
+                  signerName={senderSignatureName}
+                  docId={id || 1}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Add Recipient Modal */}
@@ -411,38 +514,75 @@ export default function SendDocument() {
 
             <p className="text-slate-600">Please verify the number of fields added for each recipient and confirm:</p>
 
-            <div className="border border-slate-200 rounded-lg overflow-hidden">
-              <table className="w-full text-left text-xs border-collapse">
+            <div className="border border-slate-200 rounded-lg overflow-hidden w-full">
+              <table className="w-full text-left text-xs border-collapse table-fixed">
                 <thead>
                   <tr className="bg-slate-50 text-slate-500 uppercase font-bold border-b">
-                    <th className="p-3">Recipient</th>
-                    <th className="p-3 text-right">Fields</th>
+                    <th className="p-3 w-[75%] leading-tight">Recipient</th>
+                    <th className="p-3 text-right w-[25%] whitespace-nowrap leading-tight">Fields</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 font-semibold text-slate-800">
                   {recipients.map((rec) => (
                     <tr key={rec.id}>
-                      <td className="p-3">{rec.email}</td>
-                      <td className="p-3 text-right font-mono font-bold text-[#00a884]">{rec.fieldCount}</td>
+                      <td className="p-3 break-all leading-snug align-middle" title={rec.email}>{rec.email}</td>
+                      <td className="p-3 text-right font-mono font-bold text-[#00a884] whitespace-nowrap align-middle">{rec.fieldCount}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
 
-            <div className="flex justify-end gap-2 pt-3 border-t">
+            {/* Signature Attachment & Delivery Notice */}
+            {attachSignature && (
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
+                <div className="flex items-center justify-between text-[11px] font-extrabold text-slate-700">
+                  <span>Attached Signature Stamp</span>
+                  <span className="text-[10px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 uppercase font-black">Ready to Embed</span>
+                </div>
+                <div className="bg-white p-3 rounded-lg border border-slate-200 shadow-2xs flex justify-center">
+                  <SignatureStamp
+                    signerName={senderSignatureName}
+                    docId={id || 1}
+                  />
+                </div>
+                {emailPdfCopy && (
+                  <p className="text-[11px] text-[#00a884] font-semibold flex items-center gap-1 pt-1">
+                    <Mail size={13} /> Signed PDF copy will be automatically generated and emailed to all recipients.
+                  </p>
+                )}
+              </div>
+            )}
+
+            <div className="flex justify-between items-center gap-2 pt-3 border-t">
               <button
-                onClick={() => setShowConfirmDetailsModal(false)}
-                className="px-4 py-2 border border-slate-300 rounded text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                type="button"
+                onClick={() => generateAndDownloadPdf({
+                  documentName,
+                  docId: id || 1,
+                  signerName: senderSignatureName,
+                  signerEmail: recipients[0]?.email || 'vimal@bexcodeservices.com',
+                  status: 'Draft Preview'
+                })}
+                className="px-3 py-2 border border-slate-300 rounded-lg text-xs font-semibold text-slate-700 hover:bg-slate-50 flex items-center gap-1.5"
               >
-                Cancel
+                <Download size={13} /> Preview PDF
               </button>
-              <button
-                onClick={handleConfirmAndSend}
-                className="bg-[#00a884] hover:bg-[#008f70] text-white px-5 py-2 rounded text-xs font-extrabold"
-              >
-                Confirm and send
-              </button>
+
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowConfirmDetailsModal(false)}
+                  className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleConfirmAndSend}
+                  className="bg-[#00a884] hover:bg-[#008f70] text-white px-5 py-2 rounded-lg text-xs font-extrabold shadow-xs flex items-center gap-1.5"
+                >
+                  <Send size={14} /> Confirm & Send via Email
+                </button>
+              </div>
             </div>
           </div>
         </div>

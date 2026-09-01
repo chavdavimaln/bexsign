@@ -10,9 +10,9 @@ export default function Integrations() {
   ];
 
   return (
-    <div className="p-6 bg-gray-50 h-full overflow-y-auto">
-      <h2 className="text-2xl font-bold text-black mb-6">Integrations & Apps</h2>
-      <div className="grid grid-cols-2 gap-6">
+    <div className="p-4 sm:p-6 bg-slate-50 h-full overflow-y-auto">
+      <h2 className="text-2xl font-bold text-slate-900 mb-6">Integrations & Apps</h2>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
         {integrationsList.map((item, idx) => (
           <div key={idx} className="bg-white p-5 rounded-lg shadow-sm border border-gray-200 flex flex-col justify-between">
             <div>

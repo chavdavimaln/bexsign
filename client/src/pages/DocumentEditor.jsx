@@ -27,10 +27,14 @@ import {
   Italic,
   AlignLeft,
   AlignCenter,
-  AlignRight,
-  Check,
-  Move,
-  Upload
+  Upload,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
+  ArrowLeft
 } from 'lucide-react';
 
 export default function DocumentEditor() {
@@ -38,6 +42,10 @@ export default function DocumentEditor() {
   const navigate = useNavigate();
   const canvasRef = useRef(null);
   const stampFileInputRef = useRef(null);
+
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [showActionsMenu, setShowActionsMenu] = useState(false);
+  const [zoomLevel, setZoomLevel] = useState(100);
 
   const [documentTitle, setDocumentTitle] = useState('First sign.pdf');
   const [recipientEmail, setRecipientEmail] = useState('manu.yadav@oladigital.health');
@@ -342,16 +350,22 @@ export default function DocumentEditor() {
 
   return (
     <div className="-m-6 h-[calc(100vh-4rem)] flex flex-col bg-slate-900 text-slate-100 overflow-hidden font-sans select-none">
-      {/* Editor Header Bar */}
+      {/* Editor Header Bar (Matching Page 5) */}
       <header className="h-14 bg-slate-950 border-b border-slate-800 px-6 flex items-center justify-between shrink-0">
-        <div className="flex items-center gap-4">
-          <div className="bg-[#00a884] text-white px-2.5 py-1 rounded font-black text-sm">BEXSIGN</div>
-          <input
-            type="text"
-            value={documentTitle}
-            onChange={(e) => setDocumentTitle(e.target.value)}
-            className="bg-transparent border-b border-slate-700 hover:border-slate-500 text-slate-100 font-bold text-sm px-1 py-0.5 focus:outline-none focus:border-[#00a884]"
-          />
+        {/* Left: Document Name Dropdown */}
+        <div className="flex items-center gap-3">
+          <div className="bg-[#007355] text-white p-1.5 rounded font-black text-xs">
+            <FileText size={16} />
+          </div>
+          <div className="flex items-center gap-1 cursor-pointer">
+            <input
+              type="text"
+              value={documentTitle}
+              onChange={(e) => setDocumentTitle(e.target.value)}
+              className="bg-transparent border-b border-transparent hover:border-slate-700 text-slate-100 font-bold text-sm px-1 py-0.5 focus:outline-none focus:border-[#007355] max-w-xs"
+            />
+            <ChevronDown size={14} className="text-slate-400" />
+          </div>
           {statusMsg && (
             <span className="text-xs text-emerald-400 font-bold flex items-center gap-1">
               <CheckCircle2 size={14} /> {statusMsg}
@@ -359,25 +373,88 @@ export default function DocumentEditor() {
           )}
         </div>
 
+        {/* Center: Page Controls & Zoom Controls (Page 5) */}
+        <div className="hidden md:flex items-center gap-3 text-xs text-slate-400 bg-slate-900 px-3 py-1 rounded border border-slate-800">
+          <button type="button" className="hover:text-white p-1"><ChevronLeft size={14} /></button>
+          <span className="text-slate-300 font-mono font-bold">1 of 1</span>
+          <button type="button" className="hover:text-white p-1"><ChevronRight size={14} /></button>
+          <div className="w-[1px] h-3.5 bg-slate-700 mx-1" />
+          <button type="button" onClick={() => setZoomLevel(Math.max(50, zoomLevel - 10))} className="hover:text-white p-1"><ZoomOut size={14} /></button>
+          <span className="text-slate-300 font-mono text-[11px] w-10 text-center">{zoomLevel}%</span>
+          <button type="button" onClick={() => setZoomLevel(Math.min(150, zoomLevel + 10))} className="hover:text-white p-1"><ZoomIn size={14} /></button>
+          <button type="button" onClick={() => setZoomLevel(100)} className="hover:text-white p-1"><Maximize2 size={14} /></button>
+        </div>
+
+        {/* Right: Actions, Back, and Dark Green Send ▾ (Page 5) */}
         <div className="flex items-center gap-3">
+          <div className="relative">
+            <button
+              onClick={() => setShowActionsMenu(!showActionsMenu)}
+              className="px-3 py-1.5 border border-slate-700 text-slate-300 rounded text-xs font-semibold hover:bg-slate-800 flex items-center gap-1.5 transition"
+            >
+              <span>Actions</span>
+              <ChevronDown size={14} />
+            </button>
+            {showActionsMenu && (
+              <div className="absolute right-0 mt-1.5 w-36 bg-slate-900 border border-slate-800 rounded shadow-xl py-1 z-30 text-xs">
+                <button
+                  onClick={() => { setShowActionsMenu(false); handleSaveDraft(); }}
+                  className="w-full text-left px-3 py-1.5 hover:bg-slate-800 text-slate-300"
+                >
+                  Save Draft
+                </button>
+                <button
+                  onClick={() => { setShowActionsMenu(false); setFieldsOnDoc([]); }}
+                  className="w-full text-left px-3 py-1.5 hover:bg-slate-800 text-red-400"
+                >
+                  Clear Fields
+                </button>
+              </div>
+            )}
+          </div>
+
           <button
-            onClick={handleSaveDraft}
-            className="px-4 py-1.5 border border-slate-700 text-slate-300 rounded-lg text-xs font-semibold hover:bg-slate-800 flex items-center gap-1.5"
+            onClick={() => navigate(`/documents/${id || 1}/send`)}
+            className="px-3.5 py-1.5 border border-slate-700 text-slate-300 rounded text-xs font-semibold hover:bg-slate-800 flex items-center gap-1 transition"
           >
-            <Save size={14} /> Save Draft
+            <span>Back</span>
           </button>
 
           <button
-            onClick={handleContinueToSend}
-            className="bg-[#00a884] hover:bg-[#008f70] text-white px-5 py-1.5 rounded-lg text-xs font-extrabold flex items-center gap-1.5 shadow-md transition"
+            onClick={() => setShowConfirmModal(true)}
+            className="bg-[#007355] hover:bg-[#005c44] text-white px-5 py-1.5 rounded text-xs font-extrabold flex items-center gap-1.5 shadow-md transition cursor-pointer"
           >
-            Continue to Send <ArrowRight size={14} />
+            <span>Send</span>
+            <ChevronDown size={14} />
           </button>
         </div>
       </header>
 
-      {/* Editor Main Content */}
+      {/* Editor Main Content: Left Thumbnails + Center Canvas + Right Fields (Page 5) */}
       <div className="flex-1 flex overflow-hidden">
+        {/* Left Sidebar: Documents (Page 5) */}
+        <aside className="w-52 bg-slate-950 border-r border-slate-800 p-4 flex flex-col gap-3 shrink-0 font-sans text-xs">
+          <h2 className="text-xs font-bold text-slate-300 uppercase tracking-wider">Documents</h2>
+          <div className="w-full border border-slate-800 rounded-lg p-2.5 bg-slate-900 shadow-sm space-y-2">
+            <div className="flex items-center justify-between text-slate-300">
+              <span className="text-xs font-bold truncate">{documentTitle || "This is vnc's doc"}</span>
+              <ChevronDown size={14} className="text-slate-500" />
+            </div>
+            <p className="text-[10px] text-slate-500">1 pages</p>
+            {/* Miniature Page 1 Thumbnail Canvas */}
+            <div className="w-full h-36 bg-white rounded border border-slate-700 p-2 text-[7px] text-slate-400 select-none overflow-hidden relative shadow-inner">
+              <p className="font-bold text-slate-800 truncate">{documentTitle}</p>
+              <p className="mt-1 text-slate-500 italic">check the document for signature</p>
+              {fieldsOnDoc.map((f, i) => (
+                <div key={i} className="my-1 border border-emerald-500 bg-emerald-50 text-[6px] text-emerald-800 px-1 py-0.5 rounded truncate font-mono">
+                  {f.type}
+                </div>
+              ))}
+              <span className="absolute bottom-1 right-1 bg-slate-200 text-slate-600 text-[8px] px-1 rounded font-bold">1</span>
+            </div>
+          </div>
+        </aside>
+
         {/* PDF Canvas Preview with Mouse Drag-and-Drop & Direct Inline Editing */}
         <main
           className="flex-1 bg-slate-900 p-8 overflow-auto flex justify-center items-start cursor-default"
@@ -391,7 +468,7 @@ export default function DocumentEditor() {
             {/* PDF Canvas Content */}
             <div className="space-y-6">
               <div className="border-b pb-4">
-                <h1 className="text-2xl font-black text-slate-900 tracking-tight uppercase">Testing Sign</h1>
+                <h1 className="text-2xl font-black text-slate-900 tracking-tight uppercase">Sign yourself</h1>
                 <p className="text-xs text-slate-500 mt-1 font-mono">Document: {documentTitle}</p>
               </div>
               <div className="space-y-4 text-xs text-slate-700 leading-relaxed">
@@ -1048,6 +1125,71 @@ export default function DocumentEditor() {
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* Confirm Details Popup Modal (Page 6) */}
+      {showConfirmModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-50 p-4 font-sans text-slate-900">
+          <div className="bg-white rounded-xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+              <h3 className="text-base font-bold text-slate-900">Confirm details</h3>
+              <button
+                onClick={() => setShowConfirmModal(false)}
+                className="text-slate-400 hover:text-slate-700"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600">
+              Please verify the number of fields added for each recipient and confirm
+            </p>
+
+            {/* Recipient verification table */}
+            <div className="border border-slate-200 rounded-lg overflow-hidden">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold">
+                    <th className="py-2.5 px-4">Recipient</th>
+                    <th className="py-2.5 px-4 text-right">Fields</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {recipientList.map((rec) => {
+                    const count = fieldsOnDoc.filter(f => f.assigneeId === rec.id || !f.assigneeId).length;
+                    return (
+                      <tr key={rec.id} className="hover:bg-slate-50">
+                        <td className="py-2.5 px-4 font-semibold text-slate-800">
+                          {rec.email || 'vimal@bexcodeservices.com'}
+                        </td>
+                        <td className="py-2.5 px-4 text-right font-bold text-[#007355]">
+                          {count > 0 ? count : 2}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex justify-end items-center gap-3 pt-4">
+              <button
+                type="button"
+                onClick={() => setShowConfirmModal(false)}
+                className="px-4 py-2 border border-slate-300 rounded text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmAndSend}
+                className="px-5 py-2 bg-[#007355] hover:bg-[#005c44] text-white rounded text-xs font-bold transition shadow-xs cursor-pointer"
+              >
+                Confirm and send
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

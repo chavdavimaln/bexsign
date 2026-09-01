@@ -20,6 +20,29 @@ export default function Dashboard() {
         </Link>
       </div>
 
+      {/* Zoho Sign Style Primary Hero Action Cards (Page 1) */}
+      <div className="flex flex-wrap justify-center items-center gap-6 py-4">
+        <Link
+          to="/send-for-signatures"
+          className="w-64 h-36 bg-white border-2 border-slate-200 hover:border-[#007355] rounded-xl flex flex-col items-center justify-center p-4 text-center shadow-xs hover:shadow-md transition group cursor-pointer"
+        >
+          <div className="p-3 text-[#007355] group-hover:scale-110 transition-transform">
+            <Send size={32} />
+          </div>
+          <span className="font-bold text-slate-800 text-base mt-1">Send for signatures</span>
+        </Link>
+
+        <Link
+          to="/sign-yourself"
+          className="w-64 h-36 bg-white border-2 border-slate-200 hover:border-[#007355] rounded-xl flex flex-col items-center justify-center p-4 text-center shadow-xs hover:shadow-md transition group cursor-pointer"
+        >
+          <div className="p-3 text-[#007355] group-hover:scale-110 transition-transform">
+            <PenTool size={32} />
+          </div>
+          <span className="font-bold text-slate-800 text-base mt-1">Sign yourself</span>
+        </Link>
+      </div>
+
       {/* Metric Counters (Section 6 PDF Requirement) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-2xs flex items-center justify-between">
@@ -122,47 +145,57 @@ export default function Dashboard() {
           </Link>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm border-collapse">
+        <div className="w-full">
+          <table className="w-full text-left text-xs sm:text-sm border-collapse table-fixed">
             <thead>
               <tr className="bg-slate-50 text-slate-500 border-b border-slate-200 text-xs font-semibold uppercase">
-                <th className="p-4">Document</th>
-                <th className="p-4">Recipient</th>
-                <th className="p-4">Status</th>
-                <th className="p-4">Date</th>
-                <th className="p-4 text-right">Actions</th>
+                <th className="p-3.5 sm:p-4 w-[34%] sm:w-[32%] leading-tight">Document</th>
+                <th className="p-3.5 sm:p-4 w-[32%] sm:w-[28%] leading-tight">Recipient</th>
+                <th className="p-3.5 sm:p-4 w-[18%] sm:w-[15%] whitespace-nowrap leading-tight">Status</th>
+                <th className="p-3.5 sm:p-4 hidden sm:table-cell sm:w-[13%] whitespace-nowrap leading-tight">Date</th>
+                <th className="p-3.5 sm:p-4 text-right w-[16%] sm:w-[12%] whitespace-nowrap leading-tight">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-slate-100 font-medium">
               <tr className="hover:bg-slate-50/80 transition">
-                <td className="p-4 font-semibold text-slate-900 flex items-center gap-2">
-                  <FileCheck size={18} className="text-slate-400" /> Contract.pdf
+                <td className="p-3.5 sm:p-4 font-semibold text-slate-900 align-middle">
+                  <div className="flex items-start gap-2">
+                    <FileCheck size={18} className="text-slate-400 shrink-0 mt-0.5" />
+                    <span className="break-all sm:break-words leading-snug" title="Contract.pdf">Contract.pdf</span>
+                  </div>
                 </td>
-                <td className="p-4 text-slate-600">John Doe (john@example.com)</td>
-                <td className="p-4">
-                  <span className="bg-amber-100 text-amber-800 font-semibold px-2.5 py-1 rounded-full text-xs">
+                <td className="p-3.5 sm:p-4 text-slate-600 align-middle break-all leading-snug">
+                  John Doe (john@example.com)
+                </td>
+                <td className="p-3.5 sm:p-4 whitespace-nowrap align-middle">
+                  <span className="bg-amber-100 text-amber-800 font-semibold px-2.5 py-1 rounded-full text-xs inline-block">
                     Pending
                   </span>
                 </td>
-                <td className="p-4 text-slate-500 text-xs">Aug 26, 2026</td>
-                <td className="p-4 text-right">
+                <td className="p-3.5 sm:p-4 text-slate-500 text-xs hidden sm:table-cell whitespace-nowrap align-middle">Aug 26, 2026</td>
+                <td className="p-3.5 sm:p-4 text-right whitespace-nowrap align-middle">
                   <Link to="/documents/sign/1" className="text-[#E71414] font-semibold hover:underline text-xs">
                     View & Send
                   </Link>
                 </td>
               </tr>
               <tr className="hover:bg-slate-50/80 transition">
-                <td className="p-4 font-semibold text-slate-900 flex items-center gap-2">
-                  <FileCheck size={18} className="text-emerald-500" /> Agreement.pdf
+                <td className="p-3.5 sm:p-4 font-semibold text-slate-900 align-middle">
+                  <div className="flex items-start gap-2">
+                    <FileCheck size={18} className="text-emerald-500 shrink-0 mt-0.5" />
+                    <span className="break-all sm:break-words leading-snug" title="Agreement.pdf">Agreement.pdf</span>
+                  </div>
                 </td>
-                <td className="p-4 text-slate-600">Sarah Connor (sarah@example.com)</td>
-                <td className="p-4">
-                  <span className="bg-emerald-100 text-emerald-800 font-semibold px-2.5 py-1 rounded-full text-xs">
+                <td className="p-3.5 sm:p-4 text-slate-600 align-middle break-all leading-snug">
+                  Sarah Connor (sarah@example.com)
+                </td>
+                <td className="p-3.5 sm:p-4 whitespace-nowrap align-middle">
+                  <span className="bg-emerald-100 text-emerald-800 font-semibold px-2.5 py-1 rounded-full text-xs inline-block">
                     Completed
                   </span>
                 </td>
-                <td className="p-4 text-slate-500 text-xs">Aug 25, 2026</td>
-                <td className="p-4 text-right">
+                <td className="p-3.5 sm:p-4 text-slate-500 text-xs hidden sm:table-cell whitespace-nowrap align-middle">Aug 25, 2026</td>
+                <td className="p-3.5 sm:p-4 text-right whitespace-nowrap align-middle">
                   <a href="#download" className="text-slate-600 font-semibold hover:underline text-xs">
                     Download
                   </a>

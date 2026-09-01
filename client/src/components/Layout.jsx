@@ -292,11 +292,11 @@ export default function Layout() {
       </aside>
 
       {/* Main Container */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
         {/* Top Navigation Header */}
-        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 shadow-xs shrink-0">
+        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 sm:px-6 shadow-xs shrink-0">
           {/* Search bar */}
-          <div className="relative w-80">
+          <div className="relative w-48 sm:w-80">
             <input
               type="text"
               placeholder="Search documents, recipients, templates..."
@@ -336,7 +336,7 @@ export default function Layout() {
         </header>
 
         {/* Dynamic Main View */}
-        <main className="flex-1 overflow-x-hidden overflow-y-auto bg-slate-50 p-6">
+        <main className="flex-1 overflow-y-auto bg-slate-50 p-4 sm:p-6 min-w-0">
           <Outlet />
         </main>
       </div>

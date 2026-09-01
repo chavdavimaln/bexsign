@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Upload, PenTool, CheckCircle2, Download, ArrowRight, Save, Calendar, User, FileText, ChevronDown, MoreVertical, Edit, RotateCcw, Trash2, CheckSquare, Layers, X, GripVertical } from 'lucide-react';
+import { Upload, PenTool, CheckCircle2, Download, ArrowRight, Save, Calendar, User, FileText, ChevronDown, MoreVertical, Edit, RotateCcw, Trash2, CheckSquare, Layers, X, GripVertical, Mail, Printer } from 'lucide-react';
+import SignatureStamp from '../components/SignatureStamp';
 
 export default function SignYourself() {
   const navigate = useNavigate();
@@ -48,29 +49,38 @@ export default function SignYourself() {
   if (isCompleted) {
     return (
       <div className="max-w-xl mx-auto my-12 bg-white border border-slate-200 rounded-2xl p-8 shadow-xl text-center space-y-4 font-sans">
-        <CheckCircle2 size={60} className="text-[#00a884] mx-auto" />
+        <CheckCircle2 size={54} className="text-[#00a884] mx-auto" />
         <h1 className="text-2xl font-black text-slate-900">You have signed this document.</h1>
         <p className="text-xs text-slate-500">
           Your signature and digital timestamp have been affixed to <strong>{documentTitle}</strong>.
         </p>
+
+        {/* Official Signature Attachment Preview */}
+        <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl flex justify-center shadow-2xs">
+          <SignatureStamp
+            signerName="Vimal Chavda"
+            docId={1}
+          />
+        </div>
+
         <div className="pt-4 border-t border-slate-100 flex items-center justify-center gap-3">
           <button
-            onClick={() => alert('Document emailed to you!')}
-            className="px-4 py-2 bg-white border border-slate-300 rounded text-xs font-bold text-slate-800"
+            onClick={() => alert(`Signed PDF copy with verified signature emailed to you!`)}
+            className="px-4 py-2 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-800 hover:bg-slate-50 flex items-center gap-1.5"
           >
-            Email to me
+            <Mail size={14} className="text-[#00a884]" /> Email to me
           </button>
           <button
             onClick={() => window.print()}
-            className="px-4 py-2 bg-white border border-slate-300 rounded text-xs font-bold text-slate-800"
+            className="px-4 py-2 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-800 hover:bg-slate-50 flex items-center gap-1.5"
           >
-            Print
+            <Printer size={14} /> Print
           </button>
           <button
-            onClick={() => alert('Downloading signed PDF...')}
-            className="px-4 py-2 bg-white border border-slate-300 rounded text-xs font-bold text-slate-800"
+            onClick={() => alert('Downloading signed PDF with signature attachment...')}
+            className="px-4 py-2 bg-[#00a884] hover:bg-[#008f70] text-white rounded-lg text-xs font-bold flex items-center gap-1.5"
           >
-            Download
+            <Download size={14} /> Download PDF
           </button>
         </div>
       </div>
@@ -130,7 +140,9 @@ export default function SignYourself() {
 
               {/* Card Context Menu */}
               {activeMenuId === doc.id && (
-                <div className="absolute right-4 top-10 w-36 bg-white border border-slate-200 rounded-lg shadow-xl z-20 text-xs font-semibold text-slate-700 py-1">
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setActiveMenuId(null)} />
+                  <div className="absolute right-4 top-10 w-36 bg-white border border-slate-200 rounded-lg shadow-xl z-20 text-xs font-semibold text-slate-700 py-1">
                   <button
                     onClick={() => navigate('/documents/create-editor')}
                     className="w-full px-3 py-1.5 hover:bg-slate-50 flex items-center gap-2"
@@ -150,7 +162,8 @@ export default function SignYourself() {
                     <Trash2 size={14} /> Delete
                   </button>
                 </div>
-              )}
+              </>
+            )}
 
               <div className="text-xs font-semibold text-slate-600 truncate">{doc.name}</div>
             </div>

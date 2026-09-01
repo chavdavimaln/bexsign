@@ -103,26 +103,28 @@ export default function Reports() {
       </div>
 
       {/* Reports Data Table (Page 20 PDF) */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
-        <table className="w-full text-left text-xs border-collapse">
+      <div className="bg-white rounded-xl border border-slate-200 shadow-2xs w-full overflow-hidden">
+        <table className="w-full text-left text-xs border-collapse table-fixed">
           <thead>
             <tr className="bg-slate-50 text-slate-500 uppercase font-extrabold border-b border-slate-200">
-              <th className="p-3.5">DOCUMENT NAME</th>
-              <th className="p-3.5">OWNER</th>
-              <th className="p-3.5">DOCUMENT TYPE</th>
-              <th className="p-3.5">SENT ON</th>
-              <th className="p-3.5">STATUS</th>
+              <th className="p-3.5 w-[38%] sm:w-[32%] md:w-[28%] leading-tight">DOCUMENT NAME</th>
+              <th className="p-3.5 w-[24%] sm:w-[22%] md:w-[20%] leading-tight">OWNER</th>
+              <th className="p-3.5 hidden md:table-cell md:w-[18%] leading-tight whitespace-normal">DOCUMENT TYPE</th>
+              <th className="p-3.5 hidden sm:table-cell sm:w-[20%] md:w-[16%] whitespace-nowrap leading-tight">SENT ON</th>
+              <th className="p-3.5 w-[38%] sm:w-[26%] md:w-[18%] whitespace-nowrap leading-tight">STATUS</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 font-medium text-slate-800">
             {reportsData.map((row, idx) => (
-              <tr key={idx} className="hover:bg-slate-50">
-                <td className="p-3.5 font-bold">{row.name}</td>
-                <td className="p-3.5 text-slate-600">{row.owner}</td>
-                <td className="p-3.5 text-slate-500">{row.type}</td>
-                <td className="p-3.5 text-slate-500 font-mono text-[11px]">{row.sentOn}</td>
-                <td className="p-3.5">
-                  <span className={`px-2.5 py-1 rounded text-[10px] font-black tracking-wider ${row.statusColor}`}>
+              <tr key={idx} className="hover:bg-slate-50 transition">
+                <td className="p-3.5 font-bold text-slate-900 break-all sm:break-words leading-snug align-middle">
+                  {row.name}
+                </td>
+                <td className="p-3.5 text-slate-600 align-middle leading-snug break-words">{row.owner}</td>
+                <td className="p-3.5 text-slate-500 hidden md:table-cell align-middle leading-snug">{row.type}</td>
+                <td className="p-3.5 text-slate-500 font-mono text-[11px] hidden sm:table-cell whitespace-nowrap align-middle">{row.sentOn}</td>
+                <td className="p-3.5 whitespace-nowrap align-middle">
+                  <span className={`px-2.5 py-1 rounded text-[10px] font-black tracking-wider inline-block ${row.statusColor}`}>
                     ● {row.status}
                   </span>
                 </td>
