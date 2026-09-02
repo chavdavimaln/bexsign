@@ -1,4 +1,5 @@
 const db = require('../db');
+const crypto = require('crypto');
 
 /**
  * Server-side Document Identifier & BexSign Signature Tracking Utility
@@ -261,6 +262,55 @@ async function getOrCreateEmployeeSignature(empId = 'EMP001', details = {}) {
   return created[0];
 }
 
+async function getEmployeeSignatureByEmail(email) {
+  if (!email) return null;
+  await ensureEmployeeSignaturesTable();
+  const [rows] = await db.query('SELECT * FROM employee_signatures WHERE LOWER(employee_email) = LOWER(?)', [email.trim()]);
+  return rows.length > 0 ? rows[0] : null;
+}
+
+async function upsertEmployeeSignature({
+  name = 'Vimal Chavda',
+  email = 'vimal@bexcodeservices.com',
+  signatureImage = null,
+  signatureStyle = 'font-signature-1',
+  empId = null,
+  designation = 'Software Specialist',
+  department = 'Engineering'
+}) {
+  await ensureEmployeeSignaturesTable();
+  const cleanEmail = email.trim();
+  const existing = await getEmployeeSignatureByEmail(cleanEmail);
+
+  if (existing) {
+    await db.query(
+      `UPDATE employee_signatures 
+       SET employee_name = ?, 
+           signature_image = COALESCE(?, signature_image), 
+           signature_style = COALESCE(?, signature_style),
+           designation = COALESCE(?, designation),
+           department = COALESCE(?, department),
+           updated_at = NOW()
+       WHERE id = ?`,
+      [name, signatureImage, signatureStyle, designation, department, existing.id]
+    );
+    const [updated] = await db.query('SELECT * FROM employee_signatures WHERE id = ?', [existing.id]);
+    return updated[0];
+  } else {
+    const generatedEmpId = empId || `EMP${String(Math.floor(100 + Math.random() * 900))}`;
+    const sigId = generateEmployeeSignatureId(generatedEmpId, name);
+    const initials = name.split(' ').map(n => n[0]).join('').toUpperCase() || 'VC';
+
+    await db.query(
+      `INSERT INTO employee_signatures 
+       (employee_id, employee_name, employee_email, designation, department, initials, signature_id, signature_image, signature_style)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [generatedEmpId, name, cleanEmail, designation, department, initials, sigId, signatureImage, signatureStyle]
+    );
+    return await getEmployeeSignatureByEmail(cleanEmail);
+  }
+}
+
 // Auto-run ensure on load
 ensureDocumentIdentifiersTable();
 ensureEmployeeSignaturesTable();
@@ -272,5 +322,7 @@ module.exports = {
   getOrCreateDocumentIdentifier,
   markDocumentSigned,
   generateEmployeeSignatureId,
-  getOrCreateEmployeeSignature
+  getOrCreateEmployeeSignature,
+  getEmployeeSignatureByEmail,
+  upsertEmployeeSignature
 };

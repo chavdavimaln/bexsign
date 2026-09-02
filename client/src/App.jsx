@@ -27,6 +27,7 @@ import Reports from './pages/Reports';
 import Integrations from './pages/Integrations';
 import MyProfile from './pages/MyProfile';
 import Settings from './pages/Settings';
+import SignaturesModule from './pages/SignaturesModule';
 
 export default function App() {
   return (
@@ -64,7 +65,8 @@ export default function App() {
           {/* Quick Actions Shortcuts */}
           <Route path="/send-for-signatures" element={<SendForSignatures />} />
           <Route path="/sign-yourself" element={<SignYourself />} />
-          <Route path="/signatures" element={<SendForSignatures />} />
+          <Route path="/signatures" element={<SignaturesModule />} />
+          <Route path="/settings/signatures" element={<SignaturesModule />} />
 
           {/* Templates & Reports */}
           <Route path="/templates" element={<Templates />} />

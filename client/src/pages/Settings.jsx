@@ -128,9 +128,9 @@ export default function Settings() {
         {activeTab === 'Integrations' && (
           <div>
             <h2 className="text-xl font-bold mb-4">Integrations</h2>
-            <p className="text-sm text-gray-500 mb-6">Connect BexSign with external CRMs, cloud storage, and identity providers like Zoho CRM, Google Workspace, Stripe, and Zapier.</p>
+            <p className="text-sm text-gray-500 mb-6">Connect BexSign with external CRMs, cloud storage, and identity providers like Bexcode CRM, Google Workspace, Stripe, and Zapier.</p>
             <div className="grid grid-cols-3 gap-4">
-              {['Zoho CRM', 'Google Workspace', 'Microsoft 365', 'Stripe Identity', 'Dropbox', 'Zapier'].map((app) => (
+              {['Bexcode CRM', 'Google Workspace', 'Microsoft 365', 'Stripe Identity', 'Dropbox', 'Zapier'].map((app) => (
                 <div key={app} className="p-4 border rounded-lg flex justify-between items-center bg-gray-50">
                   <span className="font-semibold text-sm">{app}</span>
                   <button className="px-3 py-1 bg-white border border-gray-300 rounded text-xs font-semibold hover:border-bexPrimary hover:text-bexPrimary">Configure</button>

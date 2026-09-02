@@ -3,7 +3,7 @@ import { Layers } from 'lucide-react';
 
 export default function Integrations() {
   const integrationsList = [
-    { name: 'Zoho CRM', desc: 'Close deals quickly by sending documents directly from Zoho CRM.', status: 'Configured' },
+    { name: 'Bexcode CRM', desc: 'Close deals quickly by sending documents directly from Bexcode CRM.', status: 'Configured' },
     { name: 'Google Workspace', desc: 'Import users, provide single sign-on access, and sign documents effortlessly.', status: 'Configure' },
     { name: 'Stripe Identity', desc: 'Verify recipient identity using Stripe authentication services.', status: 'Configure' },
     { name: 'Zapier', desc: 'Connect BexSign with 5000+ applications using automated workflows.', status: 'Configure' },

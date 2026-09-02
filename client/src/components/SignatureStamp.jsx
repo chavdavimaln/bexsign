@@ -1,58 +1,61 @@
 import React from 'react';
-import { generateBexsignId, generateEmployeeSignatureId } from '../utils/documentId';
+import { generateEmployeeSignatureId } from '../utils/documentId';
 
 /**
- * SignatureStamp Component (Page 12 Format)
+ * SignatureStamp Component (Authentic 3-Tier Electronic Signature Stamp)
  * 
- * Implements the exact signature format requested:
- * a. Signed by: employee name
- * b. Sign (authentic handwritten cursive stroke / drawn / uploaded image)
- * c. Specific id – unique employee id with meaningful letters
+ * Matches reference image format:
+ * 1st: "Signed by: [employee name]"
+ * 2nd: Employee signature (handwritten stroke, uploaded image, or cursive style)
+ * 3rd: Sign ID (unique generated ID e.g. 413E5DE0947C46B... / BEX-SIGN-VC-EMP001-2026-361682B4)
+ * Bracket: Distinct left blue bracket with rounded corners connecting the top "Signed by:" and bottom Sign ID.
  */
 export default function SignatureStamp({
   signerName = 'Vimal Chavda',
   signatureImage = '',
   signatureStyle = 'font-signature-1',
+  signId = '',
   docId = 1,
   employeeId = 'EMP001',
   className = '',
   onClick = null,
-  showBaseline = true
+  showBaseline = true,
+  showByPrefix = false,
+  compact = false
 }) {
-  const fullSignatureId = typeof docId === 'string' && (docId.startsWith('BEX-SIGN') || docId.startsWith('BEX-DOC'))
-    ? (docId.startsWith('BEX-SIGN') ? docId : docId.replace('BEX-DOC', 'BEX-SIGN-VC-EMP001'))
-    : generateEmployeeSignatureId(employeeId, signerName);
+  // Determine unique signature ID
+  const effectiveSignId = signId 
+    ? signId 
+    : (typeof docId === 'string' && (docId.startsWith('BEX-SIGN') || docId.startsWith('BEX-DOC'))
+        ? (docId.startsWith('BEX-SIGN') ? docId : docId.replace('BEX-DOC', 'BEX-SIGN-VC-EMP001'))
+        : generateEmployeeSignatureId(employeeId, signerName));
 
-  // Split Doc ID cleanly into two visible lines without truncation
-  let docIdLine1 = '';
-  let docIdLine2 = '';
-
-  if (fullSignatureId.length > 25) {
-    const splitIndex = fullSignatureId.lastIndexOf('-', 28);
-    if (splitIndex !== -1 && splitIndex > 15) {
-      docIdLine1 = fullSignatureId.substring(0, splitIndex);
-      docIdLine2 = fullSignatureId.substring(splitIndex + 1);
+  // Display ID cleanly (if very long, split into 2 neat lines)
+  let idLine1 = effectiveSignId;
+  let idLine2 = '';
+  if (effectiveSignId.length > 26) {
+    const dashIdx = effectiveSignId.lastIndexOf('-', 28);
+    if (dashIdx > 14) {
+      idLine1 = effectiveSignId.substring(0, dashIdx);
+      idLine2 = effectiveSignId.substring(dashIdx + 1);
     } else {
-      docIdLine1 = fullSignatureId.substring(0, 24);
-      docIdLine2 = fullSignatureId.substring(24);
+      idLine1 = effectiveSignId.substring(0, 24);
+      idLine2 = effectiveSignId.substring(24);
     }
-  } else {
-    docIdLine1 = fullSignatureId;
-    docIdLine2 = 'SECURE-VERIFIED-BEXSIGN';
   }
 
-  // Realistic handwritten stroke SVG fallback when no custom image or drawing is provided
+  // Authentic handwritten signature stroke matching reference image
   const defaultSignatureSvg = (
-    <svg viewBox="0 0 200 65" className="h-12 w-48 stroke-slate-800 fill-none" xmlns="http://www.w3.org/2000/svg">
+    <svg viewBox="0 0 220 70" className="h-12 w-48 stroke-[#1c2434] fill-none" xmlns="http://www.w3.org/2000/svg">
       <path 
-        d="M 15 35 Q 25 10 35 30 Q 45 50 30 55 Q 20 52 35 25 Q 50 5 60 40 Q 65 52 75 35 Q 90 10 100 35 Q 115 50 130 38 Q 145 25 155 45 Q 165 55 185 28" 
-        strokeWidth="1.8" 
+        d="M 18 42 Q 28 12 40 32 Q 52 52 38 56 Q 25 54 42 24 Q 60 4 72 42 Q 78 54 90 34 Q 106 12 118 36 Q 134 52 152 38 Q 168 24 180 44 Q 192 56 210 26" 
+        strokeWidth="2.2" 
         strokeLinecap="round" 
         strokeLinejoin="round" 
       />
       <path 
-        d="M 25 45 Q 60 42 110 40 Q 150 38 180 32" 
-        strokeWidth="1.4" 
+        d="M 28 48 Q 70 44 125 42 Q 170 39 205 32" 
+        strokeWidth="1.6" 
         strokeLinecap="round" 
         opacity="0.85" 
       />
@@ -62,34 +65,41 @@ export default function SignatureStamp({
   return (
     <div 
       onClick={onClick}
-      className={`inline-block select-none ${onClick ? 'cursor-pointer hover:opacity-95' : ''} ${className}`}
+      className={`inline-flex items-end select-none ${onClick ? 'cursor-pointer hover:opacity-95' : ''} ${className}`}
       title="Verified BexSign Electronic Signature"
     >
-      <div className="relative py-1 pr-3">
-        {/* Main Signature Block */}
-        <div className="flex flex-col relative">
+      {/* Optional "By: " prefix with baseline on the left matching image */}
+      {showByPrefix && (
+        <div className="flex items-baseline pr-1 font-serif text-lg text-slate-900 pb-2">
+          <span>By:</span>
+        </div>
+      )}
+
+      <div className="relative py-1 pr-2">
+        {/* Main 3-Part Signature Frame */}
+        <div className="flex flex-col relative min-w-[210px]">
           
-          {/* 1st: "Signed by:" with Top Blue Curved Bracket */}
+          {/* 1st: Top Blue Bracket & "Signed by: [employee name]" */}
           <div className="flex items-center">
-            {/* Top-left blue curved bracket */}
-            <div className="w-3.5 h-3 border-l-2 border-t-2 border-[#1c4b82] rounded-tl-md shrink-0" />
-            <div className="w-1 border-t-2 border-[#1c4b82] shrink-0" />
+            {/* Top-left rounded blue bracket */}
+            <div className="w-3.5 h-3 border-l-[2.5px] border-t-[2.5px] border-[#1c4b82] rounded-tl-[6px] shrink-0" />
+            <div className="w-1 border-t-[2.5px] border-[#1c4b82] shrink-0" />
             
-            <span className="text-[11px] font-extrabold text-[#1c4b82] tracking-tight px-1 font-sans">
+            <span className="text-[11px] font-black text-[#1c4b82] tracking-tight px-1 font-sans">
               Signed by:
             </span>
 
             {signerName && (
-              <span className="text-[11px] font-semibold text-slate-700 truncate max-w-[140px] font-sans">
+              <span className="text-[11px] font-bold text-slate-800 truncate max-w-[140px] font-sans">
                 {signerName}
               </span>
             )}
           </div>
 
-          {/* 2nd: Center Signature Image / Drawing */}
-          <div className="relative pl-3.5 pr-2 py-0.5 flex items-center min-h-[50px] overflow-visible">
-            {/* Left vertical continuous blue line */}
-            <div className="absolute left-0 top-0 bottom-0 w-[2px] bg-[#1c4b82]" />
+          {/* 2nd: Center Employee Signature */}
+          <div className="relative pl-3.5 pr-2 py-0.5 flex items-center min-h-[48px] overflow-visible">
+            {/* Left vertical continuous blue bracket line */}
+            <div className="absolute left-0 top-0 bottom-0 w-[2.5px] bg-[#1c4b82]" />
 
             {/* Signature rendering */}
             <div className="py-1">
@@ -103,11 +113,15 @@ export default function SignatureStamp({
                   />
                 ) : (
                   <span className={`text-2xl text-slate-900 leading-none select-none ${signatureStyle}`}>
-                    {signerName}
+                    {signatureImage}
                   </span>
                 )
+              ) : signerName ? (
+                <span className={`text-2xl text-slate-900 leading-none select-none ${signatureStyle}`}>
+                  {signerName}
+                </span>
               ) : (
-                /* Authentic handwritten signature stroke matching image */
+                /* Authentic handwritten stroke */
                 <div className="flex items-center">
                   {defaultSignatureSvg}
                 </div>
@@ -115,22 +129,22 @@ export default function SignatureStamp({
             </div>
           </div>
 
-          {/* 3rd: Bottom Baseline & Blue Bracket Curve Leading into Small Doc ID in Two Lines */}
+          {/* 3rd: Bottom Baseline & Blue Bracket Curve Leading into Sign ID */}
           <div className="relative">
-            {/* Horizontal baseline line extending across */}
+            {/* Horizontal baseline line extending under signature */}
             {showBaseline && (
-              <div className="absolute left-0 right-0 top-0 border-b border-slate-700/60" />
+              <div className="absolute -left-3 right-0 top-0 border-b border-slate-700/60" />
             )}
 
-            <div className="flex items-start">
-              {/* Bottom-left blue curved bracket */}
-              <div className="w-3.5 h-3 border-l-2 border-b-2 border-[#1c4b82] rounded-bl-md shrink-0" />
-              <div className="w-1 border-b-2 border-[#1c4b82] shrink-0" />
+            <div className="flex items-start pt-[1px]">
+              {/* Bottom-left rounded blue bracket */}
+              <div className="w-3.5 h-3 border-l-[2.5px] border-b-[2.5px] border-[#1c4b82] rounded-bl-[6px] shrink-0" />
+              <div className="w-1 border-b-[2.5px] border-[#1c4b82] shrink-0" />
 
-              {/* Small Doc ID properly visible in two lines without 3 dots */}
+              {/* Unique Sign ID in monospace font */}
               <div className="pl-1 text-[9px] font-mono font-bold text-slate-700 leading-[1.15] select-all break-all max-w-[260px]">
-                <div className="tracking-tighter">{docIdLine1}</div>
-                <div className="tracking-tighter">{docIdLine2}</div>
+                <div className="tracking-tight text-slate-800">{idLine1}</div>
+                {idLine2 && <div className="tracking-tight text-slate-800">{idLine2}</div>}
               </div>
             </div>
           </div>

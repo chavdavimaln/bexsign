@@ -20,7 +20,7 @@ export default function Dashboard() {
         </Link>
       </div>
 
-      {/* Zoho Sign Style Primary Hero Action Cards (Page 1) */}
+      {/* BexSign Primary Hero Action Cards (Page 1) */}
       <div className="flex flex-wrap justify-center items-center gap-6 py-4">
         <Link
           to="/send-for-signatures"

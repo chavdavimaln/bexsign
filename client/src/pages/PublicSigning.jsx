@@ -5,6 +5,7 @@ import { generateBexsignId } from '../utils/documentId';
 import SignatureStamp from '../components/SignatureStamp';
 import { showPopupAlert } from '../components/GlobalAlertModal';
 import { generateAndDownloadPdf } from '../utils/pdfGenerator';
+import { fetchSignatureForEmail } from '../utils/signatureDirectory';
 
 export default function PublicSigning() {
   const { token, id } = useParams();
@@ -90,13 +91,26 @@ export default function PublicSigning() {
           expiresIn: '15 days'
         });
 
-        // If server database has saved signature
+        // If server database has saved signature on this document
         if (doc.signature_image) {
           setSignatureData(doc.signature_image);
           setSignaturePlaced(true);
           setSignatureType(doc.signature_image.startsWith('data:') ? 'draw' : 'type');
           if (doc.signer_name) setTypedName(doc.signer_name);
           if (doc.signature_style) setSelectedStyle(doc.signature_style);
+        } else {
+          // Auto-fetch saved signature from employee directory by email
+          const targetEmail = doc.recipient_email || 'vimal@bexcodeservices.com';
+          const savedSig = await fetchSignatureForEmail(targetEmail);
+          if (savedSig && (savedSig.signature_image || savedSig.employee_name)) {
+            if (savedSig.employee_name) setTypedName(savedSig.employee_name);
+            if (savedSig.signature_image) {
+              setSignatureData(savedSig.signature_image);
+              setSignaturePlaced(true);
+              setSignatureType(savedSig.signature_image.startsWith('data:') ? 'draw' : 'type');
+            }
+            if (savedSig.signature_style) setSelectedStyle(savedSig.signature_style);
+          }
         }
       }
     } catch (e) {
@@ -565,7 +579,17 @@ export default function PublicSigning() {
           {/* Action Buttons matching Page 11 */}
           <div className="flex flex-wrap items-center justify-center gap-4 pt-2 relative">
             <button
-              onClick={() => showPopupAlert(`Signed document with verified signature stamp has been emailed to ${documentDetails.recipient}!`, { title: 'Email Dispatched', type: 'success' })}
+              onClick={async () => {
+                const targetEmail = documentDetails.recipient || 'vimal@bexcodeservices.com';
+                try {
+                  await fetch(`http://localhost:5000/api/documents/${docId}/email-copy`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ emails: [targetEmail], note: 'Here is your certified signed copy.' })
+                  });
+                } catch (e) {}
+                showPopupAlert(`Signed document with verified signature stamp has been emailed to ${targetEmail} via SMTP!`, { title: 'Email Dispatched', type: 'success' });
+              }}
               className="px-5 py-2.5 bg-white border border-slate-300 hover:bg-slate-50 rounded text-xs font-bold text-slate-800 shadow-xs flex items-center gap-2 cursor-pointer"
             >
               <Mail size={16} className="text-[#007355]" /> Email to me

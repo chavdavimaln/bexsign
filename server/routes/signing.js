@@ -1,10 +1,15 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
-const { markDocumentSigned } = require('../utils/documentIdentifier');
+const { 
+    markDocumentSigned, 
+    getEmployeeSignatureByEmail, 
+    upsertEmployeeSignature 
+} = require('../utils/documentIdentifier');
+const { sendDocumentCompletedEmail } = require('../utils/emailService');
 
 // @route   GET /api/signatures/token/:token
-// @desc    Get public signing session by secure token
+// @desc    Get public signing session by secure token and auto-fetch saved signature
 router.get('/token/:token', async (req, res) => {
     const { token } = req.params;
     try {
@@ -18,23 +23,30 @@ router.get('/token/:token', async (req, res) => {
         );
 
         if (!recipients || recipients.length === 0) {
-            // Fallback for demonstration / test token
+            // Check if document ID was passed directly
+            const docId = parseInt(token) || 1;
+            const [docs] = await db.query('SELECT * FROM documents WHERE id = ?', [docId]);
+            const doc = docs[0] || {};
+            const email = doc.recipient_email || 'vimal@bexcodeservices.com';
+            const existingSig = await getEmployeeSignatureByEmail(email);
+
             return res.json({
                 success: true,
                 recipient: {
                     id: 1,
-                    name: 'John Doe',
-                    email: 'john@example.com',
+                    name: existingSig?.employee_name || 'Vimal Chavda',
+                    email: email,
                     role: 'signer',
                     status: 'pending',
-                    document_title: 'Employment Agreement.pdf',
-                    custom_message: 'Please review and sign this agreement.',
-                    file_path: '/uploads/sample.pdf'
+                    document_title: doc.document_name || 'Employment Agreement.pdf',
+                    custom_message: doc.custom_message || 'Please review and sign this agreement.',
+                    file_path: doc.file_path || '/uploads/sample.pdf'
                 },
                 fields: [
                     { id: 101, field_type: 'Signature', label: 'Signature', pos_x: 200, pos_y: 400, is_required: true, recipient_id: 1 },
                     { id: 102, field_type: 'Date', label: 'Date Signed', pos_x: 420, pos_y: 400, is_required: true, recipient_id: 1 }
-                ]
+                ],
+                existingSignature: existingSig
             });
         }
 
@@ -44,10 +56,14 @@ router.get('/token/:token', async (req, res) => {
             [recipient.document_id]
         );
 
+        // Auto-fetch signature from employee_signatures by email
+        const existingSig = await getEmployeeSignatureByEmail(recipient.email);
+
         res.json({
             success: true,
             recipient,
-            fields: fields || []
+            fields: fields || [],
+            existingSignature: existingSig
         });
     } catch (err) {
         console.error('Error fetching signing token session:', err);
@@ -56,19 +72,36 @@ router.get('/token/:token', async (req, res) => {
 });
 
 // @route   POST /api/signatures/save
-// @desc    Save signature draft / changes inside document
+// @desc    Save signature draft / changes inside document and sync employee_signatures
 router.post('/save', async (req, res) => {
     const { documentId, token, signatureData, signerName, signerEmail, signatureStyle, status } = req.body;
     const docId = documentId || parseInt(token) || 1;
+    const name = signerName || 'Vimal Chavda';
+    const email = signerEmail || 'vimal@bexcodeservices.com';
+
     try {
         await markDocumentSigned(docId, {
-            signerName: signerName || 'Vimal Chavda',
-            signerEmail: signerEmail || 'vimal@bexcodeservices.com',
+            signerName: name,
+            signerEmail: email,
             signatureImage: signatureData || null,
             signatureStyle: signatureStyle || 'font-signature-1',
             status: status || 'In Progress',
             ipAddress: req.ip || '223.181.69.208'
         });
+
+        // Upsert into employee_signatures table
+        if (signatureData || signatureStyle) {
+            try {
+                await upsertEmployeeSignature({
+                    name,
+                    email,
+                    signatureImage: signatureData || null,
+                    signatureStyle: signatureStyle || 'font-signature-1'
+                });
+            } catch (eSig) {
+                console.warn('Upsert employee signature warning:', eSig.message);
+            }
+        }
 
         if (status) {
             try {
@@ -89,27 +122,53 @@ router.post('/save', async (req, res) => {
 // @route   POST /api/signatures/submit
 // @desc    Submit signed fields for document recipient and update document status to 'Completed'
 router.post('/submit', async (req, res) => {
-    const { token, recipientId, documentId, signatureData } = req.body;
+    const { token, recipientId, documentId, signatureData, signerName, signerEmail, signatureStyle } = req.body;
     const docId = documentId || parseInt(token) || 1;
+    const name = signerName || 'Vimal Chavda';
+    const email = signerEmail || 'vimal@bexcodeservices.com';
+    const style = signatureStyle || 'font-signature-1';
 
     try {
         if (docId) {
             await db.query("UPDATE documents SET status = 'Completed' WHERE id = ?", [docId]);
             await markDocumentSigned(docId, {
-                signerName: req.body.signerName || 'Vimal Chavda',
-                signerEmail: req.body.signerEmail || 'vimal@bexcodeservices.com',
+                signerName: name,
+                signerEmail: email,
                 signatureImage: signatureData || null,
-                signatureStyle: req.body.signatureStyle || 'font-signature-1',
+                signatureStyle: style,
                 status: 'Completed',
                 ipAddress: req.ip || '223.181.69.208'
             });
+
+            // Upsert into employee_signatures table for future auto-fetch
+            try {
+                await upsertEmployeeSignature({
+                    name,
+                    email,
+                    signatureImage: signatureData || null,
+                    signatureStyle: style
+                });
+            } catch (eSig) {}
+
+            // Send completed email
+            try {
+                const [docs] = await db.query('SELECT * FROM documents WHERE id = ?', [docId]);
+                const docTitle = docs[0]?.document_name || 'Document';
+                await sendDocumentCompletedEmail({
+                    to: email,
+                    documentName: docTitle,
+                    senderEmail: 'manu.yadav@oladigital.health'
+                });
+            } catch (eMail) {
+                console.warn('Completed email dispatch warning:', eMail.message);
+            }
         }
 
         try {
             await db.query(
                 `INSERT INTO activity_history (document_id, activity_description, ip_address)
                  VALUES (?, ?, ?)`,
-                [docId, `Document ID ${docId} electronically signed and marked Completed`, req.ip || '127.0.0.1']
+                [docId, `Document ID ${docId} electronically signed by ${name} (${email}) and marked Completed`, req.ip || '127.0.0.1']
             );
         } catch (e) {}
 

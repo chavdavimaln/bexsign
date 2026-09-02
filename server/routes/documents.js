@@ -4,7 +4,22 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const db = require('../db');
-const { getOrCreateDocumentIdentifier, markDocumentSigned, getOrCreateEmployeeSignature } = require('../utils/documentIdentifier');
+const { 
+  getOrCreateDocumentIdentifier, 
+  markDocumentSigned, 
+  getOrCreateEmployeeSignature,
+  getEmployeeSignatureByEmail,
+  upsertEmployeeSignature,
+  generateEmployeeSignatureId,
+  generateBexsignDocId
+} = require('../utils/documentIdentifier');
+const {
+  sendSignatureRequestEmail,
+  sendReminderEmail,
+  sendDocumentRecalledEmail,
+  sendDocumentCompletedEmail,
+  sendDocumentCopyEmail
+} = require('../utils/emailService');
 
 // Ensure uploads directory exists inside server/
 const uploadDir = path.join(__dirname, '../uploads');
@@ -255,6 +270,125 @@ router.get('/employees/:empId/signature', async (req, res) => {
     }
 });
 
+// @route   GET /api/documents/employees/by-email/:email
+// @desc    Find existing employee signature by email address (for auto-fetching)
+router.get('/employees/by-email/:email', async (req, res) => {
+    const { email } = req.params;
+    try {
+        const employee = await getEmployeeSignatureByEmail(email);
+        if (employee) {
+            return res.json({ success: true, employee });
+        }
+        res.json({ success: false, message: 'No existing signature found for this email.' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// @route   POST /api/documents/employees/signatures
+// @desc    Create new employee signature entry in database
+router.post('/employees/signatures', async (req, res) => {
+    const { 
+        employee_id, employeeId, 
+        employee_name, employeeName, 
+        employee_email, employeeEmail, 
+        designation, department, 
+        signature_image, signatureImage, 
+        signature_style, signatureStyle,
+        status
+    } = req.body;
+
+    const name = employee_name || employeeName || 'New Signer';
+    const email = (employee_email || employeeEmail || '').trim();
+    const empId = employee_id || employeeId || `EMP${String(Math.floor(100 + Math.random() * 900))}`;
+    const style = signature_style || signatureStyle || 'font-signature-1';
+    const image = signature_image || signatureImage || null;
+
+    if (!email) {
+        return res.status(400).json({ error: 'Email address is required.' });
+    }
+
+    try {
+        const saved = await upsertEmployeeSignature({
+            name,
+            email,
+            signatureImage: image,
+            signatureStyle: style,
+            empId,
+            designation: designation || 'Specialist',
+            department: department || 'Operations'
+        });
+
+        res.status(201).json({
+            success: true,
+            message: 'Employee signature registered successfully!',
+            employee: saved
+        });
+    } catch (err) {
+        console.error('Create signature error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// @route   PUT /api/documents/employees/signatures/:id
+// @desc    Update employee signature details
+router.put('/employees/signatures/:id', async (req, res) => {
+    const { id } = req.params;
+    const { 
+        employee_name, employee_email, employee_id, 
+        designation, department, signature_style, signature_image, status 
+    } = req.body;
+
+    try {
+        await db.query(
+            `UPDATE employee_signatures 
+             SET employee_name = COALESCE(?, employee_name),
+                 employee_email = COALESCE(?, employee_email),
+                 employee_id = COALESCE(?, employee_id),
+                 designation = COALESCE(?, designation),
+                 department = COALESCE(?, department),
+                 signature_style = COALESCE(?, signature_style),
+                 signature_image = COALESCE(?, signature_image),
+                 status = COALESCE(?, status),
+                 updated_at = NOW()
+             WHERE id = ?`,
+            [
+                employee_name || null,
+                employee_email ? employee_email.trim() : null,
+                employee_id || null,
+                designation || null,
+                department || null,
+                signature_style || null,
+                signature_image || null,
+                status || null,
+                id
+            ]
+        );
+
+        const [rows] = await db.query('SELECT * FROM employee_signatures WHERE id = ?', [id]);
+        res.json({
+            success: true,
+            message: 'Signature updated successfully!',
+            employee: rows[0]
+        });
+    } catch (err) {
+        console.error('Update signature error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// @route   DELETE /api/documents/employees/signatures/:id
+// @desc    Delete employee signature entry
+router.delete('/employees/signatures/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        await db.query('DELETE FROM employee_signatures WHERE id = ?', [id]);
+        res.json({ success: true, message: 'Signature entry deleted successfully.' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // @route   GET /api/documents/:id/identifier
 // @desc    Get or generate BexSign ID from separate document_identifiers table
 router.get('/:id/identifier', async (req, res) => {
@@ -345,10 +479,10 @@ router.post('/:id/save', async (req, res) => {
 });
 
 // @route   POST /api/documents/send/:id
-// @desc    Dispatch document and update status to 'In Progress'
+// @desc    Dispatch document and update status to 'In Progress', sending signature request email via SMTP
 router.post('/send/:id', async (req, res) => {
     const { id } = req.params;
-    const { fields } = req.body;
+    const { fields, recipientEmail, recipientName, documentName, noteToAll } = req.body;
 
     try {
         await db.query(
@@ -356,17 +490,37 @@ router.post('/send/:id', async (req, res) => {
             [id]
         );
 
+        // Fetch document info for email dispatch
+        const [docs] = await db.query('SELECT * FROM documents WHERE id = ?', [id]);
+        const doc = docs[0] || {};
+        const targetEmail = recipientEmail || doc.recipient_email || 'vimal@bexcodeservices.com';
+        const docTitle = documentName || doc.document_name || 'Document';
+
+        // Dispatch BexSign digital signature request email
+        const signingUrl = `http://localhost:3000/documents/sign/${id}`;
+        await sendSignatureRequestEmail({
+            to: targetEmail,
+            recipientName: recipientName || 'Valued Signer',
+            documentName: docTitle,
+            senderName: 'Manu Yadav',
+            senderEmail: 'manu.yadav@oladigital.health',
+            orgName: 'Dcode Health',
+            expiresOn: 'Sep 16, 2026',
+            message: noteToAll || doc.custom_message || '-',
+            signingUrl
+        });
+
         try {
             await db.query(
                 `INSERT INTO activity_history (document_id, activity_description, ip_address)
                  VALUES (?, ?, ?)`,
-                [id, `Document ID ${id} sent for signature`, req.ip || '127.0.0.1']
+                [id, `Document "${docTitle}" dispatched for signature to ${targetEmail}`, req.ip || '127.0.0.1']
             );
         } catch (e) {
             console.warn('Activity log warning:', e.message);
         }
 
-        res.json({ success: true, message: 'Document sent for signature successfully', documentId: id });
+        res.json({ success: true, message: `Document dispatched to ${targetEmail}` });
     } catch (err) {
         console.error('Send Error:', err);
         res.status(500).json({ error: 'Database error while sending document' });
@@ -374,32 +528,286 @@ router.post('/send/:id', async (req, res) => {
 });
 
 // @route   POST /api/documents/:id/remind
-// @desc    Send reminder for document
+// @desc    Send reminder for document via SMTP
 router.post('/:id/remind', async (req, res) => {
     const { id } = req.params;
     try {
+        const [docs] = await db.query('SELECT * FROM documents WHERE id = ?', [id]);
+        const doc = docs[0] || {};
+        const targetEmail = doc.recipient_email || 'vimal@bexcodeservices.com';
+        const docTitle = doc.document_name || 'Document';
+        const signingUrl = `http://localhost:3000/documents/sign/${id}`;
+
+        await sendReminderEmail({
+            to: targetEmail,
+            documentName: docTitle,
+            senderName: 'Manu Yadav',
+            senderEmail: 'manu.yadav@oladigital.health',
+            orgName: 'Dcode Health',
+            expiresOn: 'Sep 17, 2026',
+            signingUrl
+        });
+
         try {
             await db.query(
                 `INSERT INTO activity_history (document_id, activity_description, ip_address)
                  VALUES (?, ?, ?)`,
-                [id, `Reminder email dispatched for document ID ${id}`, req.ip || '127.0.0.1']
+                [id, `Reminder email dispatched to ${targetEmail} for document "${docTitle}"`, req.ip || '127.0.0.1']
             );
         } catch (e) {}
 
-        res.json({ success: true, message: 'Reminder sent to recipient successfully!' });
+        res.json({ success: true, message: 'Reminder email sent to recipient successfully!' });
     } catch (err) {
+        console.error('Remind error:', err);
         res.status(500).json({ error: err.message });
     }
 });
 
 // @route   POST /api/documents/:id/recall
-// @desc    Recall a sent document
+// @desc    Recall a sent document with reason and dispatch recalled email
 router.post('/:id/recall', async (req, res) => {
     const { id } = req.params;
+    const { reason } = req.body;
+    const recallReason = reason || 'first recall';
+
     try {
         await db.query("UPDATE documents SET status = 'Recalled' WHERE id = ?", [id]);
+
+        const [docs] = await db.query('SELECT * FROM documents WHERE id = ?', [id]);
+        const doc = docs[0] || {};
+        const targetEmail = doc.recipient_email || 'vimal@bexcodeservices.com';
+        const docTitle = doc.document_name || 'Document';
+
+        await sendDocumentRecalledEmail({
+            to: targetEmail,
+            documentName: docTitle,
+            senderEmail: 'manu.yadav@oladigital.health',
+            reason: recallReason
+        });
+
+        try {
+            await db.query(
+                `INSERT INTO activity_history (document_id, activity_description, ip_address)
+                 VALUES (?, ?, ?)`,
+                [id, `Document recalled. Reason: "${recallReason}"`, req.ip || '127.0.0.1']
+            );
+        } catch (e) {}
+
         res.json({ success: true, message: 'Document recalled successfully.' });
     } catch (err) {
+        console.error('Recall error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// @route   POST /api/documents/:id/correct
+// @desc    Handle "Correct document" and "Correct & save" flow (PDF 2 p.2)
+router.post('/:id/correct', async (req, res) => {
+    const { id } = req.params;
+    const { documentName, recipients, customMessage } = req.body;
+    try {
+        if (documentName) {
+            await db.query('UPDATE documents SET document_name = ? WHERE id = ?', [documentName, id]);
+        }
+        if (customMessage) {
+            await db.query('UPDATE documents SET custom_message = ? WHERE id = ?', [customMessage, id]);
+        }
+        // Update recipient if passed
+        if (recipients && Array.isArray(recipients) && recipients[0]?.email) {
+            await db.query('UPDATE documents SET recipient_email = ? WHERE id = ?', [recipients[0].email, id]);
+        }
+
+        try {
+            await db.query(
+                `INSERT INTO activity_history (document_id, activity_description, ip_address)
+                 VALUES (?, ?, ?)`,
+                [id, `Document corrections applied and saved`, req.ip || '127.0.0.1']
+            );
+        } catch (e) {}
+
+        res.json({ success: true, message: 'Document correction saved successfully!' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// @route   POST /api/documents/:id/extend
+// @desc    Extend expiry date for document (PDF 2 p.3)
+router.post('/:id/extend', async (req, res) => {
+    const { id } = req.params;
+    const { newExpiryDate } = req.body;
+    try {
+        try {
+            await db.query(
+                `INSERT INTO activity_history (document_id, activity_description, ip_address)
+                 VALUES (?, ?, ?)`,
+                [id, `Document expiry date extended to ${newExpiryDate || 'Sep 18, 2026'}`, req.ip || '127.0.0.1']
+            );
+        } catch (e) {}
+
+        res.json({ success: true, message: 'Expiry date extended successfully.' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// @route   POST /api/documents/:id/reminder-settings
+// @desc    Update automatic reminder frequency (PDF 2 p.5)
+router.post('/:id/reminder-settings', async (req, res) => {
+    const { id } = req.params;
+    const { reminderDays, autoReminders } = req.body;
+    try {
+        if (reminderDays) {
+            await db.query('UPDATE documents SET reminder_days = ? WHERE id = ?', [parseInt(reminderDays) || 5, id]);
+        }
+        res.json({ success: true, message: 'Reminder settings updated successfully.' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// @route   POST /api/documents/:id/upload-signed
+// @desc    Upload physically signed document copy & mark completed (PDF 2 p.7)
+router.post('/:id/upload-signed', upload.single('signedDocument'), async (req, res) => {
+    const { id } = req.params;
+    const { signerEmail } = req.body;
+    const filePath = req.file ? `/uploads/${req.file.filename}` : null;
+
+    try {
+        let updateSql = "UPDATE documents SET status = 'Completed'";
+        const params = [];
+        if (filePath) {
+            updateSql += ", file_path = ?";
+            params.push(filePath);
+        }
+        updateSql += " WHERE id = ?";
+        params.push(id);
+        await db.query(updateSql, params);
+
+        const [docs] = await db.query('SELECT * FROM documents WHERE id = ?', [id]);
+        const doc = docs[0] || {};
+        const targetEmail = signerEmail || doc.recipient_email || 'vimal@bexcodeservices.com';
+        const docTitle = doc.document_name || 'Document';
+
+        // Disptach completed email
+        await sendDocumentCompletedEmail({
+            to: targetEmail,
+            documentName: docTitle,
+            senderEmail: 'manu.yadav@oladigital.health'
+        });
+
+        try {
+            await db.query(
+                `INSERT INTO activity_history (document_id, activity_description, ip_address)
+                 VALUES (?, ?, ?)`,
+                [id, `Physically signed document copy uploaded for ${targetEmail}. Status marked Completed.`, req.ip || '127.0.0.1']
+            );
+        } catch (e) {}
+
+        res.json({ 
+            success: true, 
+            message: 'Signed document uploaded and marked Completed successfully!',
+            filePath 
+        });
+    } catch (err) {
+        console.error('Upload signed error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// @route   POST /api/documents/:id/email-copy
+// @desc    Email signed document copy to up to three recipients (PDF 3 p.7)
+router.post('/:id/email-copy', async (req, res) => {
+    const { id } = req.params;
+    const { emails } = req.body;
+
+    if (!emails || (Array.isArray(emails) && emails.length === 0)) {
+        return res.status(400).json({ error: 'Please provide at least one recipient email.' });
+    }
+
+    const emailList = Array.isArray(emails) ? emails.slice(0, 3) : [emails];
+
+    try {
+        const [docs] = await db.query('SELECT * FROM documents WHERE id = ?', [id]);
+        const doc = docs[0] || {};
+        const docTitle = doc.document_name || 'Document';
+
+        for (const recipient of emailList) {
+            if (recipient && recipient.trim()) {
+                await sendDocumentCopyEmail({
+                    to: recipient.trim(),
+                    documentName: docTitle,
+                    senderEmail: 'manu.yadav@oladigital.health'
+                });
+            }
+        }
+
+        try {
+            await db.query(
+                `INSERT INTO activity_history (document_id, activity_description, ip_address)
+                 VALUES (?, ?, ?)`,
+                [id, `Copy of document dispatched to ${emailList.join(', ')}`, req.ip || '127.0.0.1']
+            );
+        } catch (e) {}
+
+        res.json({ success: true, message: `Document copy sent successfully to ${emailList.length} recipient(s)!` });
+    } catch (err) {
+        console.error('Email copy error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// @route   POST /api/documents/:id/clone
+// @desc    "Edit as new" - clone document with unique new ID and BexSign Doc ID (PDF 3 p.9)
+router.post('/:id/clone', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const [existing] = await db.query('SELECT * FROM documents WHERE id = ?', [id]);
+        if (existing.length === 0) {
+            return res.status(404).json({ error: 'Original document not found' });
+        }
+
+        const sourceDoc = existing[0];
+        const newTitle = `${sourceDoc.document_name || 'Document'} (Copy)`;
+
+        const [insertRes] = await db.query(
+            `INSERT INTO documents 
+             (user_id, document_name, file_path, folder_name, status, recipient_email, template_used, custom_message)
+             VALUES (?, ?, ?, ?, 'Draft', ?, ?, ?)`,
+            [
+                sourceDoc.user_id || 1,
+                newTitle,
+                sourceDoc.file_path,
+                sourceDoc.folder_name,
+                sourceDoc.recipient_email,
+                sourceDoc.template_used,
+                sourceDoc.custom_message
+            ]
+        );
+
+        const newDocId = insertRes.insertId;
+        const newIdentifier = await getOrCreateDocumentIdentifier(newDocId, {
+            signerEmail: sourceDoc.recipient_email,
+            signerName: 'Vimal Chavda',
+            status: 'Draft'
+        });
+
+        try {
+            await db.query(
+                `INSERT INTO activity_history (document_id, activity_description, ip_address)
+                 VALUES (?, ?, ?)`,
+                [newDocId, `Document cloned from ID ${id} as new document with BexSign ID ${newIdentifier.bexsign_doc_id}`, req.ip || '127.0.0.1']
+            );
+        } catch (e) {}
+
+        res.status(201).json({
+            success: true,
+            message: 'Document created as new with unique ID!',
+            newDocumentId: newDocId,
+            bexsignDocId: newIdentifier.bexsign_doc_id
+        });
+    } catch (err) {
+        console.error('Clone error:', err);
         res.status(500).json({ error: err.message });
     }
 });

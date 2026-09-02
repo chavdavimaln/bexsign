@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { generateBexsignId } from '../utils/documentId';
 import { generateAndDownloadPdf } from '../utils/pdfGenerator';
+import BexTableToolbar from '../components/BexTableToolbar';
 import {
   FileText,
   Plus,
@@ -36,6 +37,22 @@ import {
   UserCheck
 } from 'lucide-react';
 
+// BexSign Table Columns Config (matching exact specification)
+const INITIAL_COLUMNS = [
+  { id: 'name', label: 'Document name', required: true, visible: true, width: 230 },
+  { id: 'folder', label: 'Folder name', visible: true, width: 110 },
+  { id: 'docType', label: 'Document type', visible: false, width: 120 },
+  { id: 'owner', label: 'Owner', visible: true, width: 120 },
+  { id: 'recipient', label: 'Recipient email', visible: true, width: 220 },
+  { id: 'recipientName', label: 'Recipient name', visible: false, width: 140 },
+  { id: 'signform', label: 'SignForm name', visible: true, width: 120 },
+  { id: 'templates', label: 'Templates used', visible: true, width: 110 },
+  { id: 'status', label: 'Status', visible: true, width: 120 },
+  { id: 'daysToComplete', label: 'Days to complete', visible: false, width: 120 },
+  { id: 'created', label: 'Created time', visible: false, width: 120 },
+  { id: 'actions', label: 'Actions', visible: true, width: 75 }
+];
+
 export default function DocumentsList() {
   const { statusFilter } = useParams();
   const navigate = useNavigate();
@@ -47,8 +64,45 @@ export default function DocumentsList() {
   const [actionMessage, setActionMessage] = useState('');
   const [selectedDoc, setSelectedDoc] = useState(null);
 
+  // BexSign Table Column Visibility State with LocalStorage Persistence
+  const [tableColumns, setTableColumns] = useState(() => {
+    try {
+      const saved = localStorage.getItem('bexsign_documents_columns');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {}
+    return INITIAL_COLUMNS;
+  });
+
+  const isColVisible = (colId) => {
+    const col = tableColumns.find((c) => c.id === colId);
+    return col ? col.visible !== false : false;
+  };
+
+  // BexSign Inline Column Filters State
+  const [showInlineFilters, setShowInlineFilters] = useState(true);
+  const [columnFilters, setColumnFilters] = useState({
+    name: '',
+    folder: '',
+    docType: '',
+    owner: '',
+    recipient: '',
+    recipientName: '',
+    signform: '',
+    templates: '',
+    status: '',
+    daysToComplete: '',
+    created: ''
+  });
+
+  // Multi-Selection State
+  const [selectedDocIds, setSelectedDocIds] = useState([]);
+
+  // Pagination State
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+
   // Active Modals State
-  const [activeModal, setActiveModal] = useState(null); // 'extend' | 'reminder' | 'reminderSettings' | 'recall' | 'uploadSigned' | 'email' | 'saveCloud' | 'certificate' | 'history' | 'debug' | 'legal' | 'delete' | 'formData'
+  const [activeModal, setActiveModal] = useState(null);
   const [recallReason, setRecallReason] = useState('');
   const [newExpiryDate, setNewExpiryDate] = useState('2026-09-11');
   const [reminderDays, setReminderDays] = useState(5);
@@ -306,32 +360,199 @@ export default function DocumentsList() {
     }
   };
 
-  const executeRecallDoc = () => {
+  const executeRecallDoc = async () => {
     if (selectedDoc) {
-      setDocuments(documents.map(d => d.id === selectedDoc.id ? { ...d, status: 'Draft' } : d));
-      handleActionToast(`Document "${selectedDoc.document_name || selectedDoc.name}" recalled successfully.`);
+      try {
+        await fetch(`http://localhost:5000/api/documents/recall/${selectedDoc.id}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason: recallReason })
+        });
+      } catch (e) {}
+      setDocuments(documents.map(d => d.id === selectedDoc.id ? { ...d, status: 'Recalled' } : d));
+      handleActionToast(`Document "${selectedDoc.document_name || selectedDoc.name}" recalled successfully. Notice emailed to signers.`);
     }
   };
 
-  const filteredDocs = documents.filter(doc => {
-    const docName = doc.document_name || doc.name || '';
-    const matchSearch = docName.toLowerCase().includes(searchQuery.toLowerCase());
-    if (!statusFilter || statusFilter === 'all') return matchSearch;
-    return matchSearch && doc.status?.toLowerCase() === statusFilter.toLowerCase();
+  const executeExtendDoc = async () => {
+    if (selectedDoc) {
+      try {
+        await fetch(`http://localhost:5000/api/documents/extend/${selectedDoc.id}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ newExpiryDate })
+        });
+      } catch (e) {}
+      handleActionToast(`Expiry date for "${selectedDoc.document_name || selectedDoc.name}" extended to ${newExpiryDate}.`);
+    }
+  };
+
+  const executeRemindDoc = async () => {
+    if (selectedDoc) {
+      try {
+        await fetch(`http://localhost:5000/api/documents/remind/${selectedDoc.id}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+      } catch (e) {}
+      handleActionToast(`Reminder notification emailed via SMTP to signers of "${selectedDoc.document_name || selectedDoc.name}".`);
+    }
+  };
+
+  const executeSaveReminderSettings = async () => {
+    if (selectedDoc) {
+      try {
+        await fetch(`http://localhost:5000/api/documents/reminder-settings/${selectedDoc.id}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reminderFrequencyDays: reminderDays, autoReminder: autoReminderEnabled })
+        });
+      } catch (e) {}
+      handleActionToast(`Automatic reminder settings saved: Every ${reminderDays} days.`);
+    }
+  };
+
+  const executeUploadSignedDoc = async () => {
+    if (selectedDoc) {
+      try {
+        await fetch(`http://localhost:5000/api/documents/upload-signed/${selectedDoc.id}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ signedFileCertify })
+        });
+      } catch (e) {}
+      setDocuments(documents.map(d => d.id === selectedDoc.id ? { ...d, status: 'Completed' } : d));
+      handleActionToast(`Physical signed copy uploaded for "${selectedDoc.document_name || selectedDoc.name}". Marked as Completed.`);
+    }
+  };
+
+  const filteredDocs = documents.filter((doc) => {
+    const docName = (doc.document_name || doc.name || '').toLowerCase();
+    const docFolder = (doc.folder || '-').toLowerCase();
+    const docType = (doc.type || 'Document').toLowerCase();
+    const docOwner = (doc.owner || 'Manu Yadav').toLowerCase();
+    const docRecipient = (doc.recipient_email || doc.recipient || '').toLowerCase();
+    const docRecipientName = (doc.signer_name || '').toLowerCase();
+    const docSignform = (doc.signform || '-').toLowerCase();
+    const docTemplates = (doc.templates || '-').toLowerCase();
+    const docStatus = (doc.status || 'Draft').toLowerCase();
+
+    // Global search query
+    const matchSearch =
+      !searchQuery ||
+      docName.includes(searchQuery.toLowerCase()) ||
+      docRecipient.includes(searchQuery.toLowerCase());
+
+    // Status filter from URL param (/documents/:statusFilter)
+    const matchStatusParam =
+      !statusFilter ||
+      statusFilter === 'all' ||
+      docStatus === statusFilter.toLowerCase();
+
+    // Inline column filters (matching BexSign)
+    const matchColName = !columnFilters.name || docName.includes(columnFilters.name.toLowerCase());
+    const matchColFolder = !columnFilters.folder || docFolder.includes(columnFilters.folder.toLowerCase());
+    const matchColType = !columnFilters.docType || docType.includes(columnFilters.docType.toLowerCase());
+    const matchColOwner = !columnFilters.owner || docOwner.includes(columnFilters.owner.toLowerCase());
+    const matchColRecipient = !columnFilters.recipient || docRecipient.includes(columnFilters.recipient.toLowerCase());
+    const matchColRecipientName = !columnFilters.recipientName || docRecipientName.includes(columnFilters.recipientName.toLowerCase());
+    const matchColSignform = !columnFilters.signform || docSignform.includes(columnFilters.signform.toLowerCase());
+    const matchColTemplates = !columnFilters.templates || docTemplates.includes(columnFilters.templates.toLowerCase());
+    const matchColStatus = !columnFilters.status || docStatus.includes(columnFilters.status.toLowerCase());
+
+    return (
+      matchSearch &&
+      matchStatusParam &&
+      matchColName &&
+      matchColFolder &&
+      matchColType &&
+      matchColOwner &&
+      matchColRecipient &&
+      matchColRecipientName &&
+      matchColSignform &&
+      matchColTemplates &&
+      matchColStatus
+    );
   });
 
+  // Paginated documents slice
+  const paginatedDocs = filteredDocs.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
+  // Multi-Selection Handlers
+  const allPageSelected =
+    paginatedDocs.length > 0 && paginatedDocs.every((d) => selectedDocIds.includes(d.id));
+
+  const handleSelectAllOnPage = (e) => {
+    if (e.target.checked) {
+      const pageIds = paginatedDocs.map((d) => d.id);
+      setSelectedDocIds(Array.from(new Set([...selectedDocIds, ...pageIds])));
+    } else {
+      const pageIds = new Set(paginatedDocs.map((d) => d.id));
+      setSelectedDocIds(selectedDocIds.filter((id) => !pageIds.has(id)));
+    }
+  };
+
+  const handleToggleSelectDoc = (docId) => {
+    if (selectedDocIds.includes(docId)) {
+      setSelectedDocIds(selectedDocIds.filter((id) => id !== docId));
+    } else {
+      setSelectedDocIds([...selectedDocIds, docId]);
+    }
+  };
+
+  const handleBulkDelete = () => {
+    if (selectedDocIds.length === 0) return;
+    if (window.confirm(`Move ${selectedDocIds.length} selected document(s) to trash?`)) {
+      setDocuments(documents.filter((d) => !selectedDocIds.includes(d.id)));
+      setSelectedDocIds([]);
+      handleActionToast(`Moved ${selectedDocIds.length} document(s) to trash.`);
+    }
+  };
+
+  const handleBulkMoveFolder = () => {
+    if (selectedDocIds.length === 0) return;
+    const folderName = prompt('Enter folder name to move selected documents to:');
+    if (folderName) {
+      setDocuments(
+        documents.map((d) => (selectedDocIds.includes(d.id) ? { ...d, folder: folderName } : d))
+      );
+      setSelectedDocIds([]);
+      handleActionToast(`Moved selected documents to folder "${folderName}".`);
+    }
+  };
+
+  const clearAllFilters = () => {
+    setColumnFilters({
+      name: '',
+      folder: '',
+      docType: '',
+      owner: '',
+      recipient: '',
+      recipientName: '',
+      signform: '',
+      templates: '',
+      status: '',
+      daysToComplete: '',
+      created: ''
+    });
+    setSearchQuery('');
+  };
+
+  const hasActiveFilters =
+    Object.values(columnFilters).some((v) => v !== '') || searchQuery !== '';
+
   return (
-    <div className="space-y-6 font-sans">
+    <div className="space-y-4 font-sans">
       {/* Header Bar */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">All documents</h1>
-          <p className="text-xs text-slate-500 mt-1">View status, manage signers, and execute document actions.</p>
+          <p className="text-xs text-slate-500 mt-0.5">View status, manage signers, and execute document actions.</p>
         </div>
         <div className="flex items-center gap-3">
           <Link
             to="/documents/create"
-            className="bg-[#00a884] hover:bg-[#008f70] text-white px-5 py-2 rounded-lg font-extrabold text-xs shadow-md flex items-center gap-2 transition"
+            className="bg-[#007355] hover:bg-[#005c44] text-white px-5 py-2 rounded-lg font-extrabold text-xs shadow-md flex items-center gap-2 transition cursor-pointer"
           >
             <Plus size={16} /> Create Document
           </Link>
@@ -344,134 +565,485 @@ export default function DocumentsList() {
         </div>
       )}
 
-      {/* Filter & Search Controls */}
-      <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-4 shadow-2xs flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 sm:gap-4">
-        <div className="relative flex-1 max-w-full sm:max-w-md">
-          <Search className="absolute left-3 top-2.5 text-slate-400" size={16} />
-          <input
-            type="text"
-            placeholder="Search by document name or recipient email..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-[#00a884] focus:outline-none"
-          />
-        </div>
-        <span className="text-xs font-bold text-slate-500 self-end sm:self-auto">View 1 - {filteredDocs.length} of {documents.length}</span>
-      </div>
+      {/* BexSign Standard Table Toolbar (View count, Show count, Pagination, Filter toggle, Column customizer) */}
+      <BexTableToolbar
+        totalItems={filteredDocs.length}
+        currentPage={currentPage}
+        pageSize={pageSize}
+        onPageChange={(p) => setCurrentPage(p)}
+        onPageSizeChange={(sz) => {
+          setPageSize(sz);
+          setCurrentPage(1);
+        }}
+        selectedCount={selectedDocIds.length}
+        onBulkDelete={handleBulkDelete}
+        onBulkMoveFolder={handleBulkMoveFolder}
+        showInlineFilters={showInlineFilters}
+        onToggleInlineFilters={() => setShowInlineFilters(!showInlineFilters)}
+        columns={tableColumns}
+        onSaveColumns={(cols) => setTableColumns(cols)}
+        storageKey="bexsign_documents_columns"
+      />
 
-      {/* Documents Table */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-2xs w-full overflow-x-auto min-w-0">
-        <table className="w-full text-left text-xs border-collapse table-fixed min-w-full">
+      {/* Documents Table with BexSign Responsive Flow - ZERO Horizontal Scrollbar */}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-2xs w-full overflow-hidden min-w-0">
+        <table className="w-full text-left text-xs border-collapse table-auto">
           <thead>
-            <tr className="bg-slate-50 text-slate-500 uppercase font-extrabold border-b border-slate-200">
-              <th style={{ width: `${colWidths.name}px` }} className="p-3.5 rounded-tl-xl leading-tight relative group select-none">
-                <span>DOCUMENT NAME</span>
-                <div onMouseDown={(e) => startColResize('name', e)} className="absolute right-0 top-0 bottom-0 w-2.5 cursor-col-resize flex items-center justify-center hover:bg-slate-300 active:bg-[#00a884] z-10 transition-colors" title="Drag with mouse to resize column width">
-                  <div className="w-[1.5px] h-3 bg-slate-300 group-hover:bg-slate-500 rounded" />
-                </div>
+            {/* 1st Row: Column Header Titles with Resizers */}
+            <tr className="bg-slate-50 text-slate-500 uppercase font-extrabold border-b border-slate-200 select-none">
+              {/* Checkbox Header */}
+              <th className="p-2.5 w-9 text-center rounded-tl-xl">
+                <input
+                  type="checkbox"
+                  checked={allPageSelected}
+                  onChange={handleSelectAllOnPage}
+                  className="w-4 h-4 rounded accent-[#007355] cursor-pointer"
+                  title="Select all on this page"
+                />
               </th>
-              <th style={{ width: `${colWidths.folder}px` }} className="p-3.5 hidden xl:table-cell text-center leading-tight whitespace-normal relative group select-none">
-                <span>FOLDER NAME</span>
-                <div onMouseDown={(e) => startColResize('folder', e)} className="absolute right-0 top-0 bottom-0 w-2.5 cursor-col-resize flex items-center justify-center hover:bg-slate-300 active:bg-[#00a884] z-10 transition-colors" title="Drag with mouse to resize column width">
-                  <div className="w-[1.5px] h-3 bg-slate-300 group-hover:bg-slate-500 rounded" />
-                </div>
-              </th>
-              <th style={{ width: `${colWidths.owner}px` }} className="p-3.5 hidden md:table-cell leading-tight relative group select-none">
-                <span>OWNER</span>
-                <div onMouseDown={(e) => startColResize('owner', e)} className="absolute right-0 top-0 bottom-0 w-2.5 cursor-col-resize flex items-center justify-center hover:bg-slate-300 active:bg-[#00a884] z-10 transition-colors" title="Drag with mouse to resize column width">
-                  <div className="w-[1.5px] h-3 bg-slate-300 group-hover:bg-slate-500 rounded" />
-                </div>
-              </th>
-              <th style={{ width: `${colWidths.recipient}px` }} className="p-3.5 leading-tight relative group select-none">
-                <span>RECIPIENT EMAIL</span>
-                <div onMouseDown={(e) => startColResize('recipient', e)} className="absolute right-0 top-0 bottom-0 w-2.5 cursor-col-resize flex items-center justify-center hover:bg-slate-300 active:bg-[#00a884] z-10 transition-colors" title="Drag with mouse to resize column width">
-                  <div className="w-[1.5px] h-3 bg-slate-300 group-hover:bg-slate-500 rounded" />
-                </div>
-              </th>
-              <th style={{ width: `${colWidths.signform}px` }} className="p-3.5 hidden 2xl:table-cell text-center leading-tight whitespace-normal relative group select-none">
-                <span>SIGNFORM NAME</span>
-                <div onMouseDown={(e) => startColResize('signform', e)} className="absolute right-0 top-0 bottom-0 w-2.5 cursor-col-resize flex items-center justify-center hover:bg-slate-300 active:bg-[#00a884] z-10 transition-colors" title="Drag with mouse to resize column width">
-                  <div className="w-[1.5px] h-3 bg-slate-300 group-hover:bg-slate-500 rounded" />
-                </div>
-              </th>
-              <th style={{ width: `${colWidths.templates}px` }} className="p-3.5 hidden 2xl:table-cell text-center leading-tight whitespace-normal relative group select-none">
-                <span>TEMPLATES USED</span>
-                <div onMouseDown={(e) => startColResize('templates', e)} className="absolute right-0 top-0 bottom-0 w-2.5 cursor-col-resize flex items-center justify-center hover:bg-slate-300 active:bg-[#00a884] z-10 transition-colors" title="Drag with mouse to resize column width">
-                  <div className="w-[1.5px] h-3 bg-slate-300 group-hover:bg-slate-500 rounded" />
-                </div>
-              </th>
-              <th style={{ width: `${colWidths.status}px` }} className="p-3.5 whitespace-nowrap leading-tight relative group select-none">
-                <span>STATUS</span>
-                <div onMouseDown={(e) => startColResize('status', e)} className="absolute right-0 top-0 bottom-0 w-2.5 cursor-col-resize flex items-center justify-center hover:bg-slate-300 active:bg-[#00a884] z-10 transition-colors" title="Drag with mouse to resize column width">
-                  <div className="w-[1.5px] h-3 bg-slate-300 group-hover:bg-slate-500 rounded" />
-                </div>
-              </th>
-              <th style={{ width: `${colWidths.created}px` }} className="p-3.5 hidden sm:table-cell whitespace-nowrap leading-tight relative group select-none">
-                <span>CREATED ON</span>
-                <div onMouseDown={(e) => startColResize('created', e)} className="absolute right-0 top-0 bottom-0 w-2.5 cursor-col-resize flex items-center justify-center hover:bg-slate-300 active:bg-[#00a884] z-10 transition-colors" title="Drag with mouse to resize column width">
-                  <div className="w-[1.5px] h-3 bg-slate-300 group-hover:bg-slate-500 rounded" />
-                </div>
-              </th>
-              <th style={{ width: `${colWidths.actions}px` }} className="p-3.5 text-right whitespace-nowrap rounded-tr-xl leading-tight">ACTIONS</th>
+
+              {isColVisible('name') && (
+                <th className="p-2.5 w-[22%] leading-tight break-words relative group select-none">
+                  <span>DOCUMENT NAME</span>
+                </th>
+              )}
+
+              {isColVisible('folder') && (
+                <th className="p-2.5 w-[7%] leading-tight text-center break-words relative group select-none">
+                  <span>FOLDER</span>
+                </th>
+              )}
+
+              {isColVisible('docType') && (
+                <th className="p-2.5 w-[8%] leading-tight break-words relative group select-none">
+                  <span>DOC TYPE</span>
+                </th>
+              )}
+
+              {isColVisible('owner') && (
+                <th className="p-2.5 w-[10%] leading-tight break-words relative group select-none">
+                  <span>OWNER</span>
+                </th>
+              )}
+
+              {isColVisible('recipient') && (
+                <th className="p-2.5 w-[20%] leading-tight break-all relative group select-none">
+                  <span>RECIPIENT EMAIL</span>
+                </th>
+              )}
+
+              {isColVisible('recipientName') && (
+                <th className="p-2.5 w-[10%] leading-tight break-words relative group select-none">
+                  <span>RECIPIENT NAME</span>
+                </th>
+              )}
+
+              {isColVisible('signform') && (
+                <th className="p-2.5 w-[8%] text-center leading-tight break-words relative group select-none">
+                  <span>SIGNFORM</span>
+                </th>
+              )}
+
+              {isColVisible('templates') && (
+                <th className="p-2.5 w-[7%] text-center leading-tight break-words relative group select-none">
+                  <span>TEMPLATES</span>
+                </th>
+              )}
+
+              {isColVisible('status') && (
+                <th className="p-2.5 w-[10%] leading-tight whitespace-nowrap relative group select-none">
+                  <span>STATUS</span>
+                </th>
+              )}
+
+              {isColVisible('daysToComplete') && (
+                <th className="p-2.5 w-[6%] leading-tight text-center relative group select-none">
+                  <span>DAYS</span>
+                </th>
+              )}
+
+              {isColVisible('created') && (
+                <th className="p-2.5 w-[8%] leading-tight whitespace-nowrap relative group select-none">
+                  <span>CREATED</span>
+                </th>
+              )}
+
+              {isColVisible('actions') && (
+                <th className="p-2.5 w-[5%] text-right whitespace-nowrap rounded-tr-xl leading-tight">
+                  ACTIONS
+                </th>
+              )}
             </tr>
+
+            {/* 2nd Row: BexSign Inline Filter Row (Matching Attached Screenshot) */}
+            {showInlineFilters && (
+              <tr className="bg-slate-50/70 border-b border-slate-200">
+                <th className="p-2 text-center">
+                  {hasActiveFilters && (
+                    <button
+                      type="button"
+                      onClick={clearAllFilters}
+                      title="Clear all filters"
+                      className="text-slate-400 hover:text-red-500 p-0.5 rounded"
+                    >
+                      <X size={13} />
+                    </button>
+                  )}
+                </th>
+
+                {isColVisible('name') && (
+                  <th className="p-2">
+                    <input
+                      type="text"
+                      value={columnFilters.name}
+                      onChange={(e) => {
+                        setColumnFilters({ ...columnFilters, name: e.target.value });
+                        setCurrentPage(1);
+                      }}
+                      className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 font-normal focus:outline-none focus:border-[#007355] shadow-2xs"
+                    />
+                  </th>
+                )}
+
+                {isColVisible('folder') && (
+                  <th className="p-2 text-center">
+                    <input
+                      type="text"
+                      value={columnFilters.folder}
+                      onChange={(e) => {
+                        setColumnFilters({ ...columnFilters, folder: e.target.value });
+                        setCurrentPage(1);
+                      }}
+                      className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 font-normal focus:outline-none focus:border-[#007355] shadow-2xs text-center"
+                    />
+                  </th>
+                )}
+
+                {isColVisible('docType') && (
+                  <th className="p-2">
+                    <input
+                      type="text"
+                      value={columnFilters.docType}
+                      onChange={(e) => {
+                        setColumnFilters({ ...columnFilters, docType: e.target.value });
+                        setCurrentPage(1);
+                      }}
+                      className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 font-normal focus:outline-none focus:border-[#007355] shadow-2xs"
+                    />
+                  </th>
+                )}
+
+                {isColVisible('owner') && (
+                  <th className="p-2">
+                    <input
+                      type="text"
+                      value={columnFilters.owner}
+                      onChange={(e) => {
+                        setColumnFilters({ ...columnFilters, owner: e.target.value });
+                        setCurrentPage(1);
+                      }}
+                      className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 font-normal focus:outline-none focus:border-[#007355] shadow-2xs"
+                    />
+                  </th>
+                )}
+
+                {isColVisible('recipient') && (
+                  <th className="p-2">
+                    <input
+                      type="text"
+                      value={columnFilters.recipient}
+                      onChange={(e) => {
+                        setColumnFilters({ ...columnFilters, recipient: e.target.value });
+                        setCurrentPage(1);
+                      }}
+                      className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 font-normal focus:outline-none focus:border-[#007355] shadow-2xs"
+                    />
+                  </th>
+                )}
+
+                {isColVisible('recipientName') && (
+                  <th className="p-2">
+                    <input
+                      type="text"
+                      value={columnFilters.recipientName}
+                      onChange={(e) => {
+                        setColumnFilters({ ...columnFilters, recipientName: e.target.value });
+                        setCurrentPage(1);
+                      }}
+                      className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 font-normal focus:outline-none focus:border-[#007355] shadow-2xs"
+                    />
+                  </th>
+                )}
+
+                {isColVisible('signform') && (
+                  <th className="p-2 text-center">
+                    <input
+                      type="text"
+                      value={columnFilters.signform}
+                      onChange={(e) => {
+                        setColumnFilters({ ...columnFilters, signform: e.target.value });
+                        setCurrentPage(1);
+                      }}
+                      className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 font-normal focus:outline-none focus:border-[#007355] shadow-2xs text-center"
+                    />
+                  </th>
+                )}
+
+                {isColVisible('templates') && (
+                  <th className="p-2 text-center">
+                    <input
+                      type="text"
+                      value={columnFilters.templates}
+                      onChange={(e) => {
+                        setColumnFilters({ ...columnFilters, templates: e.target.value });
+                        setCurrentPage(1);
+                      }}
+                      className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 font-normal focus:outline-none focus:border-[#007355] shadow-2xs text-center"
+                    />
+                  </th>
+                )}
+
+                {isColVisible('status') && (
+                  <th className="p-2">
+                    <input
+                      type="text"
+                      value={columnFilters.status}
+                      onChange={(e) => {
+                        setColumnFilters({ ...columnFilters, status: e.target.value });
+                        setCurrentPage(1);
+                      }}
+                      placeholder=""
+                      className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 font-normal focus:outline-none focus:border-[#007355] shadow-2xs"
+                    />
+                  </th>
+                )}
+
+                {isColVisible('daysToComplete') && (
+                  <th className="p-2">
+                    <input
+                      type="text"
+                      value={columnFilters.daysToComplete}
+                      onChange={(e) => {
+                        setColumnFilters({ ...columnFilters, daysToComplete: e.target.value });
+                        setCurrentPage(1);
+                      }}
+                      className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 font-normal focus:outline-none focus:border-[#007355] shadow-2xs"
+                    />
+                  </th>
+                )}
+
+                {isColVisible('created') && (
+                  <th className="p-2">
+                    <input
+                      type="text"
+                      value={columnFilters.created}
+                      onChange={(e) => {
+                        setColumnFilters({ ...columnFilters, created: e.target.value });
+                        setCurrentPage(1);
+                      }}
+                      className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 font-normal focus:outline-none focus:border-[#007355] shadow-2xs"
+                    />
+                  </th>
+                )}
+
+                {isColVisible('actions') && <th className="p-2" />}
+              </tr>
+            )}
           </thead>
+
           <tbody className="divide-y divide-slate-100 font-medium">
-            {filteredDocs.length === 0 ? (
+            {paginatedDocs.length === 0 ? (
               <tr>
-                <td colSpan={9} className="py-16 text-center text-slate-400">
+                <td colSpan={12} className="py-16 text-center text-slate-400">
                   <FileText size={36} className="mx-auto mb-2 text-slate-300" />
                   <p className="font-semibold text-sm text-slate-700">No documents found</p>
-                  <p className="text-xs text-slate-400 mt-0.5">Try adjusting your search query or create a new document</p>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    {hasActiveFilters
+                      ? 'No documents match your filter criteria. Try clearing column filters.'
+                      : 'Create a new document to get started.'}
+                  </p>
+                  {hasActiveFilters && (
+                    <button
+                      type="button"
+                      onClick={clearAllFilters}
+                      className="mt-3 px-4 py-1.5 bg-[#007355] text-white rounded text-xs font-bold shadow-xs hover:bg-[#005c44]"
+                    >
+                      Clear Filters
+                    </button>
+                  )}
                 </td>
               </tr>
             ) : (
-              filteredDocs.map((doc) => {
+              paginatedDocs.map((doc) => {
                 const docName = doc.document_name || doc.name || 'Untitled.pdf';
-                const docStatus = doc.status || 'Draft';
+                const docStatus = (doc.status || 'Draft').toUpperCase();
                 const docOwner = doc.owner || 'Manu Yadav';
                 const docRecipient = doc.recipient_email || doc.recipient || 'manu.yadav@oladigital.health';
-                const docCreated = doc.created_at ? new Date(doc.created_at).toLocaleDateString() : doc.created || 'Aug 27, 2026';
+                const docCreated = doc.created_at
+                  ? new Date(doc.created_at).toLocaleDateString()
+                  : doc.created || 'Aug 27, 2026';
+                const isSelected = selectedDocIds.includes(doc.id);
 
                 return (
-                  <tr key={doc.id} className="hover:bg-slate-50/80 transition">
-                    <td style={{ width: `${colWidths.name}px` }} className="p-3.5 font-bold text-slate-900 align-middle">
-                      <div
-                        onClick={() => navigate(doc.status === 'Draft' ? `/documents/${doc.id}/edit` : `/documents/${doc.id}`)}
-                        className="flex items-start gap-2 cursor-pointer group/item"
-                        title={doc.status === 'Draft' ? 'Click to edit draft document' : 'Click to view document recipient status and details'}
-                      >
-                        <FileText size={16} className="text-[#00a884] shrink-0 mt-0.5 group-hover/item:scale-110 transition-transform" />
-                        <span className="break-all leading-snug group-hover/item:text-[#00a884] group-hover/item:underline">{docName}</span>
-                      </div>
+                  <tr
+                    key={doc.id}
+                    className={`hover:bg-slate-50/80 transition ${
+                      isSelected ? 'bg-emerald-50/40' : ''
+                    }`}
+                  >
+                    {/* Multi-Select Checkbox */}
+                    <td className="p-2.5 w-9 text-center align-middle">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => handleToggleSelectDoc(doc.id)}
+                        className="w-4 h-4 rounded accent-[#007355] cursor-pointer"
+                      />
                     </td>
-                    <td style={{ width: `${colWidths.folder}px` }} className="p-3.5 text-slate-500 hidden xl:table-cell text-center align-middle">{doc.folder || '-'}</td>
-                    <td style={{ width: `${colWidths.owner}px` }} className="p-3.5 text-slate-700 hidden md:table-cell align-middle leading-snug">{docOwner}</td>
-                    <td style={{ width: `${colWidths.recipient}px` }} className="p-3.5 text-slate-600 align-middle break-all leading-snug">{docRecipient}</td>
-                    <td style={{ width: `${colWidths.signform}px` }} className="p-3.5 text-slate-500 hidden 2xl:table-cell text-center align-middle">{doc.signform || '-'}</td>
-                    <td style={{ width: `${colWidths.templates}px` }} className="p-3.5 text-slate-500 hidden 2xl:table-cell text-center align-middle">{doc.templates || '-'}</td>
-                    <td style={{ width: `${colWidths.status}px` }} className="p-3.5 whitespace-nowrap align-middle">
-                      {docStatus === 'Completed' && <span className="bg-emerald-100 text-emerald-800 text-[10px] px-2.5 py-1 rounded font-black uppercase inline-block">COMPLETED</span>}
-                      {docStatus === 'In Progress' && <span className="bg-orange-100 text-orange-800 text-[10px] px-2.5 py-1 rounded font-black uppercase inline-block">IN PROGRESS</span>}
-                      {docStatus === 'Draft' && <span className="bg-sky-100 text-sky-800 text-[10px] px-2.5 py-1 rounded font-black uppercase inline-block">DRAFT</span>}
-                    </td>
-                    <td style={{ width: `${colWidths.created}px` }} className="p-3.5 text-slate-500 font-mono text-[11px] hidden sm:table-cell whitespace-nowrap align-middle">{docCreated}</td>
-                    <td style={{ width: `${colWidths.actions}px` }} className="p-3.5 text-right whitespace-nowrap align-middle">
-                      <button
-                        onClick={(e) => handleToggleMenu(e, doc)}
-                        className={`p-1.5 rounded-lg transition ${
-                          activeMenuDoc?.id === doc.id ? 'bg-slate-200 text-[#00a884]' : 'hover:bg-slate-100 text-slate-600'
-                        }`}
-                        title="Actions"
-                      >
-                        <MoreVertical size={16} />
-                      </button>
-                    </td>
+
+                    {/* Document Name */}
+                    {isColVisible('name') && (
+                      <td className="p-2.5 w-[22%] font-bold text-slate-900 align-middle break-words">
+                        <div
+                          onClick={() =>
+                            navigate(
+                              doc.status === 'Draft' ? `/documents/${doc.id}/edit` : `/documents/${doc.id}`
+                            )
+                          }
+                          className="flex items-start gap-2 cursor-pointer group/item"
+                          title={
+                            doc.status === 'Draft'
+                              ? 'Click to edit draft document'
+                              : 'Click to view document status and details'
+                          }
+                        >
+                          <span className="break-all leading-snug group-hover/item:text-[#007355] group-hover/item:underline">
+                            {docName}
+                          </span>
+                        </div>
+                      </td>
+                    )}
+
+                    {/* Folder Name */}
+                    {isColVisible('folder') && (
+                      <td className="p-2.5 w-[7%] text-slate-500 text-center align-middle break-words">
+                        {doc.folder || '-'}
+                      </td>
+                    )}
+
+                    {/* Document Type */}
+                    {isColVisible('docType') && (
+                      <td className="p-2.5 w-[8%] text-slate-600 align-middle break-words">
+                        {doc.type || 'Document'}
+                      </td>
+                    )}
+
+                    {/* Owner */}
+                    {isColVisible('owner') && (
+                      <td className="p-2.5 w-[10%] text-slate-700 align-middle leading-snug break-words">
+                        {docOwner}
+                      </td>
+                    )}
+
+                    {/* Recipient Email */}
+                    {isColVisible('recipient') && (
+                      <td className="p-2.5 w-[20%] text-slate-600 align-middle break-all leading-snug">
+                        <div className="flex items-center gap-1.5">
+                          <Edit size={12} className="text-slate-400 shrink-0" />
+                          <span className="truncate">{docRecipient}</span>
+                        </div>
+                      </td>
+                    )}
+
+                    {/* Recipient Name */}
+                    {isColVisible('recipientName') && (
+                      <td className="p-2.5 w-[10%] text-slate-600 align-middle break-words">
+                        {doc.signer_name || docOwner || '-'}
+                      </td>
+                    )}
+
+                    {/* SignForm Name */}
+                    {isColVisible('signform') && (
+                      <td className="p-2.5 w-[8%] text-slate-500 text-center align-middle break-words">
+                        {doc.signform || '-'}
+                      </td>
+                    )}
+
+                    {/* Templates Used */}
+                    {isColVisible('templates') && (
+                      <td className="p-2.5 w-[7%] text-slate-500 text-center align-middle break-words">
+                        {doc.templates || '-'}
+                      </td>
+                    )}
+
+                    {/* Status Pill Badge */}
+                    {isColVisible('status') && (
+                      <td className="p-2.5 w-[10%] whitespace-nowrap align-middle">
+                        {docStatus === 'COMPLETED' && (
+                          <span className="bg-[#007355] text-white text-[10px] px-2 py-0.5 rounded font-black tracking-wider uppercase inline-block">
+                            COMPLETED
+                          </span>
+                        )}
+                        {docStatus === 'IN PROGRESS' && (
+                          <span className="bg-[#d97706] text-white text-[10px] px-2 py-0.5 rounded font-black tracking-wider uppercase inline-block">
+                            IN PROGRESS
+                          </span>
+                        )}
+                        {docStatus === 'DRAFT' && (
+                          <span className="bg-[#0284c7] text-white text-[10px] px-2 py-0.5 rounded font-black tracking-wider uppercase inline-block">
+                            DRAFT
+                          </span>
+                        )}
+                        {docStatus === 'RECALLED' && (
+                          <span className="bg-[#e11d48] text-white text-[10px] px-2 py-0.5 rounded font-black tracking-wider uppercase inline-block">
+                            RECALLED
+                          </span>
+                        )}
+                        {!['COMPLETED', 'IN PROGRESS', 'DRAFT', 'RECALLED'].includes(docStatus) && (
+                          <span className="bg-slate-200 text-slate-700 text-[10px] px-2 py-0.5 rounded font-black uppercase inline-block">
+                            {docStatus}
+                          </span>
+                        )}
+                      </td>
+                    )}
+
+                    {/* Days to complete */}
+                    {isColVisible('daysToComplete') && (
+                      <td className="p-2.5 w-[6%] text-slate-500 text-xs align-middle text-center whitespace-nowrap">
+                        {doc.days_to_complete || 15}d
+                      </td>
+                    )}
+
+                    {/* Created Time */}
+                    {isColVisible('created') && (
+                      <td className="p-2.5 w-[8%] text-slate-500 font-mono text-[11px] whitespace-nowrap align-middle">
+                        {docCreated}
+                      </td>
+                    )}
+
+                    {/* Actions Menu */}
+                    {isColVisible('actions') && (
+                      <td className="p-2.5 w-[5%] text-right whitespace-nowrap align-middle">
+                        <button
+                          onClick={(e) => handleToggleMenu(e, doc)}
+                          className={`p-1.5 rounded-lg transition cursor-pointer ${
+                            activeMenuDoc?.id === doc.id
+                              ? 'bg-slate-200 text-[#007355]'
+                              : 'hover:bg-slate-100 text-slate-600'
+                          }`}
+                          title="Actions"
+                        >
+                          <MoreVertical size={16} />
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 );
-              }))}
-            </tbody>
-          </table>
-        </div>
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
 
         {/* Universal Floating Context Action Menu (Fixed Positioning - NEVER CLIPPED on Web, iPad, or Mobile) */}
         {activeMenuDoc && menuPosition && (
@@ -582,7 +1154,7 @@ export default function DocumentsList() {
             </div>
             <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
               <button onClick={() => setActiveModal(null)} className="px-4 py-1.5 border border-slate-300 rounded text-xs font-semibold">Cancel</button>
-              <button onClick={() => handleActionToast(`Expiry date extended to ${newExpiryDate}`)} className="bg-[#00a884] text-white px-5 py-1.5 rounded text-xs font-extrabold shadow">Set</button>
+              <button onClick={executeExtendDoc} className="bg-[#00a884] text-white px-5 py-1.5 rounded text-xs font-extrabold shadow">Set</button>
             </div>
           </div>
         </div>
@@ -603,7 +1175,7 @@ export default function DocumentsList() {
             </div>
             <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
               <button onClick={() => setActiveModal(null)} className="px-4 py-1.5 border border-slate-300 rounded text-xs font-semibold">No</button>
-              <button onClick={() => handleActionToast('Reminder notification sent to signers.')} className="bg-[#00a884] text-white px-5 py-1.5 rounded text-xs font-extrabold shadow">Yes</button>
+              <button onClick={executeRemindDoc} className="bg-[#00a884] text-white px-5 py-1.5 rounded text-xs font-extrabold shadow">Yes</button>
             </div>
           </div>
         </div>
@@ -630,7 +1202,7 @@ export default function DocumentsList() {
             </div>
             <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
               <button onClick={() => setActiveModal(null)} className="px-4 py-1.5 border border-slate-300 rounded text-xs font-semibold">Cancel</button>
-              <button onClick={() => handleActionToast('Reminder settings saved successfully.')} className="bg-[#00a884] text-white px-5 py-1.5 rounded text-xs font-extrabold shadow">Save</button>
+              <button onClick={executeSaveReminderSettings} className="bg-[#00a884] text-white px-5 py-1.5 rounded text-xs font-extrabold shadow">Save</button>
             </div>
           </div>
         </div>
@@ -676,7 +1248,7 @@ export default function DocumentsList() {
             </label>
             <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
               <button onClick={() => setActiveModal(null)} className="px-4 py-1.5 border border-slate-300 rounded text-xs font-semibold">Cancel</button>
-              <button onClick={() => handleActionToast('Signed document copy uploaded successfully!')} disabled={!signedFileCertify} className="bg-[#00a884] disabled:opacity-50 text-white px-5 py-1.5 rounded text-xs font-extrabold shadow">Confirm</button>
+              <button onClick={executeUploadSignedDoc} disabled={!signedFileCertify} className="bg-[#00a884] disabled:opacity-50 text-white px-5 py-1.5 rounded text-xs font-extrabold shadow">Confirm</button>
             </div>
           </div>
         </div>

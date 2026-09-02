@@ -93,7 +93,7 @@ export default function EmailInvitationPreview() {
                 {docDetails.sender[0]}
               </span>
               <div>
-                <p className="font-bold text-slate-800">notifications@zohosign.com</p>
+                <p className="font-bold text-slate-800">notifications@bexsign.com</p>
                 <p className="text-[11px] text-slate-400">to me</p>
               </div>
             </div>
@@ -106,7 +106,7 @@ export default function EmailInvitationPreview() {
           {/* Logo / Brand Header */}
           <div className="flex items-center gap-2.5">
             <div className="bg-[#007355] text-white p-1.5 rounded font-black text-xs">BEX</div>
-            <span className="text-xl font-extrabold text-slate-900 tracking-tight">Zoho <span className="text-[#007355]">Sign</span></span>
+            <span className="text-xl font-extrabold text-slate-900 tracking-tight">Bex<span className="text-[#007355]">Sign</span></span>
           </div>
 
           {/* Digital Signature Request Banner */}
@@ -155,10 +155,10 @@ export default function EmailInvitationPreview() {
           {/* Email Footer Disclaimer */}
           <div className="pt-6 border-t border-slate-100 text-[11px] text-slate-400 space-y-1 leading-normal">
             <p>
-              This is an automated email from Zoho Sign. For any queries regarding this email, please contact the sender {docDetails.senderEmail} directly.
+              This is an automated email from BexSign. For any queries regarding this email, please contact the sender {docDetails.senderEmail} directly.
             </p>
             <p>
-              If you think this email is inappropriate or spam, you may file a complaint with Zoho Sign <span className="text-blue-600 underline cursor-pointer">here</span>. To turn off reminders for this document, <span className="text-blue-600 underline cursor-pointer">click here</span>.
+              If you think this email is inappropriate or spam, you may file a report with BexSign <span className="text-blue-600 underline cursor-pointer">here</span>. To turn off reminders for this document, <span className="text-blue-600 underline cursor-pointer">click here</span>.
             </p>
           </div>
         </div>

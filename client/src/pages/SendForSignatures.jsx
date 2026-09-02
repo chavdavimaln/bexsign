@@ -253,6 +253,7 @@ export default function SendForSignatures() {
 
       // Save recipients list in localStorage for instant access across the field editor
       localStorage.setItem(`bexsign_doc_${docId}_recipients`, JSON.stringify(validRecipients));
+      localStorage.setItem(`bexsign_doc_${docId}_is_new`, 'true');
       localStorage.setItem(`bexsign_doc_${docId}_settings`, JSON.stringify({
         documentName: documentName.trim() || 'Document',
         daysToComplete,
@@ -263,8 +264,10 @@ export default function SendForSignatures() {
       navigate(`/documents/${docId}/edit`);
     } catch (err) {
       console.warn('Backend offline fallback:', err);
-      // Fallback navigation to editor
-      navigate(`/documents/${id || 1}/edit`);
+      const fallbackDocId = id || 1;
+      localStorage.setItem(`bexsign_doc_${fallbackDocId}_recipients`, JSON.stringify(validRecipients));
+      localStorage.setItem(`bexsign_doc_${fallbackDocId}_is_new`, 'true');
+      navigate(`/documents/${fallbackDocId}/edit`);
     }
   };
 
