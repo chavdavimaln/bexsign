@@ -1,11 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { PenTool, CheckCircle2, ShieldCheck, AlertCircle, X, Download, ArrowLeft, Lock, ArrowRight, FileCheck, CheckSquare, Printer, Mail, Copy, Save, ChevronDown, ZoomIn, ZoomOut } from 'lucide-react';
+import { PenTool, CheckCircle2, ShieldCheck, AlertCircle, X, Download, ArrowLeft, Lock, ArrowRight, FileCheck, CheckSquare, Printer, Mail, Copy, Save, ChevronDown, ZoomIn, ZoomOut, FileText } from 'lucide-react';
 import { generateBexsignId } from '../utils/documentId';
 import SignatureStamp from '../components/SignatureStamp';
 import { showPopupAlert } from '../components/GlobalAlertModal';
 import { generateAndDownloadPdf } from '../utils/pdfGenerator';
 import { fetchSignatureForEmail } from '../utils/signatureDirectory';
+import CompletedDocumentViewer from '../components/CompletedDocumentViewer';
+import BexDocumentSheet from '../components/BexDocumentSheet';
+import { printDocumentSheet } from '../utils/documentPrinter';
 
 export default function PublicSigning() {
   const { token, id } = useParams();
@@ -39,6 +42,47 @@ export default function PublicSigning() {
     status: 'In Progress',
     expiresIn: '15 days'
   });
+
+  // Multi-document envelope state
+  const [documentsList, setDocumentsList] = useState(() => {
+    try {
+      const saved = localStorage.getItem(`bexsign_doc_${docId}_documents`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch (e) {}
+    return [
+      {
+        id: 1,
+        name: 'Document 1.pdf',
+        customMessage: 'check the document for signature'
+      }
+    ];
+  });
+  const [activeDocIndex, setActiveDocIndex] = useState(0);
+
+  // Partitioned fields per document
+  const [fieldsByDoc, setFieldsByDoc] = useState(() => {
+    try {
+      const saved = localStorage.getItem(`bexsign_doc_${docId}_fields_by_doc`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object') return parsed;
+      }
+    } catch (e) {}
+    return {};
+  });
+
+  const handleUpdateFieldValue = (fieldId, newValue) => {
+    setFieldsByDoc((prev) => {
+      const currentList = prev[activeDocIndex] || [];
+      const updated = currentList.map((f) => (f.id === fieldId ? { ...f, value: newValue } : f));
+      const nextByDoc = { ...prev, [activeDocIndex]: updated };
+      localStorage.setItem(`bexsign_doc_${docId}_fields_by_doc`, JSON.stringify(nextByDoc));
+      return nextByDoc;
+    });
+  };
 
   // Signature state
   const [signaturePlaced, setSignaturePlaced] = useState(false);
@@ -77,19 +121,60 @@ export default function PublicSigning() {
         if (localStyle) setSelectedStyle(localStyle);
       }
 
+      // Check for saved multiple documents in localStorage
+      let loadedDocs = [];
+      try {
+        const savedDocs = localStorage.getItem(`bexsign_doc_${docId}_documents`);
+        if (savedDocs) {
+          loadedDocs = JSON.parse(savedDocs);
+        }
+      } catch (e) {}
+
+      // Load saved fieldsByDoc
+      let loadedFields = {};
+      try {
+        const savedFields = localStorage.getItem(`bexsign_doc_${docId}_fields_by_doc`);
+        if (savedFields) {
+          loadedFields = JSON.parse(savedFields);
+        }
+      } catch (e) {}
+      if (Object.keys(loadedFields).length > 0) {
+        setFieldsByDoc(loadedFields);
+      }
+
       // 2. Fetch server database state
       const res = await fetch(`http://localhost:5000/api/documents/${docId}`);
       const data = await res.json();
       if (data.success && data.document) {
         const doc = data.document;
         setDocumentDetails({
-          title: doc.document_name || doc.title || 'Document Sign 4',
+          title: doc.document_name || doc.title || 'Document 1.pdf',
+          message: doc.custom_message || 'check the document for signature',
           sender: doc.owner ? `${doc.owner} <manu.yadav@oladigital.health>` : 'Manu Yadav <manu.yadav@oladigital.health>',
           org: 'Dcode Health',
           recipient: doc.recipient_email || 'vimal@bexcodeservices.com',
           status: doc.status || 'In Progress',
           expiresIn: '15 days'
         });
+
+        if (!loadedDocs || loadedDocs.length === 0) {
+          if (doc.files && Array.isArray(doc.files) && doc.files.length > 0) {
+            loadedDocs = doc.files.map((f, i) => ({
+              id: f.id || i + 1,
+              name: f.file_name || `Document ${i + 1}.pdf`,
+              customMessage: doc.custom_message || 'check the document for signature'
+            }));
+          } else {
+            loadedDocs = [
+              {
+                id: 1,
+                name: doc.document_name || doc.title || 'Document 1.pdf',
+                customMessage: doc.custom_message || 'check the document for signature'
+              }
+            ];
+          }
+        }
+        setDocumentsList(loadedDocs);
 
         // If server database has saved signature on this document
         if (doc.signature_image) {
@@ -112,6 +197,8 @@ export default function PublicSigning() {
             if (savedSig.signature_style) setSelectedStyle(savedSig.signature_style);
           }
         }
+      } else if (loadedDocs && loadedDocs.length > 0) {
+        setDocumentsList(loadedDocs);
       }
     } catch (e) {
       console.warn('Fetch doc fallback:', e);
@@ -261,19 +348,24 @@ export default function PublicSigning() {
 
   const handleDownloadSignedPdf = async (pass = '') => {
     try {
-      const docTitle = documentDetails.title || `Document_${docId}.pdf`;
+      const activeDoc = documentsList[activeDocIndex] || {};
+      const docTitle = activeDoc.name || documentDetails.title || `Document 1.pdf`;
+      const docMsg = activeDoc.customMessage || documentDetails.message || 'check the document for signature';
+      const docBexId = documentsList.length > 1 ? `${fullBexsignId}-${activeDocIndex + 1}` : fullBexsignId;
+
       await generateAndDownloadPdf({
         documentName: docTitle,
-        docId: fullBexsignId || docId,
+        documentText: docMsg,
+        docId: docBexId || docId,
         signerName: typedName || 'Vimal Chavda',
         signerEmail: documentDetails.recipient || 'vimal@bexcodeservices.com',
         date: new Date().toLocaleString(),
-        status: 'Completed',
+        status: isCompleted ? 'Completed' : 'In Progress',
         signatureImage: signatureData,
         signatureType: signatureType,
         password: pass
       });
-      showPopupAlert(`Downloaded "${docTitle}" successfully with official electronic signature attachment${pass ? ' (Password Protected)' : ''}.`, {
+      showPopupAlert(`Downloaded "${docTitle}" successfully with official electronic signature.`, {
         title: 'Download Complete',
         type: 'success'
       });
@@ -287,178 +379,20 @@ export default function PublicSigning() {
   };
 
   const handlePrintSignedPdf = () => {
-    const docTitle = documentDetails.title || `Document_${docId}.pdf`;
-    
-    // Create dedicated printable window containing the actual signed document
-    const printWindow = window.open('', '_blank', 'width=850,height=1000');
-    if (!printWindow) {
-      window.print();
-      return;
-    }
+    const activeDoc = documentsList[activeDocIndex] || {};
+    const docTitle = activeDoc.name || documentDetails.title || 'Document 1.pdf';
+    const docMsg = activeDoc.customMessage || documentDetails.message || 'check the document for signature';
+    const docBexId = documentsList.length > 1 ? `${fullBexsignId}-${activeDocIndex + 1}` : fullBexsignId;
 
-    const stampHtml = signatureData && signatureData.startsWith('data:')
-      ? `<img src="${signatureData}" style="max-height: 55px; max-width: 220px; object-fit: contain; margin: 6px 0;" />`
-      : `<div style="font-family: 'Brush Script MT', 'Caveat', 'Segoe Script', cursive; font-size: 28px; color: #0f172a; margin: 4px 0;">${typedName || 'Vimal Chavda'}</div>`;
-
-    printWindow.document.write(`
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <meta charset="utf-8" />
-          <title>${docTitle} - Certified BexSign Copy</title>
-          <style>
-            @page {
-              size: A4;
-              margin: 15mm 20mm;
-            }
-            body {
-              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-              color: #1e293b;
-              margin: 0;
-              padding: 24px;
-              line-height: 1.5;
-            }
-            .header-bar {
-              border-bottom: 2px solid #007355;
-              padding-bottom: 14px;
-              margin-bottom: 28px;
-              display: flex;
-              justify-content: space-between;
-              align-items: flex-end;
-            }
-            .brand-name {
-              font-size: 22px;
-              font-weight: 900;
-              color: #007355;
-              letter-spacing: -0.5px;
-            }
-            .doc-id-pill {
-              font-size: 11px;
-              font-family: monospace;
-              color: #475569;
-              background: #f1f5f9;
-              padding: 4px 8px;
-              border-radius: 4px;
-              border: 1px solid #e2e8f0;
-            }
-            .doc-title {
-              font-size: 24px;
-              font-weight: 800;
-              color: #0f172a;
-              margin-bottom: 18px;
-            }
-            .doc-content {
-              font-size: 14px;
-              color: #334155;
-              line-height: 1.8;
-              min-height: 260px;
-            }
-            .signature-stamp-box {
-              margin-top: 36px;
-              border: 2px solid #1c4b82;
-              border-radius: 8px;
-              padding: 14px 18px;
-              display: inline-block;
-              background: #f8fafc;
-              box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-            }
-            .stamp-header {
-              font-size: 12px;
-              font-weight: 700;
-              color: #1c4b82;
-              text-transform: uppercase;
-              letter-spacing: 0.5px;
-              margin-bottom: 4px;
-            }
-            .stamp-signer {
-              font-size: 13px;
-              font-weight: 600;
-              color: #0f172a;
-            }
-            .stamp-id {
-              font-size: 10px;
-              font-family: monospace;
-              color: #64748b;
-              margin-top: 6px;
-              border-top: 1px dashed #cbd5e1;
-              padding-top: 4px;
-            }
-            .audit-trail {
-              border-top: 1px solid #e2e8f0;
-              margin-top: 48px;
-              padding-top: 16px;
-              font-size: 11px;
-              color: #64748b;
-            }
-            .audit-grid {
-              display: grid;
-              grid-template-columns: 1fr 1fr;
-              gap: 8px;
-              margin-top: 8px;
-            }
-            .audit-item strong {
-              color: #334155;
-            }
-            .badge-verified {
-              color: #007355;
-              font-weight: 700;
-            }
-            .footer-legal {
-              margin-top: 24px;
-              font-size: 10px;
-              color: #94a3b8;
-              text-align: center;
-              border-top: 1px solid #f1f5f9;
-              padding-top: 12px;
-            }
-          </style>
-        </head>
-        <body>
-          <div class="header-bar">
-            <div>
-              <div class="brand-name">BEXSIGN</div>
-              <div style="font-size: 11px; color: #64748b; margin-top: 2px;">Official Certified Electronic Document</div>
-            </div>
-            <div class="doc-id-pill">Doc ID: ${fullBexsignId}</div>
-          </div>
-
-          <div class="doc-title">${docTitle}</div>
-
-          <div class="doc-content">
-            <p>check the document for signature</p>
-          </div>
-
-          <div class="signature-stamp-box">
-            <div class="stamp-header">Official Signature Stamp</div>
-            <div class="stamp-signer">Signed by: ${typedName || 'Vimal Chavda'}</div>
-            ${stampHtml}
-            <div class="stamp-id">Specific ID: ${fullBexsignId}</div>
-          </div>
-
-          <div class="audit-trail">
-            <div style="font-weight: 700; color: #334155; margin-bottom: 4px;">AUDIT TRAIL &amp; EXECUTION METRICS:</div>
-            <div class="audit-grid">
-              <div class="audit-item"><strong>Signer Email:</strong> ${documentDetails.recipient || 'vimal@bexcodeservices.com'}</div>
-              <div class="audit-item"><strong>Status:</strong> <span class="badge-verified">✓ Completed &amp; Verified</span></div>
-              <div class="audit-item"><strong>Sender / Org:</strong> ${documentDetails.sender || 'Manu Yadav'} (${documentDetails.org || 'Dcode Health'})</div>
-              <div class="audit-item"><strong>Date of Execution:</strong> ${new Date().toLocaleString()}</div>
-            </div>
-            <div class="footer-legal">
-              This certified electronic document is legally binding under the ESIGN Act, UETA, and international electronic signature compliance frameworks.
-            </div>
-          </div>
-
-          <script>
-            window.onload = function() {
-              setTimeout(function() {
-                window.print();
-              }, 250);
-            };
-          </script>
-        </body>
-      </html>
-    `);
-    printWindow.document.close();
+    printDocumentSheet({
+      documentName: docTitle,
+      documentText: docMsg,
+      docId: docBexId || docId,
+      signerName: typedName || 'Vimal Chavda',
+      signerEmail: documentDetails.recipient || 'vimal@bexcodeservices.com',
+      signatureImage: signatureData,
+      signatureStyle: selectedStyle
+    });
   };
 
   const handleAgreeAndContinue = () => {
@@ -525,6 +459,24 @@ export default function PublicSigning() {
 
     setIsCompleted(true);
   };
+
+  // If document is already Completed, display dedicated CompletedDocumentViewer (PDF 4 Page 1)
+  if (documentDetails.status === 'Completed') {
+    return (
+      <CompletedDocumentViewer
+        doc={{
+          id: docId,
+          document_name: documentDetails.title,
+          signer_name: typedName,
+          recipient_email: documentDetails.recipient,
+          owner: documentDetails.sender ? documentDetails.sender.split('<')[0].trim() : 'Manu Yadav',
+          signature_image: signatureData,
+          status: 'Completed'
+        }}
+        onBack={() => navigate('/documents')}
+      />
+    );
+  }
 
   // 1. Document Info Landing Screen (Page 8 top)
   if (showLandingScreen) {
@@ -810,6 +762,43 @@ export default function PublicSigning() {
         </header>
       )}
 
+      {/* Multi-Document Switcher Navigation Bar (Pages 4 & 5) */}
+      {agreedConsent && documentsList.length > 1 && (
+        <div className="bg-slate-100 border-b border-slate-300 px-6 py-2.5 flex items-center gap-3 overflow-x-auto sticky top-21 z-20 shadow-2xs">
+          <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider shrink-0">
+            Documents ({documentsList.length}):
+          </span>
+          {documentsList.map((doc, idx) => {
+            const isDocActive = activeDocIndex === idx;
+            const docFields = fieldsByDoc[idx] || [];
+            return (
+              <button
+                key={doc.id || idx}
+                type="button"
+                onClick={() => setActiveDocIndex(idx)}
+                className={`px-3 py-1.5 rounded text-xs font-bold flex items-center gap-2 shrink-0 transition cursor-pointer ${
+                  isDocActive
+                    ? 'bg-[#007355] text-white shadow-xs'
+                    : 'bg-white hover:bg-slate-200 text-slate-700 border border-slate-300'
+                }`}
+              >
+                <FileText size={13} />
+                <span>{idx + 1}. {doc.name}</span>
+                {docFields.length > 0 && (
+                  <span
+                    className={`text-[10px] px-1.5 py-0.2 rounded-full ${
+                      isDocActive ? 'bg-emerald-800 text-white' : 'bg-slate-100 text-slate-600'
+                    }`}
+                  >
+                    {docFields.length} field{docFields.length > 1 ? 's' : ''}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* Top Banner Message when Fields Completed (Page 11) */}
       {signaturePlaced && (
         <div className="bg-emerald-50 border-b border-emerald-200 text-emerald-800 px-6 py-2 text-center text-xs font-bold flex items-center justify-center gap-2 sticky top-21 z-20">
@@ -825,91 +814,26 @@ export default function PublicSigning() {
         </div>
       )}
 
-      {/* Main Document Viewer Container (Page 11 PDF) */}
-      <main className="flex-1 p-4 sm:p-8 flex justify-center items-start overflow-y-auto">
-        <div className="relative w-full max-w-[750px] min-h-[900px] bg-white text-slate-900 p-6 sm:p-12 shadow-xl rounded-sm border border-slate-300 my-4 space-y-6">
-          <div className="border-b pb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-slate-500 font-mono">
-            <span className="break-all font-semibold select-all">
-              BexSign Document ID: <strong className="text-slate-800">{fullBexsignId}</strong>
-            </span>
-            <button
-              onClick={handleCopyId}
-              className="self-start sm:self-auto text-[11px] font-bold text-[#00a884] hover:underline flex items-center gap-1 shrink-0 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200"
-              title="Copy full Document ID"
-            >
-              <Copy size={12} /> {copiedId ? 'Copied!' : 'Copy ID'}
-            </button>
-          </div>
-
-          <div className="space-y-4 text-xs text-slate-700">
-            <p className="text-xl font-black text-slate-900">My new Document 4 data</p>
-
-            {/* Signature Box & Field Prompt Box (Page 11 PDF) */}
-            <div id="signature-field-container" className="pt-8 border-t border-slate-200 relative">
-              <div className="w-64">
-                <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">Signature</label>
-                {signaturePlaced ? (
-                  <div className="relative">
-                    <div
-                      onClick={() => setShowSignatureModal(true)}
-                      className="p-3 bg-white border border-slate-200 rounded-lg cursor-pointer hover:border-[#1c4b82] transition shadow-xs w-fit"
-                    >
-                      <SignatureStamp
-                        signerName={typedName}
-                        signatureImage={signatureData}
-                        signatureStyle={selectedStyle}
-                        docId={docId}
-                      />
-                      <p className="text-[10px] text-emerald-700 font-bold mt-1">✓ Signature Placed (Click to modify)</p>
-                    </div>
-
-                    {/* Guided Floating Callout Bubble when Filled (Page 11) */}
-                    <div className="absolute left-full top-2 ml-4 p-2.5 bg-slate-900 text-white rounded-lg shadow-xl text-xs font-semibold whitespace-nowrap flex items-center gap-3 z-10">
-                      <span>You've successfully filled all fields. Click Finish to complete.</span>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="relative">
-                    <button
-                      onClick={() => setShowSignatureModal(true)}
-                      className="w-full p-4 border-2 border-emerald-600 bg-emerald-50 text-emerald-800 font-bold text-sm rounded text-left flex items-center justify-between cursor-pointer"
-                    >
-                      <span>Signature</span>
-                      <PenTool size={16} />
-                    </button>
-
-                    {/* Field Prompt Box (Page 9 PDF Screenshot) */}
-                    <div className="absolute left-full top-0 ml-4 p-2.5 bg-slate-900 text-white rounded-lg shadow-xl text-xs font-semibold whitespace-nowrap flex items-center gap-3 z-10">
-                      <span>Enter your signature.</span>
-                      <div className="flex gap-1 text-[10px]">
-                        <span className="px-2 py-0.5 bg-slate-700 rounded cursor-pointer">Previous</span>
-                        <span className="px-2 py-0.5 bg-[#007355] rounded cursor-pointer font-bold">Next</span>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Stamp Box (Pages 8, 9, 11 PDF) */}
-              <div className="w-64 mt-4">
-                <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">Stamp</label>
-                <div className="p-3 border-2 border-dashed border-slate-300 rounded bg-slate-50 flex items-center justify-between text-xs text-slate-500 font-bold">
-                  <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded bg-[#E71414] text-white flex items-center justify-center font-black text-xs">
-                      Bex
-                    </div>
-                    <span>Corporate Official Stamp</span>
-                  </div>
-                  <span className="text-[10px] text-slate-400">Verified</span>
-                </div>
-              </div>
-
-              <div className="mt-4 text-xs font-semibold text-slate-500">
-                {documentDetails.recipient || 'vimal@bexcodeservices.com'}
-              </div>
-            </div>
-          </div>
-        </div>
+      {/* Main Document Viewer Container */}
+      <main className="flex-1 p-4 sm:p-8 flex justify-center items-start overflow-y-auto print:p-0 print:m-0">
+        <BexDocumentSheet
+          docId={docId}
+          bexsignDocId={documentsList.length > 1 ? `${fullBexsignId}-${activeDocIndex + 1}` : fullBexsignId}
+          documentName={documentsList[activeDocIndex]?.name || documentDetails.title}
+          documentText={documentsList[activeDocIndex]?.customMessage || documentDetails.message || "check the document for signature"}
+          signerName={typedName}
+          signerEmail={documentDetails.recipient}
+          signatureImage={signatureData}
+          signatureStyle={selectedStyle}
+          signaturePlaced={signaturePlaced}
+          onOpenSignatureModal={() => setShowSignatureModal(true)}
+          isCompleted={isCompleted}
+          showTooltips={true}
+          copiedId={copiedId}
+          onCopyId={handleCopyId}
+          placedFields={fieldsByDoc[activeDocIndex] || []}
+          onUpdateField={handleUpdateFieldValue}
+        />
       </main>
 
       {/* Signature Creation Popup Modal (Page 10 PDF) */}

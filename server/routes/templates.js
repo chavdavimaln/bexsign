@@ -28,10 +28,18 @@ const upload = multer({ storage: storage });
 router.get('/:userId', async (req, res) => {
     const userId = req.params.userId;
     try {
-        const [results] = await db.query(
-            'SELECT * FROM templates WHERE user_id = ? OR user_id = 1 ORDER BY last_modified DESC',
-            [userId]
-        );
+        let results;
+        try {
+            [results] = await db.query(
+                'SELECT * FROM templates WHERE user_id = ? OR user_id = 1 ORDER BY last_modified DESC',
+                [userId]
+            );
+        } catch (e) {
+            [results] = await db.query(
+                'SELECT * FROM templates WHERE user_id = ? OR user_id = 1 ORDER BY id DESC',
+                [userId]
+            );
+        }
         res.json(results);
     } catch (err) {
         console.error('Fetch Templates Error:', err);
@@ -43,7 +51,12 @@ router.get('/:userId', async (req, res) => {
 // @desc    Get all templates
 router.get('/', async (req, res) => {
     try {
-        const [results] = await db.query('SELECT * FROM templates ORDER BY last_modified DESC');
+        let results;
+        try {
+            [results] = await db.query('SELECT * FROM templates ORDER BY last_modified DESC');
+        } catch (e) {
+            [results] = await db.query('SELECT * FROM templates ORDER BY id DESC');
+        }
         res.json({ templates: results });
     } catch (err) {
         console.error('Fetch All Templates Error:', err);

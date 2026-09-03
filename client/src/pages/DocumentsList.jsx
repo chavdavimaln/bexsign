@@ -2,7 +2,13 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { generateBexsignId } from '../utils/documentId';
 import { generateAndDownloadPdf } from '../utils/pdfGenerator';
+import { printDocumentSheet } from '../utils/documentPrinter';
 import BexTableToolbar from '../components/BexTableToolbar';
+import CompletedDocumentViewer from '../components/CompletedDocumentViewer';
+import CompletionCertificateModal from '../components/CompletionCertificateModal';
+import FormDataModal from '../components/FormDataModal';
+import DocumentVersionsModal from '../components/DocumentVersionsModal';
+import BexDocumentSheet from '../components/BexDocumentSheet';
 import {
   FileText,
   Plus,
@@ -34,7 +40,8 @@ import {
   Layers,
   HelpCircle,
   Check,
-  UserCheck
+  UserCheck,
+  History
 } from 'lucide-react';
 
 // BexSign Table Columns Config (matching exact specification)
@@ -200,14 +207,20 @@ export default function DocumentsList() {
       return;
     }
     const rect = e.currentTarget.getBoundingClientRect();
-    const menuHeight = 360;
-    const spaceBelow = window.innerHeight - rect.bottom;
-    const openUpwards = spaceBelow < menuHeight && rect.top > menuHeight;
+    const viewportHeight = window.innerHeight;
+    const spaceBelow = viewportHeight - rect.bottom - 16;
+    const spaceAbove = rect.top - 16;
+    
+    // Check if opening upwards is better suited
+    const openUpwards = spaceBelow < 300 && spaceAbove > spaceBelow;
+    const availableHeight = openUpwards ? spaceAbove : spaceBelow;
+    const maxHeight = Math.max(220, Math.min(520, availableHeight));
 
     setMenuPosition({
-      top: openUpwards ? undefined : Math.min(rect.bottom + 4, window.innerHeight - 380),
-      bottom: openUpwards ? Math.max(12, window.innerHeight - rect.top + 4) : undefined,
-      right: Math.max(12, window.innerWidth - rect.right)
+      top: openUpwards ? undefined : rect.bottom + 4,
+      bottom: openUpwards ? viewportHeight - rect.top + 4 : undefined,
+      right: Math.max(12, window.innerWidth - rect.right),
+      maxHeight: `${maxHeight}px`
     });
     setActiveMenuDoc(doc);
   };
@@ -243,7 +256,7 @@ export default function DocumentsList() {
   };
 
   const handleDownloadDocument = (doc) => {
-    const docName = doc.document_name || doc.name || 'Document.pdf';
+    const docName = doc.document_name || doc.name || 'Document 1.pdf';
     // Retrieve saved signature image, signer name, and signature type from database or local storage
     const savedSig = doc.signature_image || localStorage.getItem(`bexsign_doc_${doc.id}_signature`) || '';
     const savedSigner = doc.signer_name || localStorage.getItem(`bexsign_doc_${doc.id}_signer`) || doc.owner || 'Vimal Chavda';
@@ -251,6 +264,7 @@ export default function DocumentsList() {
 
     generateAndDownloadPdf({
       documentName: docName,
+      documentText: doc.custom_message || 'check the document for signature',
       docId: doc.bexsign_doc_id || doc.id || 1,
       signerName: savedSigner,
       signerEmail: doc.recipient_email || doc.recipient || 'vimal@bexcodeservices.com',
@@ -259,50 +273,23 @@ export default function DocumentsList() {
       signatureImage: savedSig,
       signatureType: savedType
     });
-    handleActionToast(`Downloaded "${docName}" successfully with saved electronic signature.`);
+    handleActionToast(`Downloaded "${docName}" successfully.`);
   };
 
   const handlePrintDocument = (doc) => {
-    const docName = doc.document_name || doc.name || 'Document.pdf';
-    const docId = generateBexsignId(doc.id || 1);
-    const printWindow = window.open('', '_blank');
-    if (printWindow) {
-      printWindow.document.write(`
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>Print - ${docName}</title>
-            <style>
-              body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 40px; color: #1e293b; }
-              .header { border-bottom: 2px solid #00a884; padding-bottom: 12px; margin-bottom: 24px; }
-              h1 { font-size: 22px; margin: 0 0 6px 0; color: #0f172a; }
-              .id { font-family: monospace; font-size: 11px; color: #64748b; }
-              .grid { margin-top: 20px; line-height: 2; font-size: 13px; }
-              .badge { display: inline-block; background: #ecfdf5; color: #047857; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 11px; border: 1px solid #a7f3d0; }
-            </style>
-          </head>
-          <body>
-            <div class="header">
-              <h1>BexSign Document: ${docName}</h1>
-              <div class="id">Document ID: ${docId}</div>
-            </div>
-            <div class="grid">
-              <p><strong>Owner:</strong> ${doc.owner || 'Manu Yadav'}</p>
-              <p><strong>Recipient:</strong> ${doc.recipient_email || doc.recipient || 'Signer'}</p>
-              <p><strong>Status:</strong> <span class="badge">${doc.status || 'Draft'}</span></p>
-              <p><strong>Created On:</strong> ${doc.created_at ? new Date(doc.created_at).toLocaleDateString() : doc.created || 'Aug 27, 2026'}</p>
-            </div>
-          </body>
-        </html>
-      `);
-      printWindow.document.close();
-      printWindow.focus();
-      setTimeout(() => {
-        printWindow.print();
-      }, 250);
-    } else {
-      window.print();
-    }
+    const docName = doc.document_name || doc.name || 'Document 1.pdf';
+    const savedSig = doc.signature_image || localStorage.getItem(`bexsign_doc_${doc.id}_signature`) || '';
+    const savedSigner = doc.signer_name || localStorage.getItem(`bexsign_doc_${doc.id}_signer`) || doc.owner || 'Vimal Chavda';
+
+    printDocumentSheet({
+      documentName: docName,
+      documentText: doc.custom_message || 'check the document for signature',
+      docId: doc.id || 1,
+      bexsignDocId: doc.bexsign_doc_id || '',
+      signerName: savedSigner,
+      signerEmail: doc.recipient_email || doc.recipient || 'vimal@bexcodeservices.com',
+      signatureImage: savedSig
+    });
     handleActionToast(`Document sent to printer.`);
   };
 
@@ -1060,9 +1047,10 @@ export default function DocumentsList() {
                 top: menuPosition.top !== undefined ? `${menuPosition.top}px` : undefined,
                 bottom: menuPosition.bottom !== undefined ? `${menuPosition.bottom}px` : undefined,
                 right: `${menuPosition.right}px`,
+                maxHeight: menuPosition.maxHeight || '480px',
                 zIndex: 9999
               }}
-              className="w-56 bg-white border border-slate-200 rounded-xl shadow-2xl text-left py-1 text-xs font-semibold text-slate-700 max-h-[85vh] overflow-y-auto"
+              className="w-56 bg-white border border-slate-200 rounded-xl shadow-2xl text-left py-1 text-xs font-semibold text-slate-700 overflow-y-auto"
             >
               {/* IN PROGRESS ACTIONS */}
               {(activeMenuDoc.status === 'In Progress' || !activeMenuDoc.status) && (
@@ -1081,6 +1069,7 @@ export default function DocumentsList() {
                   <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleDownloadDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Download size={15} className="text-[#00a884]" /> Download</button>
                   <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleEditAsNew(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Copy size={15} /> Edit as new</button>
                   <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handlePrintDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Printer size={15} /> Print</button>
+                  <button onClick={() => triggerModal('versions', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><History size={15} /> Previous versions</button>
                   <button onClick={() => triggerModal('history', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Clock size={15} /> Activity history</button>
                   <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleCopyDebugInfo(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Info size={15} /> Copy debug info</button>
                   <button onClick={() => triggerModal('legal', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><ShieldCheck size={15} /> View legal disclosure</button>
@@ -1089,11 +1078,11 @@ export default function DocumentsList() {
                 </>
               )}
 
-              {/* COMPLETED ACTIONS */}
+              {/* COMPLETED ACTIONS (Matching PDF 4 Page 4 Image 2 & Requirements) */}
               {activeMenuDoc.status === 'Completed' && (
                 <>
                   <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><UserCheck size={15} /> Recipient status</button>
-                  <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/sign/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Eye size={15} /> View document</button>
+                  <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); setSelectedDoc(d); setActiveModal('viewCompleted'); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Eye size={15} /> View document</button>
                   <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/send`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Edit size={15} /> Edit</button>
                   <button onClick={() => triggerModal('certificate', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><FileCheck size={15} /> Completion certificate</button>
                   <button onClick={() => triggerModal('email', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Mail size={15} /> Email document</button>
@@ -1101,7 +1090,8 @@ export default function DocumentsList() {
                   <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleDownloadDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Download size={15} className="text-[#00a884]" /> Download</button>
                   <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleEditAsNew(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Copy size={15} /> Edit as new</button>
                   <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handlePrintDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Printer size={15} /> Print</button>
-                  <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleExportFormData(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Layers size={15} /> Form data</button>
+                  <button onClick={() => triggerModal('formData', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Layers size={15} /> Form data</button>
+                  <button onClick={() => triggerModal('versions', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><History size={15} /> Previous versions</button>
                   <button onClick={() => triggerModal('history', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Clock size={15} /> Activity history</button>
                   <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleCopyDebugInfo(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Info size={15} /> Copy debug info</button>
                   <button onClick={() => triggerModal('legal', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><ShieldCheck size={15} /> View legal disclosure</button>
@@ -1294,37 +1284,37 @@ export default function DocumentsList() {
         </div>
       )}
 
-      {/* 8. Completion Certificate Modal (Page 19 PDF) */}
+      {/* 8. Authentic 2-Page Completion Certificate Modal (PDF 4 Page 3 & Reference Example) */}
       {activeModal === 'certificate' && selectedDoc && (
-        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white text-slate-900 rounded-xl max-w-2xl w-full p-8 shadow-2xl border border-slate-200 space-y-6 text-xs overflow-y-auto max-h-[85vh]">
-            <div className="flex justify-between items-start border-b pb-4">
-              <div>
-                <h2 className="text-xl font-black text-slate-900">Certificate of Completion</h2>
-                <p className="text-slate-500 font-mono">Generated on Aug 27, 2026 15:37 EDT</p>
-              </div>
-              <button onClick={() => setActiveModal(null)} className="text-slate-400 hover:text-slate-700"><X size={20} /></button>
-            </div>
-            <div className="space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-200">
-              <h3 className="font-bold text-slate-800 text-sm">Summary</h3>
-              <p className="break-all font-mono text-[11px]"><strong>Document ID:</strong> {generateBexsignId(selectedDoc?.id || 1)}</p>
-              <p><strong>Document name:</strong> {selectedDoc.document_name || selectedDoc.name}</p>
-              <p><strong>Sent by:</strong> Manu Yadav &lt;manu.yadav@oladigital.health&gt;</p>
-              <p><strong>Organization:</strong> Dcode Health</p>
-            </div>
-            <div className="space-y-3">
-              <h3 className="font-bold text-slate-800 text-sm">Recipients</h3>
-              <div className="p-3 border border-slate-200 rounded-lg space-y-1">
-                <p className="font-bold text-slate-900">Manu Yadav (Signer)</p>
-                <p className="text-slate-500">Signed on: Aug 26, 2026 16:29:34 EDT</p>
-              </div>
-            </div>
-            <div className="flex justify-end gap-2 pt-3 border-t">
-              <button onClick={() => window.print()} className="px-4 py-2 border border-slate-300 rounded font-bold hover:bg-slate-50">Print Certificate</button>
-              <button onClick={() => handleDownloadDocument(selectedDoc)} className="bg-[#00a884] hover:bg-[#008f70] text-white px-5 py-2 rounded font-extrabold shadow flex items-center gap-1.5"><Download size={14} /> Download PDF</button>
-            </div>
-          </div>
-        </div>
+        <CompletionCertificateModal
+          doc={selectedDoc}
+          onClose={() => setActiveModal(null)}
+        />
+      )}
+
+      {/* 8b. Dedicated Completed Document Viewer (PDF 4 Page 1) */}
+      {activeModal === 'viewCompleted' && selectedDoc && (
+        <CompletedDocumentViewer
+          doc={selectedDoc}
+          onClose={() => setActiveModal(null)}
+        />
+      )}
+
+      {/* 8c. Form Data Modal with Recipient Selector & CSV Export (PDF 4 Page 3 Item 4) */}
+      {activeModal === 'formData' && selectedDoc && (
+        <FormDataModal
+          doc={selectedDoc}
+          onClose={() => setActiveModal(null)}
+        />
+      )}
+
+      {/* 8d. Previous Versions Modal with View & Download (PDF 4 Page 3 Item 5) */}
+      {activeModal === 'versions' && selectedDoc && (
+        <DocumentVersionsModal
+          doc={selectedDoc}
+          onClose={() => setActiveModal(null)}
+          onViewVersion={() => setActiveModal('viewCompleted')}
+        />
       )}
 
       {/* 9. Activity History Drawer Modal (Page 16 PDF) */}

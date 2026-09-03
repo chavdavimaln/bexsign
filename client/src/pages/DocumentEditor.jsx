@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
   PenTool,
   Calendar,
@@ -53,6 +53,7 @@ import { showPopupAlert } from '../components/GlobalAlertModal';
 export default function DocumentEditor() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const canvasRef = useRef(null);
   const stampFileInputRef = useRef(null);
 
@@ -61,7 +62,45 @@ export default function DocumentEditor() {
   const [showSendMenu, setShowSendMenu] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(100);
 
-  const [documentTitle, setDocumentTitle] = useState('First sign.pdf');
+  // Multi-Document State (Pages 4 & 5)
+  const [documentsList, setDocumentsList] = useState(() => {
+    if (location.state?.documents && Array.isArray(location.state.documents) && location.state.documents.length > 0) {
+      return location.state.documents;
+    }
+    const saved = id ? localStorage.getItem(`bexsign_doc_${id}_documents`) : null;
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      } catch (e) {}
+    }
+    return [
+      {
+        id: 1,
+        name: 'My doc vimal 2.pdf',
+        pages: 1,
+        status: 'Ready',
+        customMessage: 'check the document for signature'
+      }
+    ];
+  });
+  const [activeDocIndex, setActiveDocIndex] = useState(0);
+  const [showDocSwitcherMenu, setShowDocSwitcherMenu] = useState(false);
+
+  const currentDocument = documentsList[activeDocIndex] || documentsList[0] || { name: 'My doc vimal 2.pdf' };
+  const documentTitle = currentDocument.name || 'My doc vimal 2.pdf';
+
+  const setDocumentTitle = (newName) => {
+    setDocumentsList((prev) => {
+      const copy = [...prev];
+      if (copy[activeDocIndex]) {
+        copy[activeDocIndex] = { ...copy[activeDocIndex], name: newName };
+      }
+      localStorage.setItem(`bexsign_doc_${id}_documents`, JSON.stringify(copy));
+      return copy;
+    });
+  };
+
   const [recipientEmail, setRecipientEmail] = useState('manu.yadav@oladigital.health');
   const [statusMsg, setStatusMsg] = useState('');
 
@@ -136,34 +175,43 @@ export default function DocumentEditor() {
 
   const [selectedRecipient, setSelectedRecipient] = useState(() => recipientList[0]);
 
-  // Canvas Fields State: Blank on first-time creation (PDF 1 p.2 item 3), restored on edit (item 4)
-  const [fieldsOnDoc, setFieldsOnDoc] = useState(() => {
-    try {
-      const isNew = localStorage.getItem(`bexsign_doc_${id}_is_new`) === 'true';
-      if (isNew) {
-        // Document created first time from Send for Signatures: CANVAS MUST BE BLANK!
-        return [];
-      }
-      const savedFields = localStorage.getItem(`bexsign_doc_${id}_fields`);
-      if (savedFields) {
-        const parsed = JSON.parse(savedFields);
-        if (Array.isArray(parsed)) return parsed;
-      }
-    } catch (e) {}
-    // If not marked as new and no saved fields yet, start blank ready for drag-and-drop
-    return [];
+  // Multi-document partitioned fields (Canvas Fields per active document)
+  const [fieldsByDoc, setFieldsByDoc] = useState(() => {
+    const isNew = localStorage.getItem(`bexsign_doc_${id}_is_new`) === 'true';
+    if (isNew) return {};
+    const savedByDoc = localStorage.getItem(`bexsign_doc_${id}_fields_by_doc`);
+    if (savedByDoc) {
+      try {
+        const parsed = JSON.parse(savedByDoc);
+        if (parsed && typeof parsed === 'object') return parsed;
+      } catch (e) {}
+    }
+    const oldFields = localStorage.getItem(`bexsign_doc_${id}_fields`);
+    if (oldFields) {
+      try {
+        const parsed = JSON.parse(oldFields);
+        if (Array.isArray(parsed)) return { 0: parsed };
+      } catch (e) {}
+    }
+    return {};
   });
 
-  // Automatically persist fields whenever added, moved, or edited
-  useEffect(() => {
-    if (id) {
-      if (fieldsOnDoc.length > 0) {
-        localStorage.setItem(`bexsign_doc_${id}_fields`, JSON.stringify(fieldsOnDoc));
-        // Once user adds fields, it is no longer an untouched new draft
+  const fieldsOnDoc = fieldsByDoc[activeDocIndex] || [];
+
+  const setFieldsOnDoc = (updater) => {
+    setFieldsByDoc((prev) => {
+      const currentFields = prev[activeDocIndex] || [];
+      const nextFields = typeof updater === 'function' ? updater(currentFields) : updater;
+      const nextByDoc = { ...prev, [activeDocIndex]: nextFields };
+      if (id) {
+        localStorage.setItem(`bexsign_doc_${id}_fields_by_doc`, JSON.stringify(nextByDoc));
+        const flatList = Object.values(nextByDoc).flat();
+        localStorage.setItem(`bexsign_doc_${id}_fields`, JSON.stringify(flatList));
         localStorage.removeItem(`bexsign_doc_${id}_is_new`);
       }
-    }
-  }, [id, fieldsOnDoc]);
+      return nextByDoc;
+    });
+  };
 
   // Interactive Drag & Drop Mouse Tracking State
   const [draggingFieldId, setDraggingFieldId] = useState(null);
@@ -499,14 +547,55 @@ export default function DocumentEditor() {
           <div className="bg-[#007355] text-white p-1.5 rounded font-black text-xs">
             <FileText size={16} />
           </div>
-          <div className="flex items-center gap-1 cursor-pointer">
-            <input
-              type="text"
-              value={documentTitle}
-              onChange={(e) => setDocumentTitle(e.target.value)}
-              className="bg-transparent border-b border-transparent hover:border-slate-700 text-slate-100 font-bold text-sm px-1 py-0.5 focus:outline-none focus:border-[#007355] max-w-xs"
-            />
-            <ChevronDown size={14} className="text-slate-400" />
+          <div className="relative">
+            <div
+              onClick={() => setShowDocSwitcherMenu(!showDocSwitcherMenu)}
+              className="flex items-center gap-1 cursor-pointer hover:bg-slate-800/80 px-2 py-1 rounded transition"
+              title="Click to switch document"
+            >
+              <input
+                type="text"
+                value={documentTitle}
+                onChange={(e) => setDocumentTitle(e.target.value)}
+                onClick={(e) => e.stopPropagation()}
+                className="bg-transparent border-b border-transparent hover:border-slate-700 text-slate-100 font-bold text-sm px-1 py-0.5 focus:outline-none focus:border-[#007355] max-w-xs"
+              />
+              <ChevronDown size={14} className="text-slate-400" />
+            </div>
+
+            {/* Document Switcher Dropdown */}
+            {showDocSwitcherMenu && (
+              <div className="absolute left-0 top-full mt-1 w-64 bg-slate-900 border border-slate-700 rounded-lg shadow-2xl py-1.5 z-40 text-xs font-sans">
+                <div className="px-3 py-1 text-[10px] uppercase font-bold text-slate-400 border-b border-slate-800 flex justify-between items-center">
+                  <span>Documents ({documentsList.length})</span>
+                </div>
+                {documentsList.map((d, i) => {
+                  const docFields = fieldsByDoc[i] || [];
+                  return (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => {
+                        setActiveDocIndex(i);
+                        setActiveField(null);
+                        setShowDocSwitcherMenu(false);
+                      }}
+                      className={`w-full text-left px-3 py-2 flex items-center justify-between hover:bg-slate-800 transition cursor-pointer ${
+                        activeDocIndex === i ? 'text-emerald-400 font-bold bg-slate-800/60' : 'text-slate-200'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 truncate">
+                        <FileText size={13} className={activeDocIndex === i ? 'text-emerald-400' : 'text-slate-500'} />
+                        <span className="truncate">{d.name}</span>
+                      </div>
+                      <span className="text-[10px] text-slate-500 shrink-0">
+                        {docFields.length} field{docFields.length === 1 ? '' : 's'}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
           {statusMsg && (
             <span className="text-xs text-emerald-400 font-bold flex items-center gap-1">
@@ -612,26 +701,68 @@ export default function DocumentEditor() {
 
       {/* Editor Main Content: Left Thumbnails + Center Canvas + Right Fields (Page 5) */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Left Sidebar: Documents (Page 5) */}
-        <aside className="w-52 bg-slate-950 border-r border-slate-800 p-4 flex flex-col gap-3 shrink-0 font-sans text-xs">
-          <h2 className="text-xs font-bold text-slate-300 uppercase tracking-wider">Documents</h2>
-          <div className="w-full border border-slate-800 rounded-lg p-2.5 bg-slate-900 shadow-sm space-y-2">
-            <div className="flex items-center justify-between text-slate-300">
-              <span className="text-xs font-bold truncate">{documentTitle || "This is vnc's doc"}</span>
-              <ChevronDown size={14} className="text-slate-500" />
-            </div>
-            <p className="text-[10px] text-slate-500">1 pages</p>
-            {/* Miniature Page 1 Thumbnail Canvas */}
-            <div className="w-full h-36 bg-white rounded border border-slate-700 p-2 text-[7px] text-slate-400 select-none overflow-hidden relative shadow-inner">
-              <p className="font-bold text-slate-800 truncate">{documentTitle}</p>
-              <p className="mt-1 text-slate-500 italic">check the document for signature</p>
-              {fieldsOnDoc.map((f, i) => (
-                <div key={i} className="my-1 border border-emerald-500 bg-emerald-50 text-[6px] text-emerald-800 px-1 py-0.5 rounded truncate font-mono">
-                  {f.type}
+        {/* Left Sidebar: Documents (Listing all attached documents) */}
+        <aside className="w-52 bg-slate-950 border-r border-slate-800 p-4 flex flex-col gap-3 shrink-0 font-sans text-xs overflow-y-auto">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xs font-bold text-slate-300 uppercase tracking-wider">Documents</h2>
+            <span className="text-[10px] text-emerald-400 font-bold font-mono">{documentsList.length}</span>
+          </div>
+
+          <div className="space-y-3">
+            {documentsList.map((doc, idx) => {
+              const isSelected = activeDocIndex === idx;
+              const docFields = fieldsByDoc[idx] || [];
+
+              return (
+                <div
+                  key={doc.id || idx}
+                  onClick={() => {
+                    setActiveDocIndex(idx);
+                    setActiveField(null);
+                  }}
+                  className={`w-full rounded-lg p-2.5 shadow-sm space-y-2 cursor-pointer transition ${
+                    isSelected
+                      ? 'border-2 border-[#00a884] bg-slate-900 ring-1 ring-emerald-900/50 shadow-md'
+                      : 'border border-slate-800 bg-slate-950/60 hover:bg-slate-900/80 hover:border-slate-700'
+                  }`}
+                  title={`Click to edit fields on ${doc.name}`}
+                >
+                  <div className="flex items-center justify-between text-slate-300">
+                    <span className={`text-xs font-bold truncate ${isSelected ? 'text-[#00a884]' : 'text-slate-200'}`}>
+                      {doc.name || `Document ${idx + 1}`}
+                    </span>
+                    <ChevronDown size={14} className={isSelected ? 'text-[#00a884]' : 'text-slate-500'} />
+                  </div>
+                  <div className="flex items-center justify-between text-[10px] text-slate-400">
+                    <span>{doc.pages || 1} pages</span>
+                    {docFields.length > 0 && (
+                      <span className="text-emerald-400 font-semibold font-mono">
+                        {docFields.length} field{docFields.length > 1 ? 's' : ''}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Miniature Page Thumbnail Preview */}
+                  <div className="w-full h-36 bg-white rounded border border-slate-700 p-2 text-[7px] text-slate-400 select-none overflow-hidden relative shadow-inner">
+                    <p className="font-bold text-slate-800 truncate">{doc.name}</p>
+                    <p className="mt-1 text-slate-500 italic truncate">
+                      {doc.customMessage || 'check the document for signature'}
+                    </p>
+                    {docFields.map((f, i) => (
+                      <div
+                        key={i}
+                        className="my-1 border border-emerald-500 bg-emerald-50 text-[6px] text-emerald-800 px-1 py-0.5 rounded truncate font-mono"
+                      >
+                        {f.label || f.type}
+                      </div>
+                    ))}
+                    <span className="absolute bottom-1 right-1 bg-slate-200 text-slate-600 text-[8px] px-1 rounded font-bold">
+                      {idx + 1}
+                    </span>
+                  </div>
                 </div>
-              ))}
-              <span className="absolute bottom-1 right-1 bg-slate-200 text-slate-600 text-[8px] px-1 rounded font-bold">1</span>
-            </div>
+              );
+            })}
           </div>
         </aside>
 
@@ -653,7 +784,7 @@ export default function DocumentEditor() {
               </div>
               <div className="space-y-4 text-xs text-slate-700 leading-relaxed">
                 <p className="font-bold">Bexcode Agreement Document Content Area</p>
-                <p>Please place all required signature, stamp, date, and split character fields below.</p>
+                <p>{currentDocument.customMessage || 'Please place all required signature, stamp, date, and split character fields below.'}</p>
               </div>
             </div>
 
@@ -1794,16 +1925,21 @@ export default function DocumentEditor() {
                 <thead>
                   <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold">
                     <th className="py-2.5 px-4">Recipient</th>
+                    <th className="py-2.5 px-4 text-center">Docs</th>
                     <th className="py-2.5 px-4 text-right">Fields</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {recipientList.map((rec) => {
-                    const count = fieldsOnDoc.filter(f => f.assigneeId === rec.id || !f.assigneeId).length;
+                    const allFlat = Object.values(fieldsByDoc).flat();
+                    const count = allFlat.filter(f => f.assigneeId === rec.id || !f.assigneeId).length;
                     return (
                       <tr key={rec.id} className="hover:bg-slate-50">
                         <td className="py-2.5 px-4 font-semibold text-slate-800">
                           {rec.email || 'vimal@bexcodeservices.com'}
+                        </td>
+                        <td className="py-2.5 px-4 text-center font-bold text-slate-600">
+                          {documentsList.length}
                         </td>
                         <td className="py-2.5 px-4 text-right font-bold text-[#007355]">
                           {count}
@@ -1819,7 +1955,7 @@ export default function DocumentEditor() {
               <button
                 type="button"
                 onClick={() => setShowConfirmModal(false)}
-                className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer"
               >
                 Cancel
               </button>
@@ -1828,6 +1964,15 @@ export default function DocumentEditor() {
                 onClick={async () => {
                   setShowConfirmModal(false);
                   const targetEmail = recipientList[0]?.email || recipientEmail || 'vimal@bexcodeservices.com';
+                  const allFlat = Object.values(fieldsByDoc).flat();
+
+                  // Persist to localStorage for envelope
+                  if (id) {
+                    localStorage.setItem(`bexsign_doc_${id}_documents`, JSON.stringify(documentsList));
+                    localStorage.setItem(`bexsign_doc_${id}_fields_by_doc`, JSON.stringify(fieldsByDoc));
+                    localStorage.setItem(`bexsign_doc_${id}_fields`, JSON.stringify(allFlat));
+                  }
+
                   try {
                     await fetch(`http://localhost:5000/api/documents/send/${id || 1}`, {
                       method: 'POST',
@@ -1836,13 +1981,15 @@ export default function DocumentEditor() {
                         recipientEmail: targetEmail,
                         recipientName: recipientList[0]?.name || 'Signer',
                         documentName: documentTitle,
-                        fields: fieldsOnDoc
+                        documents: documentsList,
+                        fieldsByDoc: fieldsByDoc,
+                        fields: allFlat
                       })
                     });
                   } catch (e) {}
 
-                  showPopupAlert(`Document sent for signature! Digital Signature Request email dispatched via SMTP to ${targetEmail}.`, {
-                    title: 'Document Dispatched',
+                  showPopupAlert(`Document package sent for signature! Digital Signature Request email dispatched via SMTP to ${targetEmail}.`, {
+                    title: 'Envelope Dispatched',
                     type: 'success'
                   });
                   navigate('/documents');

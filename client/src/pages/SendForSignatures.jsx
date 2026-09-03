@@ -31,10 +31,28 @@ export default function SendForSignatures() {
   const fileInputRef = useRef(null);
   const [currentCreatedId, setCurrentCreatedId] = useState(id ? parseInt(id) : null);
 
-  // Document State
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [documentName, setDocumentName] = useState(location.state?.docName || '');
-  const [hasCreatedDocCard, setHasCreatedDocCard] = useState(!!location.state?.fromCreate);
+  // Multi-Document State (Pages 4 & 5)
+  const [documentsList, setDocumentsList] = useState(() => {
+    const saved = id ? localStorage.getItem(`bexsign_doc_${id}_documents`) : null;
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      } catch (e) {}
+    }
+    const initialName = location.state?.docName || (location.state?.fromCreate ? 'My doc vimal 2.pdf' : '');
+    return [
+      {
+        id: 1,
+        name: initialName || 'My doc vimal 2.pdf',
+        pages: 1,
+        status: 'Ready',
+        file: null,
+        customMessage: 'check the document for signature'
+      }
+    ];
+  });
+  const [activeDocIndex, setActiveDocIndex] = useState(0);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const dropdownRef = useRef(null);
 
@@ -97,7 +115,32 @@ export default function SendForSignatures() {
       const data = await res.json();
       if (data.success && data.document) {
         const doc = data.document;
-        setDocumentName(doc.document_name || doc.title || '');
+        let loadedDocs = [];
+        try {
+          const savedDocs = localStorage.getItem(`bexsign_doc_${id}_documents`);
+          if (savedDocs) {
+            loadedDocs = JSON.parse(savedDocs);
+          }
+        } catch (e) {}
+
+        if (!loadedDocs || loadedDocs.length === 0) {
+          loadedDocs = [
+            {
+              id: 1,
+              name: doc.document_name || doc.title || 'My doc vimal 2.pdf',
+              pages: 1,
+              status: 'Ready',
+              file: null,
+              customMessage: doc.custom_message || 'check the document for signature'
+            }
+          ];
+        }
+        setDocumentsList(loadedDocs);
+        setActiveDocIndex(0);
+
+        if (doc.custom_message) {
+          setNoteToAll(doc.custom_message);
+        }
         if (doc.recipient_email) {
           setRecipients([
             {
@@ -119,19 +162,54 @@ export default function SendForSignatures() {
   };
 
   const handleFileSelect = (e) => {
-    const file = e.target.files && e.target.files[0];
-    if (file) {
-      setSelectedFile(file);
-      if (!documentName) {
-        setDocumentName(file.name.replace(/\.[^/.]+$/, ''));
-      }
+    const files = Array.from(e.target.files || []);
+    if (files.length > 0) {
+      const newDocs = files.map((f, idx) => ({
+        id: Date.now() + idx,
+        name: f.name.replace(/\.[^/.]+$/, ''),
+        pages: 1,
+        status: 'Ready',
+        file: f,
+        fileSize: (f.size / 1024).toFixed(1) + ' KB',
+        customMessage: 'check the document for signature'
+      }));
+      setDocumentsList((prev) => {
+        if (prev.length === 1 && !prev[0].file && prev[0].name === 'My doc vimal 2.pdf' && !location.state?.fromCreate) {
+          return newDocs;
+        }
+        return [...prev, ...newDocs];
+      });
+      setActiveDocIndex((prev) => Math.max(0, documentsList.length));
       setIsDropdownOpen(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
-  const handleRemoveFile = () => {
-    setSelectedFile(null);
-    if (fileInputRef.current) fileInputRef.current.value = '';
+  const handleAddNewDoc = (customTitle = '') => {
+    const nextNum = documentsList.length + 1;
+    const newDoc = {
+      id: Date.now(),
+      name: customTitle || `Document ${nextNum}.pdf`,
+      pages: 1,
+      status: 'Ready',
+      file: null,
+      customMessage: 'check the document for signature'
+    };
+    setDocumentsList((prev) => [...prev, newDoc]);
+    setActiveDocIndex(documentsList.length);
+    setIsDropdownOpen(false);
+  };
+
+  const handleRemoveDoc = (indexToRemove) => {
+    if (documentsList.length <= 1) {
+      showPopupAlert('At least one document is required in the envelope.', { title: 'Required', type: 'warning' });
+      return;
+    }
+    const updated = documentsList.filter((_, idx) => idx !== indexToRemove);
+    setDocumentsList(updated);
+    if (activeDocIndex >= updated.length) {
+      setActiveDocIndex(Math.max(0, updated.length - 1));
+    }
   };
 
   const handleAddMe = () => {
@@ -200,15 +278,15 @@ export default function SendForSignatures() {
     e.preventDefault();
 
     // 1. Validation
-    if (!documentName.trim() && !selectedFile) {
-      showPopupAlert('Please enter a document name or upload a document file.', {
+    if (documentsList.length === 0 || !documentsList.some(d => d.name && d.name.trim())) {
+      showPopupAlert('Please add at least one document to proceed.', {
         title: 'Document Required',
         type: 'warning'
       });
       return;
     }
 
-    const validRecipients = recipients.filter((r) => r.email.trim() !== '');
+    const validRecipients = recipients.filter((r) => r.email && r.email.trim() !== '');
     if (validRecipients.length === 0) {
       showPopupAlert('Please enter at least one recipient email address.', {
         title: 'Recipient Required',
@@ -217,13 +295,27 @@ export default function SendForSignatures() {
       return;
     }
 
+    // Clean documents list
+    const cleanDocs = documentsList.map((d, i) => ({
+      id: d.id || i + 1,
+      name: (d.name || `Document ${i + 1}.pdf`).trim(),
+      pages: d.pages || 1,
+      status: d.status || 'Ready',
+      file_path: d.filePath || (d.file ? `/uploads/${d.file.name}` : '/uploads/sample.pdf'),
+      file_name: d.file ? d.file.name : `${(d.name || 'Document').replace(/\.pdf$/i, '')}.pdf`,
+      customMessage: d.customMessage || noteToAll || 'check the document for signature'
+    }));
+
+    const primaryDoc = cleanDocs[0];
+    const primaryName = primaryDoc.name;
+
     try {
       const formData = new FormData();
       const activeDocId = id || currentCreatedId;
       if (activeDocId) {
         formData.append('documentId', activeDocId);
       }
-      formData.append('documentName', documentName.trim() || (selectedFile ? selectedFile.name : 'Untitled Document'));
+      formData.append('documentName', primaryName);
       formData.append('recipientEmail', validRecipients[0].email);
       formData.append('recipientName', validRecipients[0].name || 'Signer');
       formData.append('folderName', folder || 'None');
@@ -237,9 +329,16 @@ export default function SendForSignatures() {
       formData.append('reminderDays', reminderEveryDays);
       formData.append('noteToAll', noteToAll);
       formData.append('recipients', JSON.stringify(validRecipients));
+      formData.append('documentsMeta', JSON.stringify(cleanDocs));
 
-      if (selectedFile) {
-        formData.append('documentFile', selectedFile);
+      // Append uploaded files
+      documentsList.forEach((d) => {
+        if (d.file) {
+          formData.append('documentFiles', d.file);
+        }
+      });
+      if (documentsList[0]?.file) {
+        formData.append('documentFile', documentsList[0].file);
       }
 
       const res = await fetch('http://localhost:5000/api/documents/upload', {
@@ -251,23 +350,25 @@ export default function SendForSignatures() {
       const docId = data.documentId || activeDocId || 1;
       setCurrentCreatedId(docId);
 
-      // Save recipients list in localStorage for instant access across the field editor
+      // Save documents list and settings in localStorage for instant access across field editor
+      localStorage.setItem(`bexsign_doc_${docId}_documents`, JSON.stringify(cleanDocs));
       localStorage.setItem(`bexsign_doc_${docId}_recipients`, JSON.stringify(validRecipients));
       localStorage.setItem(`bexsign_doc_${docId}_is_new`, 'true');
       localStorage.setItem(`bexsign_doc_${docId}_settings`, JSON.stringify({
-        documentName: documentName.trim() || 'Document',
+        documentName: primaryName,
         daysToComplete,
         noteToAll
       }));
 
       // Transition to Step 2: Document Field Editor (Image 2)
-      navigate(`/documents/${docId}/edit`);
+      navigate(`/documents/${docId}/edit`, { state: { documents: cleanDocs } });
     } catch (err) {
       console.warn('Backend offline fallback:', err);
       const fallbackDocId = id || 1;
+      localStorage.setItem(`bexsign_doc_${fallbackDocId}_documents`, JSON.stringify(cleanDocs));
       localStorage.setItem(`bexsign_doc_${fallbackDocId}_recipients`, JSON.stringify(validRecipients));
       localStorage.setItem(`bexsign_doc_${fallbackDocId}_is_new`, 'true');
-      navigate(`/documents/${fallbackDocId}/edit`);
+      navigate(`/documents/${fallbackDocId}/edit`, { state: { documents: cleanDocs } });
     }
   };
 
@@ -287,68 +388,116 @@ export default function SendForSignatures() {
 
   return (
     <div className="bg-[#f8fafc] min-h-screen pb-20 text-slate-800 font-sans">
-      {/* Hidden Native File Input */}
+      {/* Hidden Native File Input (accepts multiple files) */}
       <input
         ref={fileInputRef}
         type="file"
+        multiple
         accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
         onChange={handleFileSelect}
         className="hidden"
       />
 
       <div className="max-w-4xl mx-auto px-4 sm:px-8 pt-6 pb-12 space-y-8">
-        {/* Page Title (Matching Screenshot 4) */}
+        {/* Page Title (Matching Screenshot 4 & Part 4 Page 2) */}
         <div className="border-b border-slate-200 pb-4">
           <h1 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
-            Send for signatures
+            {id ? 'Edit document details' : 'Send for signatures'}
           </h1>
         </div>
 
         {/* ========================================================
-            SECTION 1: ADD DOCUMENTS (Matching Screenshot 4 & 5)
+            SECTION 1: ADD DOCUMENTS (Multi-Document Support)
         ======================================================== */}
         <div className="space-y-4">
-          <h2 className="text-sm font-bold text-slate-900">Add documents</h2>
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-bold text-slate-900">Add documents</h2>
+            <span className="text-xs font-semibold text-slate-500">
+              {documentsList.length} document{documentsList.length > 1 ? 's' : ''} added
+            </span>
+          </div>
 
-          <div className="flex flex-col sm:flex-row items-start gap-6">
-            {/* Attached Created Document Card (Page 4) */}
-            {hasCreatedDocCard && (
-              <div className="w-52 h-60 border border-slate-300 rounded-lg bg-white p-3 shadow-xs flex flex-col justify-between shrink-0 relative group">
-                <div className="flex justify-between items-center text-slate-400">
-                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Document</span>
-                  <button type="button" className="hover:text-slate-700"><MoreVertical size={14} /></button>
-                </div>
-                {/* Miniature Page Content Preview */}
-                <div className="w-full h-36 bg-slate-50 border border-slate-200 rounded p-2.5 text-[9px] text-slate-600 overflow-hidden leading-snug select-none shadow-2xs">
-                  <p className="font-bold text-slate-800 truncate mb-1">{documentName || 'This is vnc\'s doc'}</p>
-                  <p className="text-slate-500 text-[8px] italic">check the document for signature</p>
-                  <div className="mt-8 border-t border-slate-200 pt-1.5 flex justify-between text-[8px] text-slate-400 font-mono">
-                    <span>1 pages</span>
-                    <span className="text-[#007355] font-bold">Ready</span>
+          <div className="flex flex-col sm:flex-row items-start gap-6 flex-wrap">
+            {/* Render all attached document cards side by side */}
+            {documentsList.map((docItem, idx) => {
+              const isSelected = activeDocIndex === idx;
+              return (
+                <div
+                  key={docItem.id || idx}
+                  onClick={() => setActiveDocIndex(idx)}
+                  className={`w-52 h-60 border rounded-lg bg-white p-3 shadow-xs flex flex-col justify-between shrink-0 relative group cursor-pointer transition ${
+                    isSelected
+                      ? 'border-2 border-[#007355] ring-2 ring-emerald-100 shadow-md'
+                      : 'border-slate-300 hover:border-slate-400'
+                  }`}
+                  title="Click to select and rename document"
+                >
+                  <div className="flex justify-between items-center text-slate-400">
+                    <span className={`text-[10px] font-bold uppercase tracking-wider ${isSelected ? 'text-[#007355]' : 'text-slate-500'}`}>
+                      Document {idx + 1}
+                    </span>
+                    <button type="button" className="hover:text-slate-700">
+                      <MoreVertical size={14} />
+                    </button>
+                  </div>
+
+                  {/* Miniature Page Content Preview */}
+                  <div className="w-full h-36 bg-slate-50 border border-slate-200 rounded p-2.5 text-[9px] text-slate-600 overflow-hidden leading-snug select-none shadow-2xs relative">
+                    <p className="font-bold text-slate-800 truncate mb-1">
+                      {docItem.name || `Document ${idx + 1}`}
+                    </p>
+                    <p className="text-slate-500 text-[8px] italic">
+                      {docItem.customMessage || 'check the document for signature'}
+                    </p>
+                    <div className="mt-8 border-t border-slate-200 pt-1.5 flex justify-between text-[8px] text-slate-400 font-mono">
+                      <span>{docItem.pages || 1} pages</span>
+                      <span className="text-[#007355] font-bold">{docItem.status || 'Ready'}</span>
+                    </div>
+                  </div>
+
+                  <div className="pt-1 flex items-center justify-between">
+                    <span
+                      className="text-xs font-bold text-slate-800 truncate max-w-[140px]"
+                      title={docItem.name}
+                    >
+                      {docItem.name || `Document ${idx + 1}`}
+                    </span>
+                    {documentsList.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleRemoveDoc(idx);
+                        }}
+                        className="text-slate-400 hover:text-red-500 p-0.5 rounded hover:bg-slate-100 transition"
+                        title="Remove document"
+                      >
+                        <X size={14} />
+                      </button>
+                    )}
                   </div>
                 </div>
-                <div className="pt-1 flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-800 truncate max-w-[140px]">{documentName || 'This is vnc\'s doc'}</span>
-                  <button
-                    type="button"
-                    onClick={() => { setHasCreatedDocCard(false); }}
-                    className="text-slate-400 hover:text-red-500 p-0.5"
-                    title="Remove"
-                  >
-                    <X size={14} />
-                  </button>
-                </div>
-              </div>
-            )}
+              );
+            })}
+
             {/* Dropzone Box */}
             <div
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => {
                 e.preventDefault();
-                const dropped = e.dataTransfer.files && e.dataTransfer.files[0];
-                if (dropped) {
-                  setSelectedFile(dropped);
-                  if (!documentName) setDocumentName(dropped.name.replace(/\.[^/.]+$/, ''));
+                const files = Array.from(e.dataTransfer.files || []);
+                if (files.length > 0) {
+                  const newDocs = files.map((f, idx) => ({
+                    id: Date.now() + idx,
+                    name: f.name.replace(/\.[^/.]+$/, ''),
+                    pages: 1,
+                    status: 'Ready',
+                    file: f,
+                    fileSize: (f.size / 1024).toFixed(1) + ' KB',
+                    customMessage: 'check the document for signature'
+                  }));
+                  setDocumentsList((prev) => [...prev, ...newDocs]);
+                  setActiveDocIndex(documentsList.length);
                 }
               }}
               className="w-60 h-60 border-2 border-dashed border-slate-300 rounded-lg flex flex-col items-center justify-center p-6 text-center bg-white hover:border-[#007355] transition relative shrink-0 shadow-2xs"
@@ -364,13 +513,13 @@ export default function SendForSignatures() {
                 <button
                   type="button"
                   onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-                  className="bg-[#007355] hover:bg-[#005c44] text-white px-3.5 py-1.5 rounded text-xs font-semibold inline-flex items-center gap-1.5 transition shadow-xs"
+                  className="bg-[#007355] hover:bg-[#005c44] text-white px-3.5 py-1.5 rounded text-xs font-semibold inline-flex items-center gap-1.5 transition shadow-xs cursor-pointer"
                 >
                   <span>Add document</span>
                   <ChevronDown size={14} />
                 </button>
 
-                {/* Dropdown Menu (Matching Screenshot 5) */}
+                {/* Dropdown Menu */}
                 {isDropdownOpen && (
                   <div className="absolute top-full left-0 mt-1.5 w-48 bg-white border border-slate-200 rounded-md shadow-xl py-2 z-30 text-left">
                     <div className="px-3 pb-1 mb-1 border-b border-slate-100">
@@ -384,7 +533,7 @@ export default function SendForSignatures() {
                         setIsDropdownOpen(false);
                         if (fileInputRef.current) fileInputRef.current.click();
                       }}
-                      className="w-full text-left px-4 py-1.5 text-xs text-slate-800 hover:bg-slate-50 font-medium transition"
+                      className="w-full text-left px-4 py-1.5 text-xs text-slate-800 hover:bg-slate-50 font-medium transition cursor-pointer"
                     >
                       Desktop
                     </button>
@@ -394,37 +543,34 @@ export default function SendForSignatures() {
                         setIsDropdownOpen(false);
                         setShowCloudModal(true);
                       }}
-                      className="w-full text-left px-4 py-1.5 text-xs text-slate-800 hover:bg-slate-50 font-medium transition"
+                      className="w-full text-left px-4 py-1.5 text-xs text-slate-800 hover:bg-slate-50 font-medium transition cursor-pointer"
                     >
                       Cloud
                     </button>
                     <button
                       type="button"
                       onClick={() => {
-                        setIsDropdownOpen(false);
-                        setShowTemplateModal(true);
+                        handleAddNewDoc('Standard Employment Agreement.pdf');
                       }}
-                      className="w-full text-left px-4 py-1.5 text-xs text-slate-800 hover:bg-slate-50 font-medium transition"
+                      className="w-full text-left px-4 py-1.5 text-xs text-slate-800 hover:bg-slate-50 font-medium transition cursor-pointer"
                     >
                       Template(s)
                     </button>
                     <button
                       type="button"
                       onClick={() => {
-                        setIsDropdownOpen(false);
-                        showPopupAlert('Mail merge template engine is connected.', { title: 'Mail Merge', type: 'info' });
+                        handleAddNewDoc('Customer Service Agreement.pdf');
                       }}
-                      className="w-full text-left px-4 py-1.5 text-xs text-slate-800 hover:bg-slate-50 font-medium transition"
+                      className="w-full text-left px-4 py-1.5 text-xs text-slate-800 hover:bg-slate-50 font-medium transition cursor-pointer"
                     >
                       Mail merge template
                     </button>
                     <button
                       type="button"
                       onClick={() => {
-                        setIsDropdownOpen(false);
-                        navigate('/documents/create-editor');
+                        handleAddNewDoc('Blank Agreement Document.pdf');
                       }}
-                      className="w-full text-left px-4 py-1.5 text-xs text-slate-800 hover:bg-slate-50 font-medium transition"
+                      className="w-full text-left px-4 py-1.5 text-xs text-slate-800 hover:bg-slate-50 font-medium transition cursor-pointer"
                     >
                       Create
                     </button>
@@ -433,45 +579,36 @@ export default function SendForSignatures() {
               </div>
             </div>
 
-            {/* Document Details & Uploaded Item Display */}
-            <div className="flex-1 w-full space-y-4">
-              {selectedFile && (
-                <div className="bg-white border border-slate-200 rounded-lg p-3 flex items-center justify-between shadow-2xs">
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded bg-emerald-50 text-[#007355] flex items-center justify-center font-bold text-xs">
-                      PDF
-                    </div>
-                    <div>
-                      <p className="text-xs font-bold text-slate-800 truncate max-w-[220px] sm:max-w-xs">
-                        {selectedFile.name}
-                      </p>
-                      <p className="text-[10px] text-slate-400">
-                        {(selectedFile.size / 1024).toFixed(1)} KB • Ready for signing
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleRemoveFile}
-                    className="text-slate-400 hover:text-red-600 p-1.5 rounded hover:bg-slate-100 transition"
-                    title="Remove document"
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-              )}
-
+            {/* Document Details & Name Input Display */}
+            <div className="flex-1 w-full min-w-[240px] space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Document name
+                <label className="block text-xs font-semibold text-slate-700 mb-1 flex items-center justify-between">
+                  <span>Document name</span>
+                  {documentsList.length > 1 && (
+                    <span className="text-[11px] text-[#007355] font-bold">
+                      Document {activeDocIndex + 1} of {documentsList.length}
+                    </span>
+                  )}
                 </label>
                 <input
                   type="text"
-                  placeholder="Enter name"
-                  value={documentName}
-                  onChange={(e) => setDocumentName(e.target.value)}
-                  className="w-full max-w-md p-2 text-xs border border-slate-300 rounded bg-white focus:border-[#007355] focus:ring-1 focus:ring-[#007355] outline-none transition"
+                  placeholder="Enter document name"
+                  value={documentsList[activeDocIndex]?.name || ''}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setDocumentsList((prev) => {
+                      const copy = [...prev];
+                      if (copy[activeDocIndex]) {
+                        copy[activeDocIndex] = { ...copy[activeDocIndex], name: val };
+                      }
+                      return copy;
+                    });
+                  }}
+                  className="w-full max-w-md p-2 text-xs border border-slate-300 rounded bg-white focus:border-[#007355] focus:ring-1 focus:ring-[#007355] outline-none transition font-semibold text-slate-900"
                 />
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Click on any document card to select and rename it.
+                </p>
               </div>
             </div>
           </div>
