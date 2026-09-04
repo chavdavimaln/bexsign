@@ -50,6 +50,34 @@ export default function DocumentVersionsModal({ doc, onClose, onViewVersion }) {
     const savedSigner = doc?.signer_name || localStorage.getItem(`bexsign_doc_${doc?.id}_signer`) || 'Vimal Chavda';
     const savedType = localStorage.getItem(`bexsign_doc_${doc?.id}_sigtype`) || (savedSig && savedSig.startsWith('data:') ? 'draw' : 'type');
 
+    let docFields = [];
+    if (doc?.fieldsByDoc && typeof doc.fieldsByDoc === 'object') {
+      docFields = doc.fieldsByDoc[0] || Object.values(doc.fieldsByDoc).flat() || [];
+    } else if (doc?.fields) {
+      try {
+        const parsed = typeof doc.fields === 'string' ? JSON.parse(doc.fields) : doc.fields;
+        if (Array.isArray(parsed)) docFields = parsed;
+      } catch (e) {}
+    }
+    if (docFields.length === 0 && doc?.id) {
+      try {
+        const savedByDoc = localStorage.getItem(`bexsign_doc_${doc.id}_fields_by_doc`);
+        if (savedByDoc) {
+          const parsed = JSON.parse(savedByDoc);
+          if (parsed && typeof parsed === 'object') docFields = parsed[0] || Object.values(parsed).flat() || [];
+        }
+      } catch (e) {}
+    }
+    if (docFields.length === 0 && doc?.id) {
+      try {
+        const savedFlat = localStorage.getItem(`bexsign_doc_${doc.id}_fields`);
+        if (savedFlat) {
+          const parsed = JSON.parse(savedFlat);
+          if (Array.isArray(parsed)) docFields = parsed;
+        }
+      } catch (e) {}
+    }
+
     generateAndDownloadPdf({
       documentName: `${documentName}_v${ver.version_label || '1.0'}.pdf`,
       docId,
@@ -58,7 +86,8 @@ export default function DocumentVersionsModal({ doc, onClose, onViewVersion }) {
       date: ver.created_at ? new Date(ver.created_at).toLocaleString() : 'Sep 02, 2026 19:40',
       status: doc?.status || 'Completed',
       signatureImage: savedSig,
-      signatureType: savedType
+      signatureType: savedType,
+      fields: docFields
     });
   };
 

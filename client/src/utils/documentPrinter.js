@@ -1,4 +1,5 @@
 import { generateBexsignId } from './documentId';
+import { getDefaultDocContent } from './documentDefaults';
 
 /**
  * Utility to print the canonical BexSign document sheet
@@ -12,11 +13,15 @@ export function printDocumentSheet({
   signerName = 'Vimal Chavda',
   signerEmail = 'vimal@bexcodeservices.com',
   signatureImage = '',
-  signatureStyle = 'font-signature-1'
+  signatureStyle = 'font-signature-1',
+  fields = [],
+  placedFields = []
 }) {
   const fullDocId = bexsignDocId || (typeof docId === 'string' && docId.startsWith('BEX-') ? docId : generateBexsignId(docId));
   const docTitle = documentName || 'Document 1.pdf';
-  const cleanBody = documentText || 'check the document for signature';
+  const cleanBody = (documentText && documentText.trim() && documentText !== 'check the document for signature')
+    ? documentText
+    : getDefaultDocContent(docTitle, documentText);
 
   let sigIdLine1 = 'BEX-SIGN-VC-EMP001-2026';
   let sigIdLine2 = typeof fullDocId === 'string' ? fullDocId.replace('BEX-DOC-', '').substring(0, 24) : '361682B4-ERZWA2U19FQKOU0L';
@@ -24,6 +29,34 @@ export function printDocumentSheet({
   const sigHtml = signatureImage && signatureImage.startsWith('data:')
     ? `<img src="${signatureImage}" style="max-height: 48px; max-width: 200px; object-fit: contain; margin: 4px 0; display: block;" />`
     : `<div style="font-family: 'Brush Script MT', 'Caveat', 'Segoe Script', cursive; font-size: 26px; color: #0f172a; margin: 4px 0; font-weight: 700;">${signerName || 'Vimal Chavda'}</div>`;
+
+  const allFields = (fields && fields.length > 0 ? fields : placedFields) || [];
+  const otherFields = allFields.filter(f => f.type !== 'Signature' && f.type !== 'Initial' && f.type !== 'Stamp');
+
+  let otherFieldsHtml = '';
+  if (otherFields.length > 0) {
+    otherFieldsHtml = `
+      <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin: 18px 0;">
+        ${otherFields.map(f => {
+          let fVal = '';
+          if (f.type === 'Company') fVal = f.value || 'Bexcode Services';
+          else if (f.type === 'Email') fVal = f.value || signerEmail;
+          else if (f.type === 'Full name' || f.type === 'Name') fVal = f.value || signerName;
+          else if (f.type === 'Sign date' || f.type === 'Date') fVal = f.value || new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+          else if (f.type === 'Job title') fVal = f.value || 'Designated Signer';
+          else if (f.type === 'Checkbox') fVal = (f.value === true || f.value === 'true') ? '☑ Confirmed' : '☐ Not checked';
+          else fVal = f.value || f.label || '-';
+
+          return `
+            <div style="border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px 12px; background: #f8fafc;">
+              <div class="field-label" style="margin-bottom: 3px;">${f.label || f.type}</div>
+              <div style="font-size: 12px; font-weight: 700; color: #0f172a;">${fVal}</div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+  }
 
   const printWindow = window.open('', '_blank', 'width=850,height=1000');
   if (!printWindow) {
@@ -169,6 +202,8 @@ export function printDocumentSheet({
               ${sigIdLine2}
             </div>
           </div>
+
+          ${otherFieldsHtml}
 
           <div class="field-label">STAMP</div>
           <div class="stamp-box">

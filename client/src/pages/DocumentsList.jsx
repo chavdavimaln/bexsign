@@ -9,6 +9,7 @@ import CompletionCertificateModal from '../components/CompletionCertificateModal
 import FormDataModal from '../components/FormDataModal';
 import DocumentVersionsModal from '../components/DocumentVersionsModal';
 import BexDocumentSheet from '../components/BexDocumentSheet';
+import { getDefaultDocContent } from '../utils/documentDefaults';
 import {
   FileText,
   Plus,
@@ -262,16 +263,58 @@ export default function DocumentsList() {
     const savedSigner = doc.signer_name || localStorage.getItem(`bexsign_doc_${doc.id}_signer`) || doc.owner || 'Vimal Chavda';
     const savedType = localStorage.getItem(`bexsign_doc_${doc.id}_sigtype`) || (savedSig && savedSig.startsWith('data:') ? 'draw' : 'type');
 
+    let docBody = doc.document_text || doc.custom_message;
+    if (!docBody || docBody === 'check the document for signature') {
+      try {
+        const savedDocs = localStorage.getItem(`bexsign_doc_${doc.id}_documents`);
+        if (savedDocs) {
+          const parsed = JSON.parse(savedDocs);
+          if (Array.isArray(parsed) && parsed[0]?.documentText) {
+            docBody = parsed[0].documentText;
+          }
+        }
+      } catch (e) {}
+    }
+
+    let docFields = [];
+    if (doc.fieldsByDoc && typeof doc.fieldsByDoc === 'object') {
+      docFields = doc.fieldsByDoc[0] || Object.values(doc.fieldsByDoc).flat() || [];
+    } else if (doc.fields) {
+      try {
+        const parsed = typeof doc.fields === 'string' ? JSON.parse(doc.fields) : doc.fields;
+        if (Array.isArray(parsed)) docFields = parsed;
+      } catch (e) {}
+    }
+    if (docFields.length === 0) {
+      try {
+        const savedByDoc = localStorage.getItem(`bexsign_doc_${doc.id}_fields_by_doc`);
+        if (savedByDoc) {
+          const parsed = JSON.parse(savedByDoc);
+          if (parsed && typeof parsed === 'object') docFields = parsed[0] || Object.values(parsed).flat() || [];
+        }
+      } catch (e) {}
+    }
+    if (docFields.length === 0) {
+      try {
+        const savedFlat = localStorage.getItem(`bexsign_doc_${doc.id}_fields`);
+        if (savedFlat) {
+          const parsed = JSON.parse(savedFlat);
+          if (Array.isArray(parsed)) docFields = parsed;
+        }
+      } catch (e) {}
+    }
+
     generateAndDownloadPdf({
       documentName: docName,
-      documentText: doc.custom_message || 'check the document for signature',
+      documentText: docBody || getDefaultDocContent(docName, doc.custom_message),
       docId: doc.bexsign_doc_id || doc.id || 1,
       signerName: savedSigner,
       signerEmail: doc.recipient_email || doc.recipient || 'vimal@bexcodeservices.com',
       date: doc.signed_at ? new Date(doc.signed_at).toLocaleString() : (doc.created_at ? new Date(doc.created_at).toLocaleString() : doc.created || 'Aug 27, 2026'),
       status: doc.status || 'Completed',
       signatureImage: savedSig,
-      signatureType: savedType
+      signatureType: savedType,
+      fields: docFields
     });
     handleActionToast(`Downloaded "${docName}" successfully.`);
   };
@@ -281,14 +324,56 @@ export default function DocumentsList() {
     const savedSig = doc.signature_image || localStorage.getItem(`bexsign_doc_${doc.id}_signature`) || '';
     const savedSigner = doc.signer_name || localStorage.getItem(`bexsign_doc_${doc.id}_signer`) || doc.owner || 'Vimal Chavda';
 
+    let docBody = doc.document_text || doc.custom_message;
+    if (!docBody || docBody === 'check the document for signature') {
+      try {
+        const savedDocs = localStorage.getItem(`bexsign_doc_${doc.id}_documents`);
+        if (savedDocs) {
+          const parsed = JSON.parse(savedDocs);
+          if (Array.isArray(parsed) && parsed[0]?.documentText) {
+            docBody = parsed[0].documentText;
+          }
+        }
+      } catch (e) {}
+    }
+
+    let docFields = [];
+    if (doc.fieldsByDoc && typeof doc.fieldsByDoc === 'object') {
+      docFields = doc.fieldsByDoc[0] || Object.values(doc.fieldsByDoc).flat() || [];
+    } else if (doc.fields) {
+      try {
+        const parsed = typeof doc.fields === 'string' ? JSON.parse(doc.fields) : doc.fields;
+        if (Array.isArray(parsed)) docFields = parsed;
+      } catch (e) {}
+    }
+    if (docFields.length === 0) {
+      try {
+        const savedByDoc = localStorage.getItem(`bexsign_doc_${doc.id}_fields_by_doc`);
+        if (savedByDoc) {
+          const parsed = JSON.parse(savedByDoc);
+          if (parsed && typeof parsed === 'object') docFields = parsed[0] || Object.values(parsed).flat() || [];
+        }
+      } catch (e) {}
+    }
+    if (docFields.length === 0) {
+      try {
+        const savedFlat = localStorage.getItem(`bexsign_doc_${doc.id}_fields`);
+        if (savedFlat) {
+          const parsed = JSON.parse(savedFlat);
+          if (Array.isArray(parsed)) docFields = parsed;
+        }
+      } catch (e) {}
+    }
+
     printDocumentSheet({
       documentName: docName,
-      documentText: doc.custom_message || 'check the document for signature',
+      documentText: docBody || getDefaultDocContent(docName, doc.custom_message),
       docId: doc.id || 1,
       bexsignDocId: doc.bexsign_doc_id || '',
       signerName: savedSigner,
       signerEmail: doc.recipient_email || doc.recipient || 'vimal@bexcodeservices.com',
-      signatureImage: savedSig
+      signatureImage: savedSig,
+      placedFields: docFields
     });
     handleActionToast(`Document sent to printer.`);
   };

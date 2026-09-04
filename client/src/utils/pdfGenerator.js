@@ -1,4 +1,5 @@
 import { generateBexsignId, generateEmployeeSignatureId } from './documentId';
+import { getDefaultDocContent } from './documentDefaults';
 
 /**
  * Converts a signature image (dataURL, drawn canvas, or typed name)
@@ -93,7 +94,9 @@ export async function generateAndDownloadPdf({
   status = 'Completed',
   signatureImage = '',
   signatureType = 'type',
-  password = ''
+  password = '',
+  fields = [],
+  placedFields = []
 }) {
   const cleanFileName = documentName.endsWith('.pdf') ? documentName : `${documentName}.pdf`;
   const fullSignatureId = typeof docId === 'string' && (docId.startsWith('BEX-SIGN') || docId.startsWith('BEX-DOC'))
@@ -112,6 +115,118 @@ export async function generateAndDownloadPdf({
     }
   }
 
+  const cleanDocTitle = (documentName || 'Document 1.pdf').replace(/\.pdf$/i, '');
+  const cleanDocBody = (documentText && documentText.trim() && documentText !== 'check the document for signature')
+    ? documentText
+    : getDefaultDocContent(cleanDocTitle, documentText);
+
+  // Wrap document text cleanly to prevent overflow and render multi-paragraph clauses
+  const rawParagraphs = cleanDocBody.split('\n');
+  const wrappedBodyLines = [];
+  for (const p of rawParagraphs) {
+    const trimmed = p.trim();
+    if (!trimmed) {
+      if (wrappedBodyLines.length > 0 && wrappedBodyLines[wrappedBodyLines.length - 1] !== '') {
+        wrappedBodyLines.push('');
+      }
+      continue;
+    }
+    const words = trimmed.split(/\s+/);
+    let curr = '';
+    for (const w of words) {
+      if ((curr + ' ' + w).trim().length <= 88) {
+        curr = (curr + ' ' + w).trim();
+      } else {
+        if (curr) wrappedBodyLines.push(curr);
+        curr = w;
+      }
+    }
+    if (curr) wrappedBodyLines.push(curr);
+  }
+
+  // Cap at 14 lines max to preserve signature block and fields placement
+  const displayLines = wrappedBodyLines.slice(0, 14);
+
+  const pdfBodyTextOps = displayLines.length > 0
+    ? displayLines.map((line, idx) => {
+        const escaped = line.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+        return idx === 0 ? `50 678 Td (${escaped}) Tj` : `0 -12.5 Td (${escaped}) Tj`;
+      }).join('\n')
+    : '50 678 Td (check the document for signature) Tj';
+
+  // Dynamic vertical coordinate calculations
+  const allFields = (fields && fields.length > 0 ? fields : placedFields) || [];
+  const otherFields = allFields.filter(f => f.type !== 'Signature' && f.type !== 'Initial' && f.type !== 'Stamp');
+
+  const textEndOffset = displayLines.length * 12.5;
+  const dividerY = Math.min(650, Math.max(420, 678 - textEndOffset - 12));
+  const sigLabelY = dividerY - 18;
+  const sigBracketTop = dividerY - 32;
+  const sigBracketBottom = dividerY - 105;
+  const sigSignedByY = dividerY - 38;
+  const sigImageY = dividerY - 95;
+  const sigIdsY = dividerY - 118;
+
+  // Custom placed fields (e.g. Company, Email, Full name, Sign date, Job title, Text)
+  let customFieldsOperators = '';
+  let nextSectionY = sigIdsY - 20;
+
+  if (otherFields.length > 0) {
+    for (let i = 0; i < otherFields.length; i++) {
+      const f = otherFields[i];
+      const colIndex = i % 2;
+      const colX = colIndex === 0 ? 50 : 315;
+      const rowY = nextSectionY - Math.floor(i / 2) * 48;
+
+      const fLabel = (f.label || f.type || 'Field').toUpperCase().replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+      let fVal = '';
+      if (f.type === 'Company') {
+        fVal = f.value || 'Bexcode Services';
+      } else if (f.type === 'Email') {
+        fVal = f.value || signerEmail;
+      } else if (f.type === 'Full name' || f.type === 'Name') {
+        fVal = f.value || signerName;
+      } else if (f.type === 'Sign date' || f.type === 'Date') {
+        fVal = f.value || date || new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      } else if (f.type === 'Job title') {
+        fVal = f.value || 'Designated Signer';
+      } else if (f.type === 'Checkbox') {
+        fVal = (f.value === true || f.value === 'true') ? '[X] Confirmed' : '[ ] Not checked';
+      } else {
+        fVal = f.value || f.label || '';
+      }
+      const escapedVal = String(fVal).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+
+      customFieldsOperators += `
+% Placed Field: ${f.type}
+BT
+/F2 8 Tf
+0.45 0.5 0.55 rg
+${colX} ${rowY} Td
+(${fLabel}) Tj
+ET
+
+0.82 0.85 0.88 RG
+0.75 w
+${colX} ${rowY - 24} 245 20 re S
+
+BT
+/F2 9.5 Tf
+0.15 0.2 0.25 rg
+${colX + 8} ${rowY - 16} Td
+(${escapedVal}) Tj
+ET
+`;
+    }
+    const rowCount = Math.ceil(otherFields.length / 2);
+    nextSectionY = nextSectionY - rowCount * 48 - 8;
+  }
+
+  const stampLabelY = nextSectionY;
+  const stampBoxY = nextSectionY - 45;
+  const stampContentY = nextSectionY - 30;
+  const emailY = stampBoxY - 20;
+
   // Convert user signature into image bytes if provided
   const imgObj = await prepareSignatureImageObject(signatureImage, signerName);
 
@@ -119,7 +234,7 @@ export async function generateAndDownloadPdf({
   if (imgObj) {
     imageOperators = `
 q
-160 0 0 50 64 530 cm
+160 0 0 50 64 ${sigImageY} cm
 /Im1 Do
 Q
 `;
@@ -128,13 +243,10 @@ Q
 % Fallback Vector Signature Strokes
 0.08 0.12 0.2 RG
 1.8 w
-65 540 m 76 572 86 525 94 554 c 100 575 92 586 82 574 c 74 560 90 520 105 576 c 116 530 129 566 142 550 c 154 535 167 561 180 545 c 193 532 206 558 221 543 c 236 528 252 555 268 546 c S
-74 532 m 122 535 185 532 258 536 c S
+65 ${sigImageY + 10} m 76 ${sigImageY + 42} 86 ${sigImageY - 5} 94 ${sigImageY + 24} c 100 ${sigImageY + 45} 92 ${sigImageY + 56} 82 ${sigImageY + 44} c 74 ${sigImageY + 30} 90 ${sigImageY - 10} 105 ${sigImageY + 46} c 116 ${sigImageY} 129 ${sigImageY + 36} 142 ${sigImageY + 20} c 154 ${sigImageY + 5} 167 ${sigImageY + 31} 180 ${sigImageY + 15} c 193 ${sigImageY + 2} 206 ${sigImageY + 28} 221 ${sigImageY + 13} c 236 ${sigImageY - 2} 252 ${sigImageY + 25} 268 ${sigImageY + 16} c S
+74 ${sigImageY + 2} m 122 ${sigImageY + 5} 185 ${sigImageY + 2} 258 ${sigImageY + 6} c S
 `;
   }
-
-  const cleanDocTitle = (documentName || 'Document 1.pdf').replace(/\.pdf$/i, '');
-  const cleanDocBody = documentText || 'check the document for signature';
 
   // EXACT SHEET STREAM MATCHING ZOHO SIGN REFERENCE & ATTACHMENT 1
   const streamBody = `q
@@ -159,27 +271,26 @@ BT
 /F2 18 Tf
 0.08 0.1 0.15 rg
 50 705 Td
-(${cleanDocTitle}) Tj
+(${cleanDocTitle.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)')}) Tj
 ET
 
 % 3. Document Body Text
 BT
-/F1 10 Tf
+/F1 9 Tf
 0.3 0.35 0.4 rg
-50 678 Td
-(${cleanDocBody}) Tj
+${pdfBodyTextOps}
 ET
 
 % Divider before fields
 0.88 0.9 0.92 RG
 0.75 w
-50 655 m 562 655 l S
+50 ${dividerY} m 562 ${dividerY} l S
 
 % 4. SIGNATURE FIELD LABEL
 BT
 /F2 8.5 Tf
 0.45 0.5 0.55 rg
-50 635 Td
+50 ${sigLabelY} Td
 (SIGNATURE) Tj
 ET
 
@@ -188,18 +299,18 @@ ET
 1.8 w
 1 J
 1 j
-58 605 m 50 605 48 603 48 595 c 48 525 l 48 517 50 515 58 515 c S
+58 ${sigBracketTop} m 50 ${sigBracketTop} 48 ${sigBracketTop - 2} 48 ${sigBracketTop - 10} c 48 ${sigBracketBottom + 10} l 48 ${sigBracketBottom + 2} 50 ${sigBracketBottom} 58 ${sigBracketBottom} c S
 
 % Baseline for Signature
 0.75 0.8 0.85 RG
 0.75 w
-48 515 m 280 515 l S
+48 ${sigBracketBottom} m 280 ${sigBracketBottom} l S
 
 % Stamp Text: "- Signed by: [Signer Name]"
 BT
 /F2 9.5 Tf
 0.11 0.29 0.51 rg
-62 602 Td
+62 ${sigSignedByY} Td
 (- Signed by: ) Tj
 /F1 9.5 Tf
 0.15 0.2 0.25 rg
@@ -212,17 +323,19 @@ ${imageOperators}
 BT
 /F1 7.5 Tf
 0.35 0.4 0.45 rg
-58 502 Td
+58 ${sigIdsY} Td
 (${docIdLine1}) Tj
 0 -10 Td
 (${docIdLine2}) Tj
 ET
 
+${customFieldsOperators}
+
 % 5. STAMP FIELD LABEL
 BT
 /F2 8.5 Tf
 0.45 0.5 0.55 rg
-50 455 Td
+50 ${stampLabelY} Td
 (STAMP) Tj
 ET
 
@@ -230,18 +343,18 @@ ET
 [3 2] 0 d
 0.75 0.8 0.85 RG
 1 w
-50 398 220 45 re S
+50 ${stampBoxY} 220 45 re S
 [] 0 d
 
 % Red Box for "Bex"
 0.9 0.1 0.1 rg
-58 408 26 24 re f
+58 ${stampBoxY + 10} 26 24 re f
 
 % White "Bex" Text inside red box
 BT
 /F2 11 Tf
 1 1 1 rg
-62 416 Td
+62 ${stampContentY} Td
 (Bex) Tj
 ET
 
@@ -249,7 +362,7 @@ ET
 BT
 /F2 9.5 Tf
 0.15 0.2 0.25 rg
-92 416 Td
+92 ${stampContentY} Td
 (Corporate Official Stamp) Tj
 /F1 8 Tf
 0.0 0.5 0.35 rg
@@ -261,7 +374,7 @@ ET
 BT
 /F1 9 Tf
 0.35 0.4 0.45 rg
-50 368 Td
+50 ${emailY} Td
 (${signerEmail}) Tj
 ET
 Q`;

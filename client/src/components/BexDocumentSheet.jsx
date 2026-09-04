@@ -2,6 +2,7 @@ import React from 'react';
 import { Copy, PenTool, CheckCircle2, Calendar } from 'lucide-react';
 import SignatureStamp from './SignatureStamp';
 import { generateBexsignId } from '../utils/documentId';
+import { getDefaultDocContent } from '../utils/documentDefaults';
 
 /**
  * Canonical BexDocumentSheet Component
@@ -63,13 +64,31 @@ export default function BexDocumentSheet({
         </div>
 
         {/* Document Title & Body Content */}
-        <div className="space-y-3 pt-2">
+        <div className="space-y-4 pt-2">
           <h1 className="text-2xl font-black text-slate-900 tracking-tight leading-tight">
             {documentName || "Document 1.pdf"}
           </h1>
-          <p className="text-xs text-slate-600 leading-relaxed font-normal whitespace-pre-line">
-            {documentText || "check the document for signature"}
-          </p>
+          <div className="border-b border-slate-200 pb-5 font-sans select-text space-y-2.5">
+            {(() => {
+              const fullContent = (documentText && documentText.trim() && documentText !== "check the document for signature")
+                ? documentText
+                : getDefaultDocContent(documentName, documentText);
+
+              const paragraphs = fullContent.split(/\n\n+/);
+              return paragraphs.map((para, pIdx) => {
+                const trimmed = para.trim();
+                const isHeading = /^[0-9]+\.\s+[A-Z\s]+/.test(trimmed) || (/^[A-Z\s]{5,}$/.test(trimmed) && trimmed.length < 60);
+                return (
+                  <p
+                    key={pIdx}
+                    className={isHeading ? 'font-bold text-slate-900 text-xs tracking-tight mt-3 mb-1' : 'text-xs text-slate-700 leading-relaxed'}
+                  >
+                    {trimmed}
+                  </p>
+                );
+              });
+            })()}
+          </div>
         </div>
 
         {/* ========================================================
@@ -220,14 +239,14 @@ export default function BexDocumentSheet({
                     {!isCompleted ? (
                       <input
                         type="text"
-                        value={field.value !== undefined && field.value !== field.type ? field.value : (field.type === 'Full name' ? signerName : '')}
+                        value={field.value !== undefined && field.value !== field.type ? field.value : (field.type === 'Full name' ? signerName : (field.type === 'Company' ? 'Bexcode Services' : ''))}
                         onChange={(e) => onUpdateField && onUpdateField(field.id, e.target.value)}
                         className="w-full p-2.5 text-xs border border-slate-300 rounded-lg bg-white focus:border-[#007355] focus:ring-1 focus:ring-[#007355] outline-none font-semibold text-slate-800 shadow-2xs"
                         placeholder={`Enter ${field.label || field.type.toLowerCase()}`}
                       />
                     ) : (
                       <div className="text-xs font-semibold text-slate-800 p-2 bg-slate-50 border border-slate-200 rounded-lg">
-                        {field.value || (field.type === 'Full name' ? signerName : '-')}
+                        {field.value || (field.type === 'Company' ? 'Bexcode Services' : (field.type === 'Full name' ? signerName : '-'))}
                       </div>
                     )}
                   </div>

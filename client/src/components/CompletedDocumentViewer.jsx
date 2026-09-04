@@ -26,6 +26,7 @@ import { generateAndDownloadPdf } from '../utils/pdfGenerator';
 import SignatureStamp from './SignatureStamp';
 import BexDocumentSheet from './BexDocumentSheet';
 import { printDocumentSheet } from '../utils/documentPrinter';
+import { getDefaultDocContent } from '../utils/documentDefaults';
 
 export default function CompletedDocumentViewer({ doc, onClose, onBack }) {
   const [currentPage, setCurrentPage] = useState(1);
@@ -34,7 +35,68 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack }) {
   const [showSignaturePanel, setShowSignaturePanel] = useState(false);
   const [bannerDismissed, setBannerDismissed] = useState(false);
 
-  const documentName = doc?.document_name || doc?.title || doc?.name || "This is vnc's doc";
+  const [documentsList, setDocumentsList] = useState(() => {
+    if (doc?.documents && Array.isArray(doc.documents) && doc.documents.length > 0) {
+      return doc.documents;
+    }
+    if (doc?.files && Array.isArray(doc.files) && doc.files.length > 0) {
+      return doc.files.map((f, i) => ({
+        id: f.id || i + 1,
+        name: f.file_name || `Document ${i + 1}.pdf`,
+        documentText: f.document_text || getDefaultDocContent(f.file_name, doc.custom_message)
+      }));
+    }
+    const saved = doc?.id ? localStorage.getItem(`bexsign_doc_${doc.id}_documents`) : null;
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      } catch (e) {}
+    }
+    const initialName = doc?.document_name || doc?.title || doc?.name || "Document 1.pdf";
+    return [
+      {
+        id: 1,
+        name: initialName,
+        documentText: doc?.documentText || doc?.document_text || getDefaultDocContent(initialName, doc?.custom_message)
+      }
+    ];
+  });
+  const [activeDocIndex, setActiveDocIndex] = useState(0);
+
+  const [fieldsByDoc, setFieldsByDoc] = useState(() => {
+    if (doc?.fieldsByDoc && typeof doc.fieldsByDoc === 'object') {
+      return doc.fieldsByDoc;
+    }
+    const docIdKey = doc?.id || 1;
+    const savedByDoc = localStorage.getItem(`bexsign_doc_${docIdKey}_fields_by_doc`);
+    if (savedByDoc) {
+      try {
+        const parsed = JSON.parse(savedByDoc);
+        if (parsed && typeof parsed === 'object') return parsed;
+      } catch (e) {}
+    }
+    const savedFlat = localStorage.getItem(`bexsign_doc_${docIdKey}_fields`);
+    if (savedFlat) {
+      try {
+        const parsed = JSON.parse(savedFlat);
+        if (Array.isArray(parsed) && parsed.length > 0) return { 0: parsed };
+      } catch (e) {}
+    }
+    if (doc?.fields) {
+      try {
+        const parsed = typeof doc.fields === 'string' ? JSON.parse(doc.fields) : doc.fields;
+        if (Array.isArray(parsed)) return { 0: parsed };
+      } catch (e) {}
+    }
+    return {};
+  });
+
+  const activeDocFields = fieldsByDoc[activeDocIndex] || fieldsByDoc[0] || [];
+  const activeDoc = documentsList[activeDocIndex] || documentsList[0];
+  const documentName = activeDoc?.name || doc?.document_name || doc?.title || doc?.name || "Document 1.pdf";
   const docId = doc?.bexsign_doc_id || generateBexsignId(doc?.id || 1);
   const signerName = doc?.signer_name || 'Vimal Chavda';
   const signerEmail = doc?.recipient_email || 'vimal@bexcodeservices.com';
@@ -62,36 +124,42 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack }) {
     }
   };
 
+  const documentBodyText = activeDoc?.documentText || doc?.documentText || doc?.document_text || getDefaultDocContent(documentName, doc?.custom_message);
+
   const handleDownload = () => {
     const savedSig = doc?.signature_image || localStorage.getItem(`bexsign_doc_${doc?.id}_signature`) || '';
     const savedSigner = doc?.signer_name || localStorage.getItem(`bexsign_doc_${doc?.id}_signer`) || signerName;
     const savedType = localStorage.getItem(`bexsign_doc_${doc?.id}_sigtype`) || (savedSig && savedSig.startsWith('data:') ? 'draw' : 'type');
+    const docBexId = documentsList.length > 1 ? `${docId}-${activeDocIndex + 1}` : docId;
 
     generateAndDownloadPdf({
       documentName,
-      documentText: doc?.custom_message || 'check the document for signature',
-      docId,
+      documentText: documentBodyText,
+      docId: docBexId,
       signerName: savedSigner,
       signerEmail,
       date: signedDate,
       status: 'Completed',
       signatureImage: savedSig,
-      signatureType: savedType
+      signatureType: savedType,
+      fields: activeDocFields
     });
   };
 
   const handlePrint = () => {
     const savedSig = doc?.signature_image || localStorage.getItem(`bexsign_doc_${doc?.id}_signature`) || '';
     const savedSigner = doc?.signer_name || localStorage.getItem(`bexsign_doc_${doc?.id}_signer`) || signerName;
+    const docBexId = documentsList.length > 1 ? `${docId}-${activeDocIndex + 1}` : docId;
 
     printDocumentSheet({
       documentName,
-      documentText: doc?.custom_message || 'check the document for signature',
+      documentText: documentBodyText,
       docId: doc?.id || 1,
-      bexsignDocId: docId,
+      bexsignDocId: docBexId,
       signerName: savedSigner,
       signerEmail,
-      signatureImage: savedSig
+      signatureImage: savedSig,
+      placedFields: activeDocFields
     });
   };
 
@@ -223,33 +291,38 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack }) {
       {/* 3. THREE-COLUMN BODY LAYOUT */}
       <div className="flex-1 flex overflow-hidden relative">
         {/* LEFT SIDEBAR: Documents & Page Thumbnails */}
-        <aside className="w-48 bg-white border-r border-slate-200 flex flex-col shrink-0 overflow-y-auto hidden md:flex">
+        <aside className="w-52 bg-white border-r border-slate-200 flex flex-col shrink-0 overflow-y-auto hidden md:flex">
           <div className="p-3 border-b border-slate-100 flex items-center justify-between">
-            <h3 className="font-bold text-xs text-slate-800 uppercase tracking-wide">Documents</h3>
+            <h3 className="font-bold text-xs text-slate-800 uppercase tracking-wide">
+              Documents ({documentsList.length})
+            </h3>
           </div>
-          <div className="p-3 space-y-2">
-            <div className="flex items-center justify-between text-xs font-semibold text-slate-700">
-              <span className="truncate max-w-[120px]" title={documentName}>
-                {documentName}
-              </span>
-              <ChevronDown size={14} className="text-slate-400" />
-            </div>
-            <p className="text-[11px] text-slate-400 font-medium">1 pages</p>
-
-            {/* Thumbnail */}
-            <div className="mt-2 border-2 border-[#00a884] rounded-md p-1.5 bg-slate-50 cursor-pointer shadow-xs">
-              <div className="aspect-[3/4] bg-white border border-slate-200 rounded p-2 flex flex-col justify-between text-[6px] text-slate-400 overflow-hidden select-none">
-                <div>
-                  <div className="w-16 h-1 bg-slate-300 rounded mb-1" />
-                  <div className="w-24 h-1 bg-slate-200 rounded mb-1" />
-                  <div className="w-20 h-1 bg-slate-200 rounded" />
+          <div className="p-3 space-y-3">
+            {documentsList.map((d, idx) => {
+              const isSelected = activeDocIndex === idx;
+              return (
+                <div
+                  key={d.id || idx}
+                  onClick={() => setActiveDocIndex(idx)}
+                  className={`border rounded-lg p-2.5 transition cursor-pointer ${
+                    isSelected
+                      ? 'border-2 border-[#00a884] bg-emerald-50/40 shadow-xs'
+                      : 'border-slate-200 hover:border-slate-300 bg-white'
+                  }`}
+                  title={`View ${d.name}`}
+                >
+                  <div className="flex items-center justify-between text-xs font-bold text-slate-800">
+                    <span className={`truncate max-w-[130px] ${isSelected ? 'text-[#007355]' : 'text-slate-800'}`}>
+                      {d.name || `Document ${idx + 1}`}
+                    </span>
+                    <span className="text-[10px] font-mono text-slate-400">{idx + 1}</span>
+                  </div>
+                  <p className="text-[9px] text-slate-500 line-clamp-2 mt-1 leading-relaxed">
+                    {d.documentText || getDefaultDocContent(d.name)}
+                  </p>
                 </div>
-                <div className="flex justify-end">
-                  <span className="text-[7px] font-bold text-slate-600">Vimal Chavda</span>
-                </div>
-              </div>
-              <div className="text-center font-bold text-slate-700 text-[10px] mt-1">1</div>
-            </div>
+              );
+            })}
           </div>
         </aside>
 
@@ -267,12 +340,13 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack }) {
               docId={doc?.id || 1}
               bexsignDocId={docId}
               documentName={documentName}
-              documentText={doc?.custom_message || "check the document for signature"}
+              documentText={documentBodyText}
               signerName={signerName}
               signerEmail={signerEmail}
               signatureImage={doc?.signature_image || localStorage.getItem(`bexsign_doc_${doc?.id}_signature`) || ''}
               isCompleted={true}
               showTooltips={false}
+              placedFields={activeDocFields}
             />
           </div>
         </main>

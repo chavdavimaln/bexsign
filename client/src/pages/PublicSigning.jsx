@@ -9,6 +9,7 @@ import { fetchSignatureForEmail } from '../utils/signatureDirectory';
 import CompletedDocumentViewer from '../components/CompletedDocumentViewer';
 import BexDocumentSheet from '../components/BexDocumentSheet';
 import { printDocumentSheet } from '../utils/documentPrinter';
+import { getDefaultDocContent } from '../utils/documentDefaults';
 
 export default function PublicSigning() {
   const { token, id } = useParams();
@@ -49,13 +50,20 @@ export default function PublicSigning() {
       const saved = localStorage.getItem(`bexsign_doc_${docId}_documents`);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map((d, i) => ({
+            ...d,
+            id: d.id || i + 1,
+            documentText: d.documentText || getDefaultDocContent(d.name, d.customMessage)
+          }));
+        }
       }
     } catch (e) {}
     return [
       {
         id: 1,
         name: 'Document 1.pdf',
+        documentText: getDefaultDocContent('Document 1.pdf'),
         customMessage: 'check the document for signature'
       }
     ];
@@ -73,16 +81,6 @@ export default function PublicSigning() {
     } catch (e) {}
     return {};
   });
-
-  const handleUpdateFieldValue = (fieldId, newValue) => {
-    setFieldsByDoc((prev) => {
-      const currentList = prev[activeDocIndex] || [];
-      const updated = currentList.map((f) => (f.id === fieldId ? { ...f, value: newValue } : f));
-      const nextByDoc = { ...prev, [activeDocIndex]: updated };
-      localStorage.setItem(`bexsign_doc_${docId}_fields_by_doc`, JSON.stringify(nextByDoc));
-      return nextByDoc;
-    });
-  };
 
   // Signature state
   const [signaturePlaced, setSignaturePlaced] = useState(false);
@@ -162,17 +160,25 @@ export default function PublicSigning() {
             loadedDocs = doc.files.map((f, i) => ({
               id: f.id || i + 1,
               name: f.file_name || `Document ${i + 1}.pdf`,
+              documentText: f.document_text || getDefaultDocContent(f.file_name, doc.custom_message),
               customMessage: doc.custom_message || 'check the document for signature'
             }));
           } else {
+            const initialTitle = doc.document_name || doc.title || 'Document 1.pdf';
             loadedDocs = [
               {
                 id: 1,
-                name: doc.document_name || doc.title || 'Document 1.pdf',
+                name: initialTitle,
+                documentText: getDefaultDocContent(initialTitle, doc.custom_message),
                 customMessage: doc.custom_message || 'check the document for signature'
               }
             ];
           }
+        } else {
+          loadedDocs = loadedDocs.map((d) => ({
+            ...d,
+            documentText: d.documentText || getDefaultDocContent(d.name, d.customMessage || doc.custom_message)
+          }));
         }
         setDocumentsList(loadedDocs);
 
@@ -310,6 +316,20 @@ export default function PublicSigning() {
     } catch (e) {}
   };
 
+  const handleUpdateFieldValue = (fieldId, value) => {
+    setFieldsByDoc((prev) => {
+      const currentList = prev[activeDocIndex] || [];
+      const updatedList = currentList.map((f) => (f.id === fieldId ? { ...f, value } : f));
+      const nextByDoc = { ...prev, [activeDocIndex]: updatedList };
+      try {
+        localStorage.setItem(`bexsign_doc_${docId}_fields_by_doc`, JSON.stringify(nextByDoc));
+        const flatList = Object.values(nextByDoc).flat();
+        localStorage.setItem(`bexsign_doc_${docId}_fields`, JSON.stringify(flatList));
+      } catch (e) {}
+      return nextByDoc;
+    });
+  };
+
   const handleSaveDocument = async () => {
     try {
       if (signatureData) {
@@ -352,10 +372,13 @@ export default function PublicSigning() {
       const docTitle = activeDoc.name || documentDetails.title || `Document 1.pdf`;
       const docMsg = activeDoc.customMessage || documentDetails.message || 'check the document for signature';
       const docBexId = documentsList.length > 1 ? `${fullBexsignId}-${activeDocIndex + 1}` : fullBexsignId;
+      const currentFields = fieldsByDoc[activeDocIndex] || [];
+
+      const activeText = activeDoc.documentText || getDefaultDocContent(docTitle, docMsg);
 
       await generateAndDownloadPdf({
         documentName: docTitle,
-        documentText: docMsg,
+        documentText: activeText,
         docId: docBexId || docId,
         signerName: typedName || 'Vimal Chavda',
         signerEmail: documentDetails.recipient || 'vimal@bexcodeservices.com',
@@ -363,7 +386,8 @@ export default function PublicSigning() {
         status: isCompleted ? 'Completed' : 'In Progress',
         signatureImage: signatureData,
         signatureType: signatureType,
-        password: pass
+        password: pass,
+        fields: currentFields
       });
       showPopupAlert(`Downloaded "${docTitle}" successfully with official electronic signature.`, {
         title: 'Download Complete',
@@ -383,15 +407,18 @@ export default function PublicSigning() {
     const docTitle = activeDoc.name || documentDetails.title || 'Document 1.pdf';
     const docMsg = activeDoc.customMessage || documentDetails.message || 'check the document for signature';
     const docBexId = documentsList.length > 1 ? `${fullBexsignId}-${activeDocIndex + 1}` : fullBexsignId;
+    const activeText = activeDoc.documentText || getDefaultDocContent(docTitle, docMsg);
+    const currentFields = fieldsByDoc[activeDocIndex] || [];
 
     printDocumentSheet({
       documentName: docTitle,
-      documentText: docMsg,
+      documentText: activeText,
       docId: docBexId || docId,
       signerName: typedName || 'Vimal Chavda',
       signerEmail: documentDetails.recipient || 'vimal@bexcodeservices.com',
       signatureImage: signatureData,
-      signatureStyle: selectedStyle
+      signatureStyle: selectedStyle,
+      placedFields: currentFields
     });
   };
 
@@ -506,10 +533,18 @@ export default function PublicSigning() {
             </div>
           </div>
 
-          <div className="pt-4 flex justify-center">
+          <div className="pt-4 flex items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={() => (window.history.length > 1 ? navigate(-1) : navigate('/documents'))}
+              className="px-4 py-2 border border-slate-300 rounded font-semibold text-xs text-slate-700 hover:bg-slate-50 transition flex items-center gap-1.5 cursor-pointer shadow-xs"
+            >
+              <ArrowLeft size={14} />
+              <span>Back</span>
+            </button>
             <button
               onClick={() => setShowLandingScreen(false)}
-              className="bg-[#007355] hover:bg-[#005c44] text-white px-8 py-2.5 rounded font-bold text-sm shadow-sm transition cursor-pointer"
+              className="bg-[#007355] hover:bg-[#005c44] text-white px-8 py-2 rounded font-bold text-xs shadow-xs transition cursor-pointer flex-1"
             >
               Proceed to document
             </button>
@@ -655,20 +690,32 @@ export default function PublicSigning() {
     <div className="min-h-screen bg-slate-200 text-slate-900 flex flex-col font-sans">
       {/* Top Disclosure Consent Header Bar (Page 8 bottom) */}
       <div className="bg-white border-b border-slate-200 px-6 py-2 flex flex-wrap items-center justify-between text-xs sticky top-0 z-30 shadow-xs gap-4">
-        <label className="flex items-center gap-2.5 cursor-pointer font-medium text-slate-700">
-          <input
-            type="checkbox"
-            checked={agreedConsent}
-            onChange={(e) => {
-              setAgreedConsent(e.target.checked);
-              if (e.target.checked) setValidationError('');
-            }}
-            className="accent-[#007355] h-4 w-4"
-          />
-          <span>
-            I confirm that I have read and understood the <strong className="underline text-slate-900 font-bold">"Electronic Record and Signature Disclosure"</strong> and consent to use electronic records and signatures.
-          </span>
-        </label>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => (window.history.length > 1 ? navigate(-1) : navigate('/documents'))}
+            className="px-3 py-1.5 border border-slate-300 rounded text-xs font-semibold text-slate-700 hover:bg-slate-50 flex items-center gap-1.5 bg-white transition shadow-xs shrink-0 cursor-pointer"
+            title="Go back"
+          >
+            <ArrowLeft size={14} />
+            <span>Back</span>
+          </button>
+
+          <label className="flex items-center gap-2.5 cursor-pointer font-medium text-slate-700">
+            <input
+              type="checkbox"
+              checked={agreedConsent}
+              onChange={(e) => {
+                setAgreedConsent(e.target.checked);
+                if (e.target.checked) setValidationError('');
+              }}
+              className="accent-[#007355] h-4 w-4"
+            />
+            <span>
+              I confirm that I have read and understood the <strong className="underline text-slate-900 font-bold">"Electronic Record and Signature Disclosure"</strong> and consent to use electronic records and signatures.
+            </span>
+          </label>
+        </div>
 
         <div className="flex items-center gap-3 ml-auto">
           <button
@@ -737,6 +784,23 @@ export default function PublicSigning() {
       {agreedConsent && (
         <header className="h-12 bg-white border-b border-slate-300 px-6 flex items-center justify-between sticky top-9 z-20 shadow-xs">
           <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                if (agreedConsent) {
+                  setAgreedConsent(false);
+                } else if (window.history.length > 1) {
+                  navigate(-1);
+                } else {
+                  navigate('/documents');
+                }
+              }}
+              className="px-3 py-1.5 border border-slate-300 rounded text-xs font-semibold text-slate-700 hover:bg-slate-50 flex items-center gap-1.5 bg-white transition shadow-xs cursor-pointer mr-1"
+              title="Return to review disclosure or back to documents"
+            >
+              <ArrowLeft size={14} />
+              <span>Back</span>
+            </button>
             <span className="text-xs font-bold text-slate-800">Documents</span>
             <span className="bg-emerald-100 text-emerald-800 px-3 py-0.5 rounded-full text-[11px] font-bold">
               Fields remaining: {signaturePlaced ? 0 : 2}
@@ -820,7 +884,7 @@ export default function PublicSigning() {
           docId={docId}
           bexsignDocId={documentsList.length > 1 ? `${fullBexsignId}-${activeDocIndex + 1}` : fullBexsignId}
           documentName={documentsList[activeDocIndex]?.name || documentDetails.title}
-          documentText={documentsList[activeDocIndex]?.customMessage || documentDetails.message || "check the document for signature"}
+          documentText={documentsList[activeDocIndex]?.documentText || getDefaultDocContent(documentsList[activeDocIndex]?.name || documentDetails.title, documentsList[activeDocIndex]?.customMessage || documentDetails.message)}
           signerName={typedName}
           signerEmail={documentDetails.recipient}
           signatureImage={signatureData}

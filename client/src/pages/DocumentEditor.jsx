@@ -27,6 +27,19 @@ import {
   Italic,
   AlignLeft,
   AlignCenter,
+  AlignRight,
+  AlignJustify,
+  List,
+  ListOrdered,
+  Undo,
+  Redo,
+  Table,
+  Type,
+  Highlighter,
+  Minus,
+  Eye,
+  Minimize2,
+  Sparkles,
   Upload,
   ChevronDown,
   ChevronLeft,
@@ -49,6 +62,8 @@ import {
   Edit3
 } from 'lucide-react';
 import { showPopupAlert } from '../components/GlobalAlertModal';
+import { getDefaultDocContent, DEFAULT_DOCUMENT_TEXTS } from '../utils/documentDefaults';
+import { generateAndDownloadPdf } from '../utils/pdfGenerator';
 
 export default function DocumentEditor() {
   const { id } = useParams();
@@ -65,13 +80,23 @@ export default function DocumentEditor() {
   // Multi-Document State (Pages 4 & 5)
   const [documentsList, setDocumentsList] = useState(() => {
     if (location.state?.documents && Array.isArray(location.state.documents) && location.state.documents.length > 0) {
-      return location.state.documents;
+      return location.state.documents.map((d, i) => ({
+        ...d,
+        id: d.id || i + 1,
+        documentText: d.documentText || getDefaultDocContent(d.name, d.customMessage)
+      }));
     }
     const saved = id ? localStorage.getItem(`bexsign_doc_${id}_documents`) : null;
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map((d, i) => ({
+            ...d,
+            id: d.id || i + 1,
+            documentText: d.documentText || getDefaultDocContent(d.name, d.customMessage)
+          }));
+        }
       } catch (e) {}
     }
     return [
@@ -80,11 +105,17 @@ export default function DocumentEditor() {
         name: 'My doc vimal 2.pdf',
         pages: 1,
         status: 'Ready',
+        documentText: getDefaultDocContent('My doc vimal 2.pdf'),
         customMessage: 'check the document for signature'
       }
     ];
   });
-  const [activeDocIndex, setActiveDocIndex] = useState(0);
+  const [activeDocIndex, setActiveDocIndex] = useState(() => {
+    if (location.state?.activeDocIndex !== undefined && typeof location.state.activeDocIndex === 'number') {
+      return location.state.activeDocIndex;
+    }
+    return 0;
+  });
   const [showDocSwitcherMenu, setShowDocSwitcherMenu] = useState(false);
 
   const currentDocument = documentsList[activeDocIndex] || documentsList[0] || { name: 'My doc vimal 2.pdf' };
@@ -96,9 +127,60 @@ export default function DocumentEditor() {
       if (copy[activeDocIndex]) {
         copy[activeDocIndex] = { ...copy[activeDocIndex], name: newName };
       }
-      localStorage.setItem(`bexsign_doc_${id}_documents`, JSON.stringify(copy));
+      if (id) localStorage.setItem(`bexsign_doc_${id}_documents`, JSON.stringify(copy));
       return copy;
     });
+  };
+
+  const handleAddNewDocFromEditor = (title = '') => {
+    const nextNum = documentsList.length + 1;
+    const docTitle = title || `Document ${nextNum}.pdf`;
+    const newDoc = {
+      id: Date.now() + Math.floor(Math.random() * 1000),
+      name: docTitle,
+      pages: 1,
+      status: 'Ready',
+      documentText: getDefaultDocContent(docTitle),
+      customMessage: 'check the document for signature'
+    };
+    setDocumentsList((prev) => {
+      const updated = [...prev, newDoc];
+      if (id) localStorage.setItem(`bexsign_doc_${id}_documents`, JSON.stringify(updated));
+      setActiveDocIndex(updated.length - 1);
+      return updated;
+    });
+  };
+
+  const handleRemoveDocFromEditor = (indexToRemove) => {
+    if (documentsList.length <= 1) {
+      showPopupAlert('At least one document is required in the envelope.', { title: 'Required', type: 'warning' });
+      return;
+    }
+    const updated = documentsList.filter((_, idx) => idx !== indexToRemove);
+    setDocumentsList(updated);
+    if (id) localStorage.setItem(`bexsign_doc_${id}_documents`, JSON.stringify(updated));
+
+    // Shift fieldsByDoc keys so fields remain attached to the correct documents
+    setFieldsByDoc((prev) => {
+      const nextByDoc = {};
+      let newIdx = 0;
+      for (let i = 0; i < documentsList.length; i++) {
+        if (i !== indexToRemove) {
+          if (prev[i]) nextByDoc[newIdx] = prev[i];
+          newIdx++;
+        }
+      }
+      if (id) {
+        localStorage.setItem(`bexsign_doc_${id}_fields_by_doc`, JSON.stringify(nextByDoc));
+        const flatList = Object.values(nextByDoc).flat();
+        localStorage.setItem(`bexsign_doc_${id}_fields`, JSON.stringify(flatList));
+      }
+      return nextByDoc;
+    });
+
+    if (activeDocIndex >= updated.length) {
+      setActiveDocIndex(Math.max(0, updated.length - 1));
+    }
   };
 
   const [recipientEmail, setRecipientEmail] = useState('manu.yadav@oladigital.health');
@@ -141,6 +223,149 @@ export default function DocumentEditor() {
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [scheduleDateTime, setScheduleDateTime] = useState('2026-09-02T14:49');
   const [scheduleTimeZone, setScheduleTimeZone] = useState('Asia/Kolkata');
+
+  // Full-View Microsoft Word-Style Document Editor State
+  const [wordFontFamily, setWordFontFamily] = useState('Verdana');
+  const [wordFontSize, setWordFontSize] = useState('11');
+  const [wordIsBold, setWordIsBold] = useState(false);
+  const [wordIsItalic, setWordIsItalic] = useState(false);
+  const [wordIsUnderline, setWordIsUnderline] = useState(false);
+  const [wordIsStrike, setWordIsStrike] = useState(false);
+  const [wordTextColor, setWordTextColor] = useState('#0f172a');
+  const [wordHighlightColor, setWordHighlightColor] = useState('transparent');
+  const [wordTextAlign, setWordTextAlign] = useState('left');
+  const [wordLineHeight, setWordLineHeight] = useState('1.6');
+  const [wordEditorZoom, setWordEditorZoom] = useState(100);
+  const [isEditorFullscreen, setIsEditorFullscreen] = useState(true);
+  const [showColorPicker, setShowColorPicker] = useState(false);
+  const [showHighlightPicker, setShowHighlightPicker] = useState(false);
+  const [showClausesMenu, setShowClausesMenu] = useState(false);
+  const [showStylesMenu, setShowStylesMenu] = useState(false);
+  const [showLineSpacingMenu, setShowLineSpacingMenu] = useState(false);
+  const [showInsertMenu, setShowInsertMenu] = useState(false);
+  const [wordHistory, setWordHistory] = useState([]);
+  const [wordHistoryIndex, setWordHistoryIndex] = useState(-1);
+  const wordTextareaRef = useRef(null);
+
+  const updateContentWithHistory = (newContent) => {
+    setDocContentText(newContent);
+    setWordHistory((prev) => {
+      const sliced = prev.slice(0, wordHistoryIndex + 1);
+      return [...sliced, newContent].slice(-30);
+    });
+    setWordHistoryIndex((prev) => Math.min(prev + 1, 29));
+  };
+
+  const handleWordUndo = () => {
+    if (wordHistoryIndex > 0) {
+      const prevText = wordHistory[wordHistoryIndex - 1];
+      setWordHistoryIndex(wordHistoryIndex - 1);
+      setDocContentText(prevText);
+    }
+  };
+
+  const handleWordRedo = () => {
+    if (wordHistoryIndex < wordHistory.length - 1) {
+      const nextText = wordHistory[wordHistoryIndex + 1];
+      setWordHistoryIndex(wordHistoryIndex + 1);
+      setDocContentText(nextText);
+    }
+  };
+
+  const insertTextAtCursor = (textToInsert, selectInserted = false) => {
+    const el = wordTextareaRef.current;
+    if (!el) {
+      updateContentWithHistory(docContentText + '\n\n' + textToInsert);
+      return;
+    }
+    const start = el.selectionStart ?? docContentText.length;
+    const end = el.selectionEnd ?? docContentText.length;
+    const before = docContentText.substring(0, start);
+    const after = docContentText.substring(end);
+    const updated = before + textToInsert + after;
+    updateContentWithHistory(updated);
+    setTimeout(() => {
+      el.focus();
+      const newPos = start + textToInsert.length;
+      if (selectInserted) {
+        el.setSelectionRange(start, newPos);
+      } else {
+        el.setSelectionRange(newPos, newPos);
+      }
+    }, 50);
+  };
+
+  const transformSelectedLines = (transformer) => {
+    const el = wordTextareaRef.current;
+    if (!el) return;
+    const start = el.selectionStart ?? 0;
+    const end = el.selectionEnd ?? docContentText.length;
+    const before = docContentText.substring(0, start);
+    const selected = docContentText.substring(start, end);
+    const after = docContentText.substring(end);
+
+    const sourceText = selected || docContentText;
+    const lines = sourceText.split('\n');
+    const transformed = transformer(lines).join('\n');
+
+    if (selected) {
+      const updated = before + transformed + after;
+      updateContentWithHistory(updated);
+      setTimeout(() => {
+        el.focus();
+        el.setSelectionRange(start, start + transformed.length);
+      }, 50);
+    } else {
+      updateContentWithHistory(transformed);
+    }
+  };
+
+  const handleWordPreviewPdf = () => {
+    try {
+      const activeDocFields = fieldsByDoc[activeDocIndex] || [];
+      generateAndDownloadPdf({
+        documentName: documentTitle.endsWith('.pdf') ? documentTitle : `${documentTitle}.pdf`,
+        documentText: docContentText,
+        docId: `BEX-DOC-PREVIEW-${id || 1}-${activeDocIndex + 1}`,
+        signerName: recipientList[0]?.name || 'Vimal Chavda',
+        signerEmail: recipientList[0]?.email || 'vimal@bexcodeservices.com',
+        date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+        status: 'Draft Preview',
+        signatureImage: '',
+        fields: activeDocFields
+      });
+      showPopupAlert(`Generated PDF preview for "${documentTitle}". Download will start automatically.`, {
+        title: 'PDF Preview Ready',
+        type: 'success'
+      });
+    } catch (err) {
+      showPopupAlert('Failed to generate PDF preview: ' + err.message, { title: 'Preview Error', type: 'error' });
+    }
+  };
+
+  const handleWordSaveAndCreate = () => {
+    setIsEditingDocRichText(false);
+    setShowEditDocModal(false);
+    setDocumentsList((prev) => {
+      const copy = [...prev];
+      if (copy[activeDocIndex]) {
+        copy[activeDocIndex] = {
+          ...copy[activeDocIndex],
+          name: documentTitle,
+          documentText: docContentText
+        };
+      }
+      if (id) {
+        localStorage.setItem(`bexsign_doc_${id}_documents`, JSON.stringify(copy));
+      }
+      localStorage.setItem('bexsign_draft_documents', JSON.stringify(copy));
+      return copy;
+    });
+    showPopupAlert('Document contents updated and saved in place. Fields and canvas automatically synchronized.', {
+      title: 'Saved Successfully',
+      type: 'success'
+    });
+  };
 
   // BexSign Color-Coded Recipient Field Assignment Palette
   const RECIPIENT_PALETTE = [
@@ -239,9 +464,33 @@ export default function DocumentEditor() {
       const res = await fetch(`http://localhost:5000/api/documents/${id}`);
       const data = await res.json();
       if (data.success && data.document) {
-        setDocumentTitle(data.document.document_name || data.document.title || 'First sign.pdf');
-        if (data.document.recipient_email) {
-          setRecipientEmail(data.document.recipient_email);
+        const doc = data.document;
+        if (doc.files && Array.isArray(doc.files) && doc.files.length > 0) {
+          setDocumentsList((prev) => {
+            const saved = id ? localStorage.getItem(`bexsign_doc_${id}_documents`) : null;
+            if (saved) {
+              try {
+                const parsed = JSON.parse(saved);
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                  return parsed;
+                }
+              } catch (e) {}
+            }
+            const fromServer = doc.files.map((f, i) => ({
+              id: f.id || i + 1,
+              name: f.file_name || `Document ${i + 1}.pdf`,
+              pages: 1,
+              status: 'Ready',
+              documentText: f.document_text || getDefaultDocContent(f.file_name, doc.custom_message),
+              customMessage: doc.custom_message || 'check the document for signature'
+            }));
+            localStorage.setItem(`bexsign_doc_${id}_documents`, JSON.stringify(fromServer));
+            return fromServer;
+          });
+        }
+
+        if (doc.recipient_email) {
+          setRecipientEmail(doc.recipient_email);
         }
 
         // Dynamically load document recipients from database if present
@@ -370,10 +619,24 @@ export default function DocumentEditor() {
 
   const handleSaveDraft = async () => {
     try {
+      const allFlat = Object.values(fieldsByDoc).flat();
+      if (id) {
+        localStorage.setItem(`bexsign_doc_${id}_documents`, JSON.stringify(documentsList));
+        localStorage.setItem(`bexsign_doc_${id}_fields_by_doc`, JSON.stringify(fieldsByDoc));
+        localStorage.setItem(`bexsign_doc_${id}_fields`, JSON.stringify(allFlat));
+      }
       await fetch(`http://localhost:5000/api/documents/${id || 1}/save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ documentTitle, fieldsOnDoc, status: 'Draft' })
+        body: JSON.stringify({
+          documentTitle,
+          fieldsOnDoc,
+          fields: allFlat,
+          fieldsByDoc,
+          documents: documentsList,
+          documentText: currentDocument.documentText,
+          status: 'Draft'
+        })
       });
     } catch (e) {}
 
@@ -416,7 +679,7 @@ export default function DocumentEditor() {
       label: type,
       value: type === 'Split text' ? '' : (type === 'Checkbox' ? 'true' : type),
       x: 60 + (fieldsOnDoc.length * 20) % 200,
-      y: 280 + (fieldsOnDoc.length * 30) % 280,
+      y: 420 + (fieldsOnDoc.length * 35) % 220,
       required: true,
       assigneeId: selectedRecipient.id,
       assignee: `${selectedRecipient.name}`,
@@ -456,7 +719,7 @@ export default function DocumentEditor() {
       label: customFieldName,
       value: customFieldName,
       x: 100,
-      y: 300,
+      y: 420,
       required: customFieldRequired,
       assigneeId: selectedRecipient.id,
       assignee: selectedRecipient.name,
@@ -488,7 +751,7 @@ export default function DocumentEditor() {
         label: 'Stamp',
         value: 'STAMP',
         x: 280,
-        y: 350,
+        y: 480,
         required: true,
         assigneeId: selectedRecipient.id,
         assignee: selectedRecipient.name,
@@ -635,10 +898,15 @@ export default function DocumentEditor() {
                   <Layers size={13} className="text-[#00a884]" /> Apply field template
                 </button>
                 <button
-                  onClick={() => { setShowActionsMenu(false); setShowEditDocModal(true); }}
-                  className="w-full text-left px-3 py-2 hover:bg-slate-800 text-slate-200 flex items-center gap-2"
+                  onClick={() => {
+                    setShowActionsMenu(false);
+                    setDocContentText(currentDocument.documentText || getDefaultDocContent(currentDocument.name, currentDocument.customMessage));
+                    setIsEditingDocRichText(true);
+                    setShowEditDocModal(true);
+                  }}
+                  className="w-full text-left px-3 py-2 hover:bg-slate-800 text-slate-200 flex items-center gap-2 cursor-pointer"
                 >
-                  <FileText size={13} className="text-[#00a884]" /> Edit documents
+                  <FileText size={13} className="text-[#00a884]" /> Edit document (Word View)
                 </button>
                 <div className="border-t border-slate-800 my-1" />
                 <button
@@ -705,7 +973,17 @@ export default function DocumentEditor() {
         <aside className="w-52 bg-slate-950 border-r border-slate-800 p-4 flex flex-col gap-3 shrink-0 font-sans text-xs overflow-y-auto">
           <div className="flex items-center justify-between">
             <h2 className="text-xs font-bold text-slate-300 uppercase tracking-wider">Documents</h2>
-            <span className="text-[10px] text-emerald-400 font-bold font-mono">{documentsList.length}</span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] text-emerald-400 font-bold font-mono">{documentsList.length}</span>
+              <button
+                type="button"
+                onClick={() => handleAddNewDocFromEditor()}
+                className="p-1 hover:bg-slate-800 text-emerald-400 rounded transition cursor-pointer"
+                title="Add new document to envelope"
+              >
+                <Plus size={14} />
+              </button>
+            </div>
           </div>
 
           <div className="space-y-3">
@@ -731,7 +1009,22 @@ export default function DocumentEditor() {
                     <span className={`text-xs font-bold truncate ${isSelected ? 'text-[#00a884]' : 'text-slate-200'}`}>
                       {doc.name || `Document ${idx + 1}`}
                     </span>
-                    <ChevronDown size={14} className={isSelected ? 'text-[#00a884]' : 'text-slate-500'} />
+                    <div className="flex items-center gap-1">
+                      {documentsList.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRemoveDocFromEditor(idx);
+                          }}
+                          className="text-slate-500 hover:text-red-400 p-0.5 rounded transition"
+                          title="Remove document"
+                        >
+                          <X size={12} />
+                        </button>
+                      )}
+                      <ChevronDown size={14} className={isSelected ? 'text-[#00a884]' : 'text-slate-500'} />
+                    </div>
                   </div>
                   <div className="flex items-center justify-between text-[10px] text-slate-400">
                     <span>{doc.pages || 1} pages</span>
@@ -745,13 +1038,13 @@ export default function DocumentEditor() {
                   {/* Miniature Page Thumbnail Preview */}
                   <div className="w-full h-36 bg-white rounded border border-slate-700 p-2 text-[7px] text-slate-400 select-none overflow-hidden relative shadow-inner">
                     <p className="font-bold text-slate-800 truncate">{doc.name}</p>
-                    <p className="mt-1 text-slate-500 italic truncate">
-                      {doc.customMessage || 'check the document for signature'}
+                    <p className="mt-1 text-slate-500 line-clamp-3 leading-relaxed">
+                      {doc.documentText || getDefaultDocContent(doc.name, doc.customMessage)}
                     </p>
                     {docFields.map((f, i) => (
                       <div
                         key={i}
-                        className="my-1 border border-emerald-500 bg-emerald-50 text-[6px] text-emerald-800 px-1 py-0.5 rounded truncate font-mono"
+                        className="my-0.5 border border-emerald-500 bg-emerald-50 text-[6px] text-emerald-800 px-1 py-0.5 rounded truncate font-mono"
                       >
                         {f.label || f.type}
                       </div>
@@ -776,15 +1069,35 @@ export default function DocumentEditor() {
             ref={canvasRef}
             className="relative w-[700px] min-h-[880px] bg-white text-slate-900 p-10 shadow-2xl rounded-sm border border-slate-300 overflow-hidden"
           >
-            {/* PDF Canvas Content */}
-            <div className="space-y-6">
-              <div className="border-b pb-4">
-                <h1 className="text-2xl font-black text-slate-900 tracking-tight uppercase">Sign yourself</h1>
-                <p className="text-xs text-slate-500 mt-1 font-mono">Document: {documentTitle}</p>
+            {/* PDF Canvas Content - Full Document Text & Clauses */}
+            <div className="space-y-4 pb-6 border-b border-slate-200">
+              <div className="flex justify-between items-start border-b border-slate-200 pb-3">
+                <div>
+                  <h1 className="text-xl font-black text-slate-900 tracking-tight">
+                    {documentTitle}
+                  </h1>
+                  <p className="text-[11px] text-slate-500 font-mono mt-0.5">
+                    BexSign Document ID: BEX-DOC-2026-0024-{id || 1}-{activeDocIndex + 1}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDocContentText(currentDocument.documentText || getDefaultDocContent(currentDocument.name, currentDocument.customMessage));
+                    setIsEditingDocRichText(true);
+                    setShowEditDocModal(true);
+                  }}
+                  className="px-2.5 py-1 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded border border-emerald-200 flex items-center gap-1 transition cursor-pointer"
+                  title="Edit document body content"
+                >
+                  <Edit3 size={13} />
+                  <span>Edit Content</span>
+                </button>
               </div>
-              <div className="space-y-4 text-xs text-slate-700 leading-relaxed">
-                <p className="font-bold">Bexcode Agreement Document Content Area</p>
-                <p>{currentDocument.customMessage || 'Please place all required signature, stamp, date, and split character fields below.'}</p>
+
+              {/* Full Document Clauses & Text */}
+              <div className="text-xs text-slate-700 leading-relaxed whitespace-pre-line font-sans select-text">
+                {currentDocument.documentText || getDefaultDocContent(currentDocument.name, currentDocument.customMessage)}
               </div>
             </div>
 
@@ -1695,143 +2008,820 @@ export default function DocumentEditor() {
         </div>
       )}
 
-      {/* Edit Documents Modal & In-Place Rich Text Editor (PDF 3 p.5) */}
-      {showEditDocModal && (
-        <div className="fixed inset-0 bg-slate-950/75 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
-          <div className="bg-white text-slate-900 rounded-2xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 space-y-4 my-6 text-xs font-sans">
-            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
-              <h3 className="text-base font-bold text-slate-900">
-                {isEditingDocRichText ? 'Edit document' : 'Edit documents'}
-              </h3>
-              <button onClick={() => { setShowEditDocModal(false); setIsEditingDocRichText(false); }} className="text-slate-400 hover:text-slate-700">
-                <X size={18} />
-              </button>
-            </div>
-
-            {!isEditingDocRichText ? (
-              /* View Documents List inside Modal (PDF 3 p.5 step g) */
-              <div className="space-y-4">
-                <div className="p-4 border border-slate-200 rounded-xl bg-slate-50 flex items-start justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="w-12 h-14 bg-white border border-slate-300 rounded shadow-xs p-1 flex flex-col justify-between text-[7px] text-slate-400">
-                      <span className="font-bold text-slate-700 truncate">{documentTitle}</span>
-                      <span className="text-[6px] text-emerald-600 font-bold">1 page</span>
-                    </div>
-                    <div>
-                      <h4 className="font-bold text-slate-800 text-sm">{documentTitle}</h4>
-                      <p className="text-slate-500 text-[11px] mt-0.5">{docContentText}</p>
-                    </div>
-                  </div>
-
-                  <div className="relative">
-                    <button
-                      type="button"
-                      onClick={() => setShowDocCardMenu(!showDocCardMenu)}
-                      className="p-1.5 hover:bg-slate-200 rounded-lg text-slate-600 transition"
-                    >
-                      <MoreVertical size={16} />
-                    </button>
-
-                    {showDocCardMenu && (
-                      <div className="absolute right-0 top-full mt-1 w-36 bg-white border border-slate-200 rounded-lg shadow-xl py-1 z-30 text-xs font-semibold">
-                        <button
-                          type="button"
-                          onClick={() => { setShowDocCardMenu(false); setIsEditingDocRichText(true); }}
-                          className="w-full text-left px-3.5 py-1.5 hover:bg-slate-50 flex items-center gap-2 text-slate-800"
-                        >
-                          <Edit3 size={13} className="text-[#00a884]" /> Edit document
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => { setShowDocCardMenu(false); stampFileInputRef.current?.click(); }}
-                          className="w-full text-left px-3.5 py-1.5 hover:bg-slate-50 flex items-center gap-2 text-slate-800"
-                        >
-                          <RotateCw size={13} /> Replace
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex justify-end pt-3 border-t border-slate-100">
-                  <button
-                    type="button"
-                    onClick={() => setShowEditDocModal(false)}
-                    className="px-4 py-2 border border-slate-300 rounded-lg font-semibold text-slate-700 hover:bg-slate-50"
-                  >
-                    Close
-                  </button>
-                </div>
+      {/* 1. Full-View Microsoft Word-Style Document Editor Workspace */}
+      {showEditDocModal && isEditingDocRichText && (
+        <div className="fixed inset-0 z-50 bg-[#e2e8f0] flex flex-col font-sans select-none overflow-hidden text-slate-800 animate-in fade-in duration-150">
+          {/* Top Word Window Title & Action Bar */}
+          <header className="h-14 bg-white border-b border-slate-200 px-4 sm:px-6 flex items-center justify-between shadow-xs shrink-0 z-30">
+            {/* Left: Document Icon & Inline Rename */}
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-8 h-8 rounded-lg bg-[#007355] text-white flex items-center justify-center shadow-xs shrink-0">
+                <FileText size={18} />
               </div>
-            ) : (
-              /* Rich Text Editor for Document Content (PDF 3 p.5 step h) */
-              <div className="space-y-3">
-                <div>
-                  <label className="block font-bold text-slate-700 mb-1">File name</label>
+              <div className="flex flex-col min-w-0">
+                <div className="flex items-center gap-2">
                   <input
                     type="text"
                     value={documentTitle}
                     onChange={(e) => setDocumentTitle(e.target.value)}
-                    className="w-full border border-slate-300 rounded-lg p-2 font-bold text-xs"
+                    className="text-sm font-black text-slate-900 bg-transparent hover:bg-slate-100 focus:bg-white px-2 py-0.5 rounded border border-transparent hover:border-slate-300 focus:border-[#007355] outline-none transition max-w-sm truncate"
+                    title="Click to rename document"
+                    placeholder="Document Title"
                   />
+                  <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded flex items-center gap-1 shrink-0">
+                    <Check size={11} /> Auto-saved
+                  </span>
                 </div>
-
-                {/* Formatting Toolbar */}
-                <div className="flex items-center gap-2 p-2 bg-slate-100 border border-slate-200 rounded-lg text-xs font-bold text-slate-700 flex-wrap">
-                  <button type="button" className="p-1 hover:bg-white rounded font-serif">B</button>
-                  <button type="button" className="p-1 hover:bg-white rounded italic">I</button>
-                  <button type="button" className="p-1 hover:bg-white rounded underline">U</button>
-                  <div className="w-[1px] h-4 bg-slate-300 mx-1" />
-                  <span className="text-[11px] font-mono">Verdana</span>
-                  <div className="w-[1px] h-4 bg-slate-300 mx-1" />
-                  <span className="text-[11px] font-mono">10</span>
-                  <div className="w-[1px] h-4 bg-slate-300 mx-1" />
-                  <span className="text-emerald-700">A</span>
-                </div>
-
-                <textarea
-                  value={docContentText}
-                  onChange={(e) => setDocContentText(e.target.value)}
-                  rows={6}
-                  className="w-full border border-slate-300 rounded-lg p-3 text-xs font-serif leading-relaxed focus:outline-none focus:border-[#00a884]"
-                  placeholder="Document body text..."
-                />
-
-                <div className="flex justify-between items-center pt-3 border-t border-slate-100">
-                  <button
-                    type="button"
-                    onClick={() => setIsEditingDocRichText(false)}
-                    className="px-4 py-2 border border-slate-300 rounded-lg font-semibold text-slate-700 hover:bg-slate-50"
-                  >
-                    Back to documents
-                  </button>
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => alert('PDF preview generated.')}
-                      className="px-4 py-2 border border-slate-300 rounded-lg font-bold text-slate-700 hover:bg-slate-50"
-                    >
-                      Preview as PDF
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        // PDF 3 p.5 point l: Saves in-place without creating replicas
-                        setIsEditingDocRichText(false);
-                        setShowEditDocModal(false);
-                        showPopupAlert('Document contents updated and saved in place. Fields automatically adjusted.', {
-                          title: 'Saved Successfully',
-                          type: 'success'
-                        });
-                      }}
-                      className="px-5 py-2 bg-[#00a884] hover:bg-[#008f70] text-white rounded-lg font-bold shadow"
-                    >
-                      Save & Create
-                    </button>
-                  </div>
+                <div className="flex items-center gap-2 text-[10px] text-slate-400 font-mono px-2 truncate">
+                  <span>BexSign Document ID: BEX-DOC-2026-0024-{id || 1}-{activeDocIndex + 1}</span>
+                  <span>•</span>
+                  <span>{documentsList.length > 1 ? `Document ${activeDocIndex + 1} of ${documentsList.length}` : 'Primary Document'}</span>
                 </div>
               </div>
-            )}
+            </div>
+
+            {/* Right: Actions */}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (documentsList.length > 1) {
+                    setIsEditingDocRichText(false);
+                  } else {
+                    setIsEditingDocRichText(false);
+                    setShowEditDocModal(false);
+                  }
+                }}
+                className="px-3.5 py-1.5 border border-slate-300 hover:bg-slate-100 text-slate-700 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                title="Return to envelope document list"
+              >
+                <ArrowLeft size={14} />
+                <span>Back to documents</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleWordPreviewPdf}
+                className="px-3.5 py-1.5 border border-slate-300 hover:bg-slate-100 text-slate-800 rounded-lg text-xs font-bold flex items-center gap-1.5 transition shadow-2xs cursor-pointer"
+                title="Download PDF preview with current content and styling"
+              >
+                <Eye size={14} className="text-[#007355]" />
+                <span>Preview as PDF</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleWordSaveAndCreate}
+                className="px-5 py-1.5 bg-[#007355] hover:bg-[#005c44] text-white rounded-lg text-xs font-extrabold flex items-center gap-1.5 transition shadow cursor-pointer"
+                title="Save changes and apply to document editor canvas"
+              >
+                <Save size={14} />
+                <span>Save & Create</span>
+              </button>
+
+              <div className="w-[1px] h-6 bg-slate-200 mx-1" />
+
+              <button
+                type="button"
+                onClick={() => setIsEditorFullscreen(!isEditorFullscreen)}
+                className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition"
+                title={isEditorFullscreen ? "Exit full view" : "Enter full view"}
+              >
+                {isEditorFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsEditingDocRichText(false);
+                  setShowEditDocModal(false);
+                }}
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition"
+                title="Close editor"
+              >
+                <X size={18} />
+              </button>
+            </div>
+          </header>
+
+          {/* Microsoft Word-Style Ribbon Toolbar */}
+          <div className="bg-white border-b border-slate-200 px-4 py-2 flex items-center gap-1.5 flex-wrap shrink-0 z-20 shadow-2xs text-xs">
+            {/* 1. History (Undo / Redo) */}
+            <div className="flex items-center gap-0.5 border-r border-slate-200 pr-2">
+              <button
+                type="button"
+                onClick={handleWordUndo}
+                className="p-1.5 hover:bg-slate-100 text-slate-700 rounded transition cursor-pointer"
+                title="Undo (Ctrl+Z)"
+              >
+                <Undo size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={handleWordRedo}
+                className="p-1.5 hover:bg-slate-100 text-slate-700 rounded transition cursor-pointer"
+                title="Redo (Ctrl+Y)"
+              >
+                <Redo size={14} />
+              </button>
+            </div>
+
+            {/* 2. Font Family Selector */}
+            <div className="flex items-center gap-1 border-r border-slate-200 pr-2">
+              <select
+                value={wordFontFamily}
+                onChange={(e) => setWordFontFamily(e.target.value)}
+                className="p-1 text-xs border border-slate-200 rounded bg-slate-50 hover:bg-white focus:border-[#007355] outline-none font-semibold text-slate-700 cursor-pointer"
+                title="Font Family"
+              >
+                <option value="Verdana">Verdana</option>
+                <option value="Arial">Arial</option>
+                <option value="Calibri">Calibri</option>
+                <option value="'Times New Roman', serif">Times New Roman</option>
+                <option value="Georgia, serif">Georgia</option>
+                <option value="'Courier New', monospace">Courier New</option>
+                <option value="Inter, sans-serif">Inter</option>
+                <option value="Roboto, sans-serif">Roboto</option>
+                <option value="'Trebuchet MS', sans-serif">Trebuchet MS</option>
+                <option value="'Segoe UI', sans-serif">Segoe UI</option>
+              </select>
+            </div>
+
+            {/* 3. Font Size Controls */}
+            <div className="flex items-center gap-1 border-r border-slate-200 pr-2">
+              <button
+                type="button"
+                onClick={() => setWordFontSize(prev => String(Math.max(8, parseInt(prev) - 1)))}
+                className="p-1 hover:bg-slate-100 text-slate-700 rounded font-bold transition cursor-pointer w-6 h-6 flex items-center justify-center border border-slate-200"
+                title="Decrease Font Size"
+              >
+                <Minus size={12} />
+              </button>
+              <select
+                value={wordFontSize}
+                onChange={(e) => setWordFontSize(e.target.value)}
+                className="p-1 text-xs border border-slate-200 rounded bg-slate-50 hover:bg-white focus:border-[#007355] outline-none font-bold text-slate-700 cursor-pointer w-16 text-center"
+                title="Font Size (pt)"
+              >
+                {['8', '9', '10', '11', '12', '14', '16', '18', '20', '24', '28', '32', '36'].map(sz => (
+                  <option key={sz} value={sz}>{sz} pt</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => setWordFontSize(prev => String(Math.min(48, parseInt(prev) + 1)))}
+                className="p-1 hover:bg-slate-100 text-slate-700 rounded font-bold transition cursor-pointer w-6 h-6 flex items-center justify-center border border-slate-200"
+                title="Increase Font Size"
+              >
+                <Plus size={12} />
+              </button>
+            </div>
+
+            {/* 4. Text Styles (Bold, Italic, Underline, Strike) */}
+            <div className="flex items-center gap-0.5 border-r border-slate-200 pr-2">
+              <button
+                type="button"
+                onClick={() => setWordIsBold(!wordIsBold)}
+                className={`p-1.5 rounded transition cursor-pointer font-black ${
+                  wordIsBold ? 'bg-emerald-100 text-[#007355] border border-emerald-300' : 'hover:bg-slate-100 text-slate-700'
+                }`}
+                title="Bold (Ctrl+B)"
+              >
+                <Bold size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setWordIsItalic(!wordIsItalic)}
+                className={`p-1.5 rounded transition cursor-pointer italic ${
+                  wordIsItalic ? 'bg-emerald-100 text-[#007355] border border-emerald-300' : 'hover:bg-slate-100 text-slate-700'
+                }`}
+                title="Italic (Ctrl+I)"
+              >
+                <Italic size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setWordIsUnderline(!wordIsUnderline)}
+                className={`p-1.5 rounded transition cursor-pointer underline ${
+                  wordIsUnderline ? 'bg-emerald-100 text-[#007355] border border-emerald-300' : 'hover:bg-slate-100 text-slate-700'
+                }`}
+                title="Underline (Ctrl+U)"
+              >
+                <Underline size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setWordIsStrike(!wordIsStrike)}
+                className={`p-1.5 rounded transition cursor-pointer line-through ${
+                  wordIsStrike ? 'bg-emerald-100 text-[#007355] border border-emerald-300' : 'hover:bg-slate-100 text-slate-700'
+                }`}
+                title="Strikethrough"
+              >
+                <Strikethrough size={14} />
+              </button>
+            </div>
+
+            {/* 5. Colors (Text Color & Highlight) */}
+            <div className="flex items-center gap-1.5 border-r border-slate-200 pr-2 relative">
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => { setShowColorPicker(!showColorPicker); setShowHighlightPicker(false); }}
+                  className="px-2 py-1 hover:bg-slate-100 text-slate-700 rounded border border-slate-200 flex items-center gap-1 transition cursor-pointer font-bold"
+                  title="Text Color"
+                >
+                  <span style={{ color: wordTextColor === 'transparent' ? '#0f172a' : wordTextColor }} className="text-sm font-black underline">A</span>
+                  <div className="w-2.5 h-2.5 rounded-full border border-slate-300" style={{ backgroundColor: wordTextColor }} />
+                </button>
+                {showColorPicker && (
+                  <div className="absolute top-full left-0 mt-1 p-2 bg-white border border-slate-200 rounded-lg shadow-xl z-40 flex items-center gap-1.5 animate-in fade-in">
+                    {['#0f172a', '#475569', '#1e3a8a', '#2563eb', '#007355', '#dc2626', '#7c3aed'].map(c => (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => { setWordTextColor(c); setShowColorPicker(false); }}
+                        className="w-5 h-5 rounded-full border border-slate-300 hover:scale-115 transition cursor-pointer"
+                        style={{ backgroundColor: c }}
+                        title={c}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => { setShowHighlightPicker(!showHighlightPicker); setShowColorPicker(false); }}
+                  className="px-2 py-1 hover:bg-slate-100 text-slate-700 rounded border border-slate-200 flex items-center gap-1 transition cursor-pointer"
+                  title="Highlight Color"
+                >
+                  <Highlighter size={13} />
+                  <div className="w-2.5 h-2.5 rounded border border-slate-300" style={{ backgroundColor: wordHighlightColor === 'transparent' ? '#ffffff' : wordHighlightColor }} />
+                </button>
+                {showHighlightPicker && (
+                  <div className="absolute top-full left-0 mt-1 p-2 bg-white border border-slate-200 rounded-lg shadow-xl z-40 flex items-center gap-1.5 animate-in fade-in">
+                    <button
+                      type="button"
+                      onClick={() => { setWordHighlightColor('transparent'); setShowHighlightPicker(false); }}
+                      className="px-2 py-0.5 text-[10px] border border-slate-300 rounded hover:bg-slate-100 cursor-pointer"
+                    >
+                      None
+                    </button>
+                    {['#fef08a', '#bbf7d0', '#a5f3fc', '#fbcfe8', '#fed7aa'].map(hc => (
+                      <button
+                        key={hc}
+                        type="button"
+                        onClick={() => { setWordHighlightColor(hc); setShowHighlightPicker(false); }}
+                        className="w-5 h-5 rounded border border-slate-300 hover:scale-115 transition cursor-pointer"
+                        style={{ backgroundColor: hc }}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* 6. Text Alignment & Line Spacing */}
+            <div className="flex items-center gap-0.5 border-r border-slate-200 pr-2">
+              <button
+                type="button"
+                onClick={() => setWordTextAlign('left')}
+                className={`p-1.5 rounded transition cursor-pointer ${
+                  wordTextAlign === 'left' ? 'bg-emerald-100 text-[#007355] border border-emerald-300' : 'hover:bg-slate-100 text-slate-700'
+                }`}
+                title="Align Left"
+              >
+                <AlignLeft size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setWordTextAlign('center')}
+                className={`p-1.5 rounded transition cursor-pointer ${
+                  wordTextAlign === 'center' ? 'bg-emerald-100 text-[#007355] border border-emerald-300' : 'hover:bg-slate-100 text-slate-700'
+                }`}
+                title="Align Center"
+              >
+                <AlignCenter size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setWordTextAlign('right')}
+                className={`p-1.5 rounded transition cursor-pointer ${
+                  wordTextAlign === 'right' ? 'bg-emerald-100 text-[#007355] border border-emerald-300' : 'hover:bg-slate-100 text-slate-700'
+                }`}
+                title="Align Right"
+              >
+                <AlignRight size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setWordTextAlign('justify')}
+                className={`p-1.5 rounded transition cursor-pointer ${
+                  wordTextAlign === 'justify' ? 'bg-emerald-100 text-[#007355] border border-emerald-300' : 'hover:bg-slate-100 text-slate-700'
+                }`}
+                title="Justify"
+              >
+                <AlignJustify size={14} />
+              </button>
+
+              <select
+                value={wordLineHeight}
+                onChange={(e) => setWordLineHeight(e.target.value)}
+                className="ml-1 p-1 text-[11px] border border-slate-200 rounded bg-slate-50 hover:bg-white text-slate-700 font-semibold cursor-pointer"
+                title="Line Spacing"
+              >
+                <option value="1.2">Single (1.2)</option>
+                <option value="1.4">1.4 lines</option>
+                <option value="1.6">1.6 (Standard)</option>
+                <option value="1.8">1.8 lines</option>
+                <option value="2.0">Double (2.0)</option>
+              </select>
+            </div>
+
+            {/* 7. Lists & Indent */}
+            <div className="flex items-center gap-0.5 border-r border-slate-200 pr-2">
+              <button
+                type="button"
+                onClick={() => transformSelectedLines(lines => lines.map(l => l.startsWith('• ') ? l.substring(2) : `• ${l}`))}
+                className="p-1.5 hover:bg-slate-100 text-slate-700 rounded transition cursor-pointer"
+                title="Bulleted List"
+              >
+                <List size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => transformSelectedLines(lines => lines.map((l, idx) => /^\d+\.\s/.test(l) ? l.replace(/^\d+\.\s/, '') : `${idx + 1}. ${l}`))}
+                className="p-1.5 hover:bg-slate-100 text-slate-700 rounded transition cursor-pointer"
+                title="Numbered List"
+              >
+                <ListOrdered size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => transformSelectedLines(lines => lines.map(l => l.startsWith('    ') ? l.substring(4) : (l.startsWith('  ') ? l.substring(2) : l)))}
+                className="p-1.5 hover:bg-slate-100 text-slate-700 rounded transition cursor-pointer"
+                title="Decrease Indent"
+              >
+                <ChevronLeft size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => transformSelectedLines(lines => lines.map(l => `    ${l}`))}
+                className="p-1.5 hover:bg-slate-100 text-slate-700 rounded transition cursor-pointer"
+                title="Increase Indent"
+              >
+                <ChevronRight size={14} />
+              </button>
+            </div>
+
+            {/* 8. Headings / Styles Menu */}
+            <div className="relative border-r border-slate-200 pr-2">
+              <button
+                type="button"
+                onClick={() => { setShowStylesMenu(!showStylesMenu); setShowClausesMenu(false); setShowInsertMenu(false); }}
+                className="px-2.5 py-1 hover:bg-slate-100 text-slate-700 rounded border border-slate-200 flex items-center gap-1 font-semibold transition cursor-pointer"
+                title="Text Styles & Headings"
+              >
+                <Type size={13} />
+                <span>Styles</span>
+                <ChevronDown size={12} />
+              </button>
+              {showStylesMenu && (
+                <div className="absolute top-full left-0 mt-1 w-52 bg-white border border-slate-200 rounded-lg shadow-xl py-1 z-40 text-xs animate-in fade-in">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      insertTextAtCursor(`\n\n${documentTitle.toUpperCase()}\n${'='.repeat(documentTitle.length)}\n`);
+                      setShowStylesMenu(false);
+                    }}
+                    className="w-full text-left px-3.5 py-2 hover:bg-slate-50 font-black text-sm text-slate-900 cursor-pointer"
+                  >
+                    Document Title (Large)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      insertTextAtCursor('\n\n1. PRIMARY SECTION HEADING\n');
+                      setShowStylesMenu(false);
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-slate-50 font-bold text-slate-800 cursor-pointer"
+                  >
+                    Heading 1 (1. TITLE)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      insertTextAtCursor('\n1.1 Sub-clause Specific Term\n');
+                      setShowStylesMenu(false);
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-slate-50 font-semibold text-slate-700 cursor-pointer"
+                  >
+                    Heading 2 (1.1 Sub-term)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      transformSelectedLines(lines => lines.map(l => l.toUpperCase()));
+                      setShowStylesMenu(false);
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-slate-50 text-slate-600 font-mono cursor-pointer"
+                  >
+                    UPPERCASE Transform
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      transformSelectedLines(lines => lines.map(l => l.replace(/\b\w/g, c => c.toUpperCase())));
+                      setShowStylesMenu(false);
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-slate-50 text-slate-600 font-sans cursor-pointer"
+                  >
+                    Title Case Transform
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* 9. Insert Tools Menu */}
+            <div className="relative border-r border-slate-200 pr-2">
+              <button
+                type="button"
+                onClick={() => { setShowInsertMenu(!showInsertMenu); setShowStylesMenu(false); setShowClausesMenu(false); }}
+                className="px-2.5 py-1 hover:bg-slate-100 text-slate-700 rounded border border-slate-200 flex items-center gap-1 font-semibold transition cursor-pointer"
+                title="Insert Elements"
+              >
+                <Plus size={13} />
+                <span>Insert</span>
+                <ChevronDown size={12} />
+              </button>
+              {showInsertMenu && (
+                <div className="absolute top-full left-0 mt-1 w-56 bg-white border border-slate-200 rounded-lg shadow-xl py-1 z-40 text-xs animate-in fade-in">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      insertTextAtCursor('\n\n--------------------------------------------------------------------------------\n\n');
+                      setShowInsertMenu(false);
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-slate-50 flex items-center gap-2 text-slate-700 cursor-pointer"
+                  >
+                    <Minus size={14} /> Horizontal Divider Line
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      insertTextAtCursor(new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }));
+                      setShowInsertMenu(false);
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-slate-50 flex items-center gap-2 text-slate-700 cursor-pointer"
+                  >
+                    <Calendar size={14} /> Current Date Stamp
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      insertTextAtCursor('\n\n[SIGNATURE FIELD PLACEHOLDER: ______________________]   [DATE: __________________]\n');
+                      setShowInsertMenu(false);
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-slate-50 flex items-center gap-2 text-slate-700 cursor-pointer"
+                  >
+                    <PenTool size={14} /> Signature Line Marker
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      insertTextAtCursor('\n\n+-------------------------------------------+-------------------------------------------+\n| PARTY A: Disclosing Entity                | PARTY B: Receiving Entity                 |\n| Entity: Bexcode Services                  | Signer: Vimal Chavda                      |\n| Title: Corporate Sponsor                  | Title: Designated Signatory               |\n| Email: manu.yadav@oladigital.health       | Email: vimal@bexcodeservices.com          |\n+-------------------------------------------+-------------------------------------------+\n| Effective Date: ' + new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + '            | Expiration: Forever / Evergreen           |\n+-------------------------------------------+-------------------------------------------+\n\n');
+                      setShowInsertMenu(false);
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-slate-50 flex items-center gap-2 text-slate-700 cursor-pointer"
+                  >
+                    <Table size={14} /> 2-Column Parties Grid
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      insertTextAtCursor('\n\n--------------------------------------------------------------------------------\nIN WITNESS WHEREOF, the parties hereto have duly executed this Agreement as of the Effective Date.\n\nCOMPANY:                                     RECIPIENT / SIGNER:\nBexcode Services                             \nBy: _________________________________        By: _________________________________\nName: Manu Yadav                             Name: ' + (recipientList[0]?.name || 'Vimal Chavda') + '\nTitle: Authorized Officer                    Title: Designated Signatory\nDate: ' + new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) + '                     Date: ' + new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) + '\n');
+                      setShowInsertMenu(false);
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-slate-50 flex items-center gap-2 text-slate-700 font-bold cursor-pointer"
+                  >
+                    <FileCheck size={14} className="text-[#007355]" /> Two-Party Execution Block
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* 10. Legal Clauses / Presets Dropdown */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => { setShowClausesMenu(!showClausesMenu); setShowStylesMenu(false); setShowInsertMenu(false); }}
+                className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-[#007355] border border-emerald-200 rounded flex items-center gap-1 font-bold transition cursor-pointer"
+                title="Insert standard legal agreement clauses"
+              >
+                <Sparkles size={13} />
+                <span>Legal Clauses</span>
+                <ChevronDown size={12} />
+              </button>
+              {showClausesMenu && (
+                <div className="absolute top-full left-0 mt-1 w-64 bg-white border border-slate-200 rounded-lg shadow-xl py-1 z-40 text-xs animate-in fade-in">
+                  <div className="px-3 py-1 border-b border-slate-100 text-[10px] uppercase font-bold text-slate-400">
+                    Insert Clause at Cursor
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      insertTextAtCursor('\n\nCONFIDENTIALITY AND NON-DISCLOSURE\nAll proprietary, commercial, financial, and technical information disclosed under this Agreement shall remain strictly confidential. Neither party shall disclose or use confidential information without the prior written consent of the disclosing party.\n');
+                      setShowClausesMenu(false);
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-slate-50 text-slate-800 font-medium cursor-pointer"
+                  >
+                    Confidentiality & Non-Disclosure
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      insertTextAtCursor('\n\nCOMPENSATION AND INVOICING TERMS\nCompensation for all services rendered shall be invoiced on a monthly basis and payable within thirty (30) calendar days from receipt of invoice. Late payments shall bear interest at 1.5% per month or the highest statutory rate.\n');
+                      setShowClausesMenu(false);
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-slate-50 text-slate-800 font-medium cursor-pointer"
+                  >
+                    Compensation & Payment
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      insertTextAtCursor('\n\nTERM AND TERMINATION\nThis Agreement commences on the Effective Date and continues until terminated by either party upon thirty (30) days prior written notice, or immediately upon written notice in the event of an uncured material breach after fifteen (15) days.\n');
+                      setShowClausesMenu(false);
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-slate-50 text-slate-800 font-medium cursor-pointer"
+                  >
+                    Term & Termination
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      insertTextAtCursor('\n\nGOVERNING LAW AND JURISDICTION\nThis Agreement shall be governed by, and construed in accordance with, the laws of the State of Delaware, without giving effect to conflicts of law principles. Any legal action arising hereunder shall be filed exclusively in the courts of that jurisdiction.\n');
+                      setShowClausesMenu(false);
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-slate-50 text-slate-800 font-medium cursor-pointer"
+                  >
+                    Governing Law & Jurisdiction
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      insertTextAtCursor('\n\nSEVERABILITY AND ENTIRE AGREEMENT\nIf any provision of this Agreement is held to be invalid or unenforceable, the remaining provisions shall continue in full force and effect. This Agreement constitutes the complete understanding between the parties with respect to the subject matter hereof.\n');
+                      setShowClausesMenu(false);
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-slate-50 text-slate-800 font-medium cursor-pointer"
+                  >
+                    Severability & Entire Agreement
+                  </button>
+                  <div className="border-t border-slate-100 my-1" />
+                  <div className="px-3 py-1 border-b border-slate-100 text-[10px] uppercase font-bold text-slate-400">
+                    Replace Entire Document
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm('Replace document content with Standard Employment Agreement?')) {
+                        updateContentWithHistory(DEFAULT_DOCUMENT_TEXTS.employment);
+                        setShowClausesMenu(false);
+                      }
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-slate-50 text-[#007355] font-semibold cursor-pointer"
+                  >
+                    Load Full Employment Template
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm('Replace document content with Non-Disclosure Agreement (NDA)?')) {
+                        updateContentWithHistory(DEFAULT_DOCUMENT_TEXTS.nda);
+                        setShowClausesMenu(false);
+                      }
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-slate-50 text-[#007355] font-semibold cursor-pointer"
+                  >
+                    Load Full NDA Template
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm('Replace document content with Master Services Agreement?')) {
+                        updateContentWithHistory(DEFAULT_DOCUMENT_TEXTS.service);
+                        setShowClausesMenu(false);
+                      }
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-slate-50 text-[#007355] font-semibold cursor-pointer"
+                  >
+                    Load Full Services Template
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Center Workspace (A4 Document Canvas) */}
+          <main
+            onClick={() => {
+              setShowColorPicker(false);
+              setShowHighlightPicker(false);
+              setShowClausesMenu(false);
+              setShowStylesMenu(false);
+              setShowInsertMenu(false);
+            }}
+            className="flex-1 bg-slate-200/90 overflow-y-auto p-4 sm:p-10 flex justify-center items-start print:p-0 print:bg-white"
+          >
+            <div
+              style={{
+                transform: `scale(${wordEditorZoom / 100})`,
+                transformOrigin: 'top center',
+                transition: 'transform 0.15s ease'
+              }}
+              className="w-full max-w-[840px] min-h-[1100px] bg-white rounded-xs border border-slate-300 shadow-2xl p-10 sm:p-16 flex flex-col justify-between relative transition-all"
+            >
+              {/* Document Header Metadata Line */}
+              <div className="border-b border-slate-200 pb-3 mb-6 flex justify-between items-center text-[10px] text-slate-400 font-mono select-none">
+                <span className="font-bold text-slate-600 uppercase tracking-wider">{documentTitle.replace(/\.pdf$/i, '')}</span>
+                <span>BEX-DOC-2026-0024-{id || 1}-{activeDocIndex + 1}</span>
+              </div>
+
+              {/* Main Content Area */}
+              <div className="flex-1 flex flex-col">
+                <textarea
+                  ref={wordTextareaRef}
+                  value={docContentText}
+                  onChange={(e) => updateContentWithHistory(e.target.value)}
+                  onKeyDown={(e) => {
+                    if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
+                      e.preventDefault();
+                      setWordIsBold(!wordIsBold);
+                    } else if ((e.ctrlKey || e.metaKey) && e.key === 'i') {
+                      e.preventDefault();
+                      setWordIsItalic(!wordIsItalic);
+                    } else if ((e.ctrlKey || e.metaKey) && e.key === 'u') {
+                      e.preventDefault();
+                      setWordIsUnderline(!wordIsUnderline);
+                    } else if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+                      e.preventDefault();
+                      if (e.shiftKey) handleWordRedo();
+                      else handleWordUndo();
+                    } else if ((e.ctrlKey || e.metaKey) && e.key === 'y') {
+                      e.preventDefault();
+                      handleWordRedo();
+                    } else if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+                      e.preventDefault();
+                      handleWordSaveAndCreate();
+                    } else if (e.key === 'Tab') {
+                      e.preventDefault();
+                      insertTextAtCursor('    ');
+                    }
+                  }}
+                  placeholder="Start composing agreement terms, contract clauses, or paste document content here..."
+                  style={{
+                    fontFamily: wordFontFamily,
+                    fontSize: `${wordFontSize}pt`,
+                    fontWeight: wordIsBold ? 'bold' : 'normal',
+                    fontStyle: wordIsItalic ? 'italic' : 'normal',
+                    textDecoration: `${wordIsUnderline ? 'underline' : ''} ${wordIsStrike ? 'line-through' : ''}`.trim() || 'none',
+                    color: wordTextColor,
+                    backgroundColor: wordHighlightColor,
+                    textAlign: wordTextAlign,
+                    lineHeight: wordLineHeight,
+                    minHeight: '820px',
+                    width: '100%',
+                    border: 'none',
+                    outline: 'none',
+                    resize: 'none',
+                    whiteSpace: 'pre-wrap'
+                  }}
+                  className="flex-1 w-full focus:outline-none selection:bg-emerald-200 leading-relaxed font-sans"
+                />
+              </div>
+
+              {/* Document Page Footer */}
+              <div className="border-t border-slate-200 pt-3 mt-6 flex justify-between items-center text-[10px] text-slate-400 font-mono select-none">
+                <span>BexSign Legal Verification • Page 1 of {Math.max(1, Math.ceil(docContentText.trim().split(/\s+/).filter(Boolean).length / 380))}</span>
+                <span>SHA-256 Digital Signature Standard</span>
+              </div>
+            </div>
+          </main>
+
+          {/* Bottom Word Status Bar */}
+          <footer className="h-8 bg-white border-t border-slate-200 px-4 sm:px-6 flex items-center justify-between text-[11px] text-slate-500 font-medium shrink-0 z-20 select-none">
+            {/* Left: Document Metrics */}
+            <div className="flex items-center gap-4">
+              <span>Page 1 of {Math.max(1, Math.ceil(docContentText.trim().split(/\s+/).filter(Boolean).length / 380))}</span>
+              <span>•</span>
+              <span className="font-semibold text-slate-700">{docContentText.trim().split(/\s+/).filter(Boolean).length} words</span>
+              <span>•</span>
+              <span>{docContentText.length} characters</span>
+              <span className="hidden sm:inline">•</span>
+              <span className="hidden sm:inline">~{Math.max(1, Math.ceil(docContentText.trim().split(/\s+/).filter(Boolean).length / 200))} min read</span>
+            </div>
+
+            {/* Right: Active Typography Info & Zoom */}
+            <div className="flex items-center gap-3">
+              <span className="hidden md:inline font-mono text-[10px] text-slate-400">
+                {wordFontFamily.replace(/,.*$/, '')} • {wordFontSize}pt • Spacing {wordLineHeight}
+              </span>
+
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setWordEditorZoom(prev => Math.max(60, prev - 10))}
+                  className="p-1 hover:bg-slate-100 rounded text-slate-600 cursor-pointer"
+                  title="Zoom Out"
+                >
+                  <ZoomOut size={13} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setWordEditorZoom(100)}
+                  className="px-1.5 py-0.5 hover:bg-slate-100 rounded text-[10px] font-mono font-bold text-slate-700 cursor-pointer"
+                  title="Reset Zoom"
+                >
+                  {wordEditorZoom}%
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setWordEditorZoom(prev => Math.min(160, prev + 10))}
+                  className="p-1 hover:bg-slate-100 rounded text-slate-600 cursor-pointer"
+                  title="Zoom In"
+                >
+                  <ZoomIn size={13} />
+                </button>
+              </div>
+            </div>
+          </footer>
+        </div>
+      )}
+
+      {/* 2. Documents List Switcher Modal inside envelope */}
+      {showEditDocModal && !isEditingDocRichText && (
+        <div className="fixed inset-0 bg-slate-950/75 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-white text-slate-900 rounded-2xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 space-y-4 my-6 text-xs font-sans">
+            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+              <h3 className="text-base font-bold text-slate-900">
+                Edit documents
+              </h3>
+              <button onClick={() => { setShowEditDocModal(false); setIsEditingDocRichText(false); }} className="text-slate-400 hover:text-slate-700 cursor-pointer">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="space-y-2.5 max-h-[360px] overflow-y-auto pr-1">
+                {documentsList.map((docItem, idx) => (
+                  <div
+                    key={docItem.id || idx}
+                    className={`p-4 border rounded-xl flex items-start justify-between transition ${
+                      activeDocIndex === idx ? 'border-emerald-500 bg-emerald-50/40 ring-1 ring-emerald-300' : 'border-slate-200 bg-slate-50'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-12 h-14 bg-white border border-slate-300 rounded shadow-xs p-1 flex flex-col justify-between text-[7px] text-slate-400 shrink-0">
+                        <span className="font-bold text-slate-700 truncate">{docItem.name || `Document ${idx + 1}`}</span>
+                        <span className="text-[6px] text-emerald-600 font-bold">{docItem.pages || 1} page</span>
+                      </div>
+                      <div className="min-w-0">
+                        <h4 className="font-bold text-slate-800 text-sm truncate">{docItem.name || `Document ${idx + 1}`}</h4>
+                        <p className="text-slate-500 text-[11px] mt-0.5 line-clamp-2 leading-relaxed">
+                          {docItem.documentText || getDefaultDocContent(docItem.name, docItem.customMessage)}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveDocIndex(idx);
+                          setDocContentText(docItem.documentText || getDefaultDocContent(docItem.name, docItem.customMessage));
+                          setIsEditingDocRichText(true);
+                        }}
+                        className="px-3 py-1.5 bg-[#007355] hover:bg-[#005c44] text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition shadow-xs cursor-pointer"
+                      >
+                        <Edit3 size={13} />
+                        <span>Open in Word Editor</span>
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex justify-end pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setShowEditDocModal(false)}
+                  className="px-4 py-2 border border-slate-300 rounded-lg font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -1982,6 +2972,7 @@ export default function DocumentEditor() {
                         recipientName: recipientList[0]?.name || 'Signer',
                         documentName: documentTitle,
                         documents: documentsList,
+                        documentText: currentDocument.documentText,
                         fieldsByDoc: fieldsByDoc,
                         fields: allFlat
                       })

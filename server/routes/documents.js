@@ -39,6 +39,13 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage: storage });
 
+// Ensure document_text column exists in document_files
+(async () => {
+  try {
+    await db.query('ALTER TABLE document_files ADD COLUMN document_text LONGTEXT NULL');
+  } catch (e) {}
+})();
+
 // @route   GET /api/documents
 // @desc    Get all documents from database with generated BexSign document IDs
 router.get('/', async (req, res) => {
@@ -85,7 +92,7 @@ router.get('/', async (req, res) => {
 });
 
 // @route   POST /api/documents/upload or /api/documents/create
-router.post('/upload', upload.single('documentFile'), async (req, res) => {
+router.post('/upload', upload.any(), async (req, res) => {
     const { 
         documentId, document_id, id,
         userId, user_id, documentName, document_name, folderName, folder_name, 
@@ -102,7 +109,9 @@ router.post('/upload', upload.single('documentFile'), async (req, res) => {
     const uId = userId || user_id || 1;
     const docStatus = status || 'Draft';
 
-    const filePath = req.file ? `/uploads/${req.file.filename}` : (req.body.file_path || '/uploads/sample.pdf');
+    const uploadedFiles = req.files || [];
+    const primaryUploaded = uploadedFiles.find(f => f.fieldname === 'documentFile') || uploadedFiles[0];
+    const filePath = primaryUploaded ? `/uploads/${primaryUploaded.filename}` : (req.body.file_path || '/uploads/sample.pdf');
 
     try {
         // If editing or continuing an existing document draft: UPDATE it instead of creating duplicate drafts!
@@ -120,9 +129,9 @@ router.post('/upload', upload.single('documentFile'), async (req, res) => {
                 docName, folder, docStatus, recipEmail,
                 noteToAll || null, parseInt(daysToComplete) || null, parseInt(reminderDays) || null, signingOrder || null
             ];
-            if (req.file) {
+            if (primaryUploaded) {
                 updateSql += `, file_path = ?`;
-                updateParams.push(`/uploads/${req.file.filename}`);
+                updateParams.push(`/uploads/${primaryUploaded.filename}`);
             }
             updateSql += ` WHERE id = ?`;
             updateParams.push(existingDocId);
@@ -157,12 +166,30 @@ router.post('/upload', upload.single('documentFile'), async (req, res) => {
                         : req.body.documentsMeta;
                     if (Array.isArray(metaDocs) && metaDocs.length > 0) {
                         await db.query('DELETE FROM document_files WHERE document_id = ?', [existingDocId]);
-                        for (const d of metaDocs) {
-                            await db.query(
-                                `INSERT INTO document_files (document_id, file_name, file_path, file_size, file_type)
-                                 VALUES (?, ?, ?, ?, ?)`,
-                                [existingDocId, d.name || 'Document.pdf', d.file_path || '/uploads/sample.pdf', 1024, 'pdf']
-                            );
+                        for (let i = 0; i < metaDocs.length; i++) {
+                            const d = metaDocs[i];
+                            let matched = null;
+                            if (uploadedFiles.length > 0) {
+                                matched = uploadedFiles.find(f => f.originalname === d.file_name || f.originalname === d.name);
+                                if (!matched && uploadedFiles[i]) {
+                                    matched = uploadedFiles[i];
+                                }
+                            }
+                            const docFilePath = matched ? `/uploads/${matched.filename}` : (d.file_path || '/uploads/sample.pdf');
+                            const docFileSize = matched ? Math.round(matched.size / 1024) : 1024;
+                            try {
+                                await db.query(
+                                    `INSERT INTO document_files (document_id, file_name, file_path, file_size, file_type, document_text)
+                                     VALUES (?, ?, ?, ?, ?, ?)`,
+                                    [existingDocId, d.name || 'Document.pdf', docFilePath, docFileSize, 'pdf', d.documentText || d.customMessage || null]
+                                );
+                            } catch (eInsert) {
+                                await db.query(
+                                    `INSERT INTO document_files (document_id, file_name, file_path, file_size, file_type)
+                                     VALUES (?, ?, ?, ?, ?)`,
+                                    [existingDocId, d.name || 'Document.pdf', docFilePath, docFileSize, 'pdf']
+                                );
+                            }
                         }
                     }
                 } catch (errMeta) {
@@ -224,12 +251,30 @@ router.post('/upload', upload.single('documentFile'), async (req, res) => {
                     ? JSON.parse(req.body.documentsMeta)
                     : req.body.documentsMeta;
                 if (Array.isArray(metaDocs) && metaDocs.length > 0) {
-                    for (const d of metaDocs) {
-                        await db.query(
-                            `INSERT INTO document_files (document_id, file_name, file_path, file_size, file_type)
-                             VALUES (?, ?, ?, ?, ?)`,
-                            [documentId, d.name || 'Document.pdf', d.file_path || '/uploads/sample.pdf', 1024, 'pdf']
-                        );
+                    for (let i = 0; i < metaDocs.length; i++) {
+                        const d = metaDocs[i];
+                        let matched = null;
+                        if (uploadedFiles.length > 0) {
+                            matched = uploadedFiles.find(f => f.originalname === d.file_name || f.originalname === d.name);
+                            if (!matched && uploadedFiles[i]) {
+                                matched = uploadedFiles[i];
+                            }
+                        }
+                        const docFilePath = matched ? `/uploads/${matched.filename}` : (d.file_path || '/uploads/sample.pdf');
+                        const docFileSize = matched ? Math.round(matched.size / 1024) : 1024;
+                        try {
+                            await db.query(
+                                `INSERT INTO document_files (document_id, file_name, file_path, file_size, file_type, document_text)
+                                 VALUES (?, ?, ?, ?, ?, ?)`,
+                                [documentId, d.name || 'Document.pdf', docFilePath, docFileSize, 'pdf', d.documentText || d.customMessage || null]
+                            );
+                        } catch (eIns) {
+                            await db.query(
+                                `INSERT INTO document_files (document_id, file_name, file_path, file_size, file_type)
+                                 VALUES (?, ?, ?, ?, ?)`,
+                                [documentId, d.name || 'Document.pdf', docFilePath, docFileSize, 'pdf']
+                            );
+                        }
                     }
                 }
             } catch (errMeta) {
@@ -491,6 +536,23 @@ router.get('/:id', async (req, res) => {
             console.warn('Files query warning:', eFiles.message);
         }
 
+        try {
+            const [fieldRows] = await db.query('SELECT * FROM document_fields WHERE document_id = ? ORDER BY id ASC', [id]);
+            if (fieldRows && fieldRows.length > 0) {
+                doc.fields = fieldRows.map(r => ({
+                    id: r.id,
+                    type: r.field_type,
+                    label: r.label,
+                    x: r.pos_x,
+                    y: r.pos_y,
+                    page: r.page_number,
+                    required: Boolean(r.is_required)
+                }));
+            }
+        } catch (eFldGet) {
+            console.warn('Document fields query warning:', eFldGet.message);
+        }
+
         res.json({ success: true, document: doc });
     } catch (err) {
         const fallbackId = await getOrCreateDocumentIdentifier(id);
@@ -512,7 +574,7 @@ router.get('/:id', async (req, res) => {
 // @desc    Update document fields, title, and status
 router.post('/:id/save', async (req, res) => {
     const { id } = req.params;
-    const { documentTitle, document_name, status } = req.body;
+    const { documentTitle, document_name, status, documents, documentText, fields, fieldsOnDoc, fieldsByDoc } = req.body;
     const titleToSave = documentTitle || document_name;
 
     try {
@@ -521,6 +583,49 @@ router.post('/:id/save', async (req, res) => {
         }
         if (status) {
             await db.query('UPDATE documents SET status = ? WHERE id = ?', [status, id]);
+        }
+        if (documentText) {
+            await db.query('UPDATE documents SET custom_message = ? WHERE id = ?', [documentText, id]);
+        }
+
+        // Persist placed fields to document_fields table
+        const fieldsToSave = fields || fieldsOnDoc || (fieldsByDoc ? Object.values(fieldsByDoc).flat() : null);
+        if (fieldsToSave && Array.isArray(fieldsToSave)) {
+            try {
+                await db.query('DELETE FROM document_fields WHERE document_id = ?', [id]);
+                for (const f of fieldsToSave) {
+                    await db.query(
+                        `INSERT INTO document_fields (document_id, field_type, label, is_required, pos_x, pos_y, page_number)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                        [id, f.type || 'Signature', f.label || f.type || 'Field', f.required !== false ? 1 : 0, f.x || 60, f.y || 420, f.page || 1]
+                    );
+                }
+            } catch (eFld) {
+                console.warn('Document fields save warning:', eFld.message);
+            }
+        }
+
+        if (documents && Array.isArray(documents) && documents.length > 0) {
+            try {
+                await db.query('DELETE FROM document_files WHERE document_id = ?', [id]);
+                for (const d of documents) {
+                    try {
+                        await db.query(
+                            `INSERT INTO document_files (document_id, file_name, file_path, file_size, file_type, document_text)
+                             VALUES (?, ?, ?, ?, ?, ?)`,
+                            [id, d.name || 'Document.pdf', d.file_path || '/uploads/sample.pdf', 1024, 'pdf', d.documentText || d.customMessage || null]
+                        );
+                    } catch (eIns) {
+                        await db.query(
+                            `INSERT INTO document_files (document_id, file_name, file_path, file_size, file_type)
+                             VALUES (?, ?, ?, ?, ?)`,
+                            [id, d.name || 'Document.pdf', d.file_path || '/uploads/sample.pdf', 1024, 'pdf']
+                        );
+                    }
+                }
+            } catch (eFiles) {
+                console.warn('Save document files warning:', eFiles.message);
+            }
         }
         res.json({ success: true, message: 'Document updated successfully' });
     } catch (err) {
@@ -545,14 +650,46 @@ router.post('/send/:id', async (req, res) => {
             try {
                 await db.query('DELETE FROM document_files WHERE document_id = ?', [id]);
                 for (const d of req.body.documents) {
-                    await db.query(
-                        `INSERT INTO document_files (document_id, file_name, file_path, file_size, file_type)
-                         VALUES (?, ?, ?, ?, ?)`,
-                        [id, d.name || 'Document.pdf', d.file_path || '/uploads/sample.pdf', 1024, 'pdf']
-                    );
+                    try {
+                        await db.query(
+                            `INSERT INTO document_files (document_id, file_name, file_path, file_size, file_type, document_text)
+                             VALUES (?, ?, ?, ?, ?, ?)`,
+                            [id, d.name || 'Document.pdf', d.file_path || '/uploads/sample.pdf', 1024, 'pdf', d.documentText || d.customMessage || null]
+                        );
+                    } catch (eSendIns) {
+                        await db.query(
+                            `INSERT INTO document_files (document_id, file_name, file_path, file_size, file_type)
+                             VALUES (?, ?, ?, ?, ?)`,
+                            [id, d.name || 'Document.pdf', d.file_path || '/uploads/sample.pdf', 1024, 'pdf']
+                        );
+                    }
                 }
             } catch (eDocFiles) {
                 console.warn('Doc files update warning on send:', eDocFiles.message);
+            }
+        }
+
+        const firstDocText = (req.body.documents && req.body.documents[0]?.documentText) || req.body.documentText;
+        if (firstDocText) {
+            try {
+                await db.query('UPDATE documents SET custom_message = ? WHERE id = ?', [firstDocText, id]);
+            } catch (eText) {}
+        }
+
+        // Persist placed fields to document_fields on send
+        const fieldsToSave = fields || (req.body.fieldsByDoc ? Object.values(req.body.fieldsByDoc).flat() : null);
+        if (fieldsToSave && Array.isArray(fieldsToSave)) {
+            try {
+                await db.query('DELETE FROM document_fields WHERE document_id = ?', [id]);
+                for (const f of fieldsToSave) {
+                    await db.query(
+                        `INSERT INTO document_fields (document_id, field_type, label, is_required, pos_x, pos_y, page_number)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                        [id, f.type || 'Signature', f.label || f.type || 'Field', f.required !== false ? 1 : 0, f.x || 60, f.y || 420, f.page || 1]
+                    );
+                }
+            } catch (eFldSend) {
+                console.warn('Doc fields update warning on send:', eFldSend.message);
             }
         }
 
