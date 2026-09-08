@@ -74,6 +74,8 @@ router.get('/', async (req, res) => {
         if (status && status.toLowerCase() !== 'all') {
             query += ' AND LOWER(d.status) = LOWER(?)';
             params.push(status);
+        } else if (!status || status.toLowerCase() === 'all') {
+            query += ' AND LOWER(COALESCE(d.status, "")) != "trashed"';
         }
 
         if (folder) {
@@ -539,15 +541,36 @@ router.get('/:id', async (req, res) => {
         try {
             const [fieldRows] = await db.query('SELECT * FROM document_fields WHERE document_id = ? ORDER BY id ASC', [id]);
             if (fieldRows && fieldRows.length > 0) {
-                doc.fields = fieldRows.map(r => ({
-                    id: r.id,
-                    type: r.field_type,
-                    label: r.label,
-                    x: r.pos_x,
-                    y: r.pos_y,
-                    page: r.page_number,
-                    required: Boolean(r.is_required)
-                }));
+                doc.fields = fieldRows.map(r => {
+                    let parsedOpts = {};
+                    try {
+                        if (r.options) parsedOpts = JSON.parse(r.options);
+                    } catch (e) {}
+                    return {
+                        id: r.id,
+                        type: r.field_type,
+                        label: r.label || r.field_type,
+                        x: r.pos_x,
+                        y: r.pos_y,
+                        width: r.width || 150,
+                        height: r.height || 40,
+                        page: r.page_number || 1,
+                        docIndex: parsedOpts.docIndex !== undefined ? parsedOpts.docIndex : ((r.page_number || 1) - 1),
+                        value: parsedOpts.value !== undefined ? parsedOpts.value : (r.field_type === 'Sign date' ? new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : ''),
+                        required: Boolean(r.is_required),
+                        ...parsedOpts
+                    };
+                });
+
+                doc.fieldsByDoc = {};
+                doc.fields.forEach(f => {
+                    const dIdx = f.docIndex !== undefined ? f.docIndex : 0;
+                    if (!doc.fieldsByDoc[dIdx]) doc.fieldsByDoc[dIdx] = [];
+                    doc.fieldsByDoc[dIdx].push(f);
+                });
+            } else {
+                doc.fields = [];
+                doc.fieldsByDoc = {};
             }
         } catch (eFldGet) {
             console.warn('Document fields query warning:', eFldGet.message);
@@ -594,10 +617,38 @@ router.post('/:id/save', async (req, res) => {
             try {
                 await db.query('DELETE FROM document_fields WHERE document_id = ?', [id]);
                 for (const f of fieldsToSave) {
+                    const opts = JSON.stringify({
+                        value: f.value !== undefined ? f.value : '',
+                        docIndex: f.docIndex !== undefined ? f.docIndex : ((f.page || 1) - 1),
+                        assigneeId: f.assigneeId,
+                        assignee: f.assignee,
+                        font: f.font,
+                        fontSize: f.fontSize,
+                        textColor: f.textColor,
+                        dateFormat: f.dateFormat,
+                        charCount: f.charCount,
+                        charSpace: f.charSpace,
+                        gridValue: f.gridValue,
+                        checked: f.checked,
+                        isCustom: f.isCustom,
+                        isBold: f.isBold,
+                        isItalic: f.isItalic
+                    });
                     await db.query(
-                        `INSERT INTO document_fields (document_id, field_type, label, is_required, pos_x, pos_y, page_number)
-                         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-                        [id, f.type || 'Signature', f.label || f.type || 'Field', f.required !== false ? 1 : 0, f.x || 60, f.y || 420, f.page || 1]
+                        `INSERT INTO document_fields (document_id, field_type, label, is_required, pos_x, pos_y, page_number, width, height, options)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                        [
+                            id,
+                            f.type || 'Signature',
+                            f.label || f.type || 'Field',
+                            f.required !== false ? 1 : 0,
+                            f.x || 60,
+                            f.y || 420,
+                            f.page || 1,
+                            f.width || 150,
+                            f.height || 40,
+                            opts
+                        ]
                     );
                 }
             } catch (eFld) {
@@ -682,10 +733,38 @@ router.post('/send/:id', async (req, res) => {
             try {
                 await db.query('DELETE FROM document_fields WHERE document_id = ?', [id]);
                 for (const f of fieldsToSave) {
+                    const opts = JSON.stringify({
+                        value: f.value !== undefined ? f.value : '',
+                        docIndex: f.docIndex !== undefined ? f.docIndex : ((f.page || 1) - 1),
+                        assigneeId: f.assigneeId,
+                        assignee: f.assignee,
+                        font: f.font,
+                        fontSize: f.fontSize,
+                        textColor: f.textColor,
+                        dateFormat: f.dateFormat,
+                        charCount: f.charCount,
+                        charSpace: f.charSpace,
+                        gridValue: f.gridValue,
+                        checked: f.checked,
+                        isCustom: f.isCustom,
+                        isBold: f.isBold,
+                        isItalic: f.isItalic
+                    });
                     await db.query(
-                        `INSERT INTO document_fields (document_id, field_type, label, is_required, pos_x, pos_y, page_number)
-                         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-                        [id, f.type || 'Signature', f.label || f.type || 'Field', f.required !== false ? 1 : 0, f.x || 60, f.y || 420, f.page || 1]
+                        `INSERT INTO document_fields (document_id, field_type, label, is_required, pos_x, pos_y, page_number, width, height, options)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                        [
+                            id,
+                            f.type || 'Signature',
+                            f.label || f.type || 'Field',
+                            f.required !== false ? 1 : 0,
+                            f.x || 60,
+                            f.y || 420,
+                            f.page || 1,
+                            f.width || 150,
+                            f.height || 40,
+                            opts
+                        ]
                     );
                 }
             } catch (eFldSend) {
@@ -1016,13 +1095,36 @@ router.post('/:id/clone', async (req, res) => {
 });
 
 // @route   DELETE /api/documents/:id
-// @desc    Delete document
+// @desc    Delete document (supports permanent deletion or moving to trash)
 router.delete('/:id', async (req, res) => {
     const { id } = req.params;
+    const { permanent } = req.query;
     try {
-        await db.query('DELETE FROM documents WHERE id = ?', [id]);
-        res.json({ success: true, message: 'Document deleted successfully.' });
+        if (permanent === 'true' || permanent === true) {
+            try {
+                await db.query('DELETE FROM document_identifiers WHERE document_id = ?', [id]);
+            } catch (e) {}
+            await db.query('DELETE FROM documents WHERE id = ?', [id]);
+            res.json({ success: true, message: 'Document permanently deleted.' });
+        } else {
+            await db.query(`UPDATE documents SET status = 'Trashed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [id]);
+            res.json({ success: true, message: 'Document moved to trash successfully.' });
+        }
     } catch (err) {
+        console.error('Delete Document Error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// @route   POST /api/documents/:id/trash
+// @desc    Move document to trash
+router.post('/:id/trash', async (req, res) => {
+    const { id } = req.params;
+    try {
+        await db.query(`UPDATE documents SET status = 'Trashed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [id]);
+        res.json({ success: true, message: 'Document moved to trash successfully.' });
+    } catch (err) {
+        console.error('Move Document To Trash Error:', err);
         res.status(500).json({ error: err.message });
     }
 });

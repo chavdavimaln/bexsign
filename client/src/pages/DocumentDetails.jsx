@@ -67,6 +67,20 @@ export default function DocumentDetails() {
     setTimeout(() => setCopiedId(false), 2000);
   };
 
+  const handleMoveToTrash = async () => {
+    setActiveMenu(false);
+    showToast('Document moved to trash.');
+    try {
+      await fetch(`http://localhost:5000/api/trash/move/${id}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+    } catch (e) {
+      console.error('Error moving doc to trash:', e);
+    }
+    navigate('/documents/all');
+  };
+
   // Calculate completion percentage based on signed recipients
   const totalRecipients = document.recipients.length;
   const signedRecipients = document.recipients.filter(r => r.status === 'signed').length;
@@ -155,7 +169,7 @@ export default function DocumentDetails() {
                     <Copy size={14} /> Copy Document ID
                   </button>
                   <div className="border-t my-1" />
-                  <button onClick={() => { showToast('Document moved to trash.'); navigate('/documents/all'); }} className="w-full px-3 py-2 hover:bg-rose-50 text-rose-600 flex items-center gap-2">
+                  <button onClick={handleMoveToTrash} className="w-full px-3 py-2 hover:bg-rose-50 text-rose-600 flex items-center gap-2">
                     <Trash2 size={14} /> Move to Trash
                   </button>
                 </div>

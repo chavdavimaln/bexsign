@@ -30,6 +30,33 @@ router.get('/token/:token', async (req, res) => {
             const email = doc.recipient_email || 'vimal@bexcodeservices.com';
             const existingSig = await getEmployeeSignatureByEmail(email);
 
+            const [fieldRows] = await db.query('SELECT * FROM document_fields WHERE document_id = ? ORDER BY id ASC', [docId]);
+            const fieldsList = fieldRows.map(r => {
+                let parsedOpts = {};
+                try { if (r.options) parsedOpts = JSON.parse(r.options); } catch (e) {}
+                return {
+                    id: r.id,
+                    type: r.field_type,
+                    label: r.label || r.field_type,
+                    x: r.pos_x,
+                    y: r.pos_y,
+                    width: r.width || 150,
+                    height: r.height || 40,
+                    page: r.page_number || 1,
+                    docIndex: parsedOpts.docIndex !== undefined ? parsedOpts.docIndex : ((r.page_number || 1) - 1),
+                    value: parsedOpts.value !== undefined ? parsedOpts.value : (r.field_type === 'Sign date' ? new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : ''),
+                    required: Boolean(r.is_required),
+                    ...parsedOpts
+                };
+            });
+
+            const fieldsByDoc = {};
+            fieldsList.forEach(f => {
+                const dIdx = f.docIndex !== undefined ? f.docIndex : 0;
+                if (!fieldsByDoc[dIdx]) fieldsByDoc[dIdx] = [];
+                fieldsByDoc[dIdx].push(f);
+            });
+
             return res.json({
                 success: true,
                 recipient: {
@@ -42,19 +69,43 @@ router.get('/token/:token', async (req, res) => {
                     custom_message: doc.custom_message || 'Please review and sign this agreement.',
                     file_path: doc.file_path || '/uploads/sample.pdf'
                 },
-                fields: [
-                    { id: 101, field_type: 'Signature', label: 'Signature', pos_x: 200, pos_y: 400, is_required: true, recipient_id: 1 },
-                    { id: 102, field_type: 'Date', label: 'Date Signed', pos_x: 420, pos_y: 400, is_required: true, recipient_id: 1 }
-                ],
+                fields: fieldsList,
+                fieldsByDoc,
                 existingSignature: existingSig
             });
         }
 
         const recipient = recipients[0];
-        const [fields] = await db.query(
-            `SELECT * FROM document_fields WHERE document_id = ?`,
+        const [fieldRows] = await db.query(
+            `SELECT * FROM document_fields WHERE document_id = ? ORDER BY id ASC`,
             [recipient.document_id]
         );
+
+        const fieldsList = (fieldRows || []).map(r => {
+            let parsedOpts = {};
+            try { if (r.options) parsedOpts = JSON.parse(r.options); } catch (e) {}
+            return {
+                id: r.id,
+                type: r.field_type,
+                label: r.label || r.field_type,
+                x: r.pos_x,
+                y: r.pos_y,
+                width: r.width || 150,
+                height: r.height || 40,
+                page: r.page_number || 1,
+                docIndex: parsedOpts.docIndex !== undefined ? parsedOpts.docIndex : ((r.page_number || 1) - 1),
+                value: parsedOpts.value !== undefined ? parsedOpts.value : (r.field_type === 'Sign date' ? new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : ''),
+                required: Boolean(r.is_required),
+                ...parsedOpts
+            };
+        });
+
+        const fieldsByDoc = {};
+        fieldsList.forEach(f => {
+            const dIdx = f.docIndex !== undefined ? f.docIndex : 0;
+            if (!fieldsByDoc[dIdx]) fieldsByDoc[dIdx] = [];
+            fieldsByDoc[dIdx].push(f);
+        });
 
         // Auto-fetch signature from employee_signatures by email
         const existingSig = await getEmployeeSignatureByEmail(recipient.email);
@@ -62,7 +113,8 @@ router.get('/token/:token', async (req, res) => {
         res.json({
             success: true,
             recipient,
-            fields: fields || [],
+            fields: fieldsList,
+            fieldsByDoc,
             existingSignature: existingSig
         });
     } catch (err) {
@@ -171,6 +223,39 @@ router.post('/submit', async (req, res) => {
                 [docId, `Document ID ${docId} electronically signed by ${name} (${email}) and marked Completed`, req.ip || '127.0.0.1']
             );
         } catch (e) {}
+
+        // Persist submitted field values to document_fields and document_field_values
+        const submittedFields = req.body.fields || (req.body.fieldsByDoc ? Object.values(req.body.fieldsByDoc).flat() : null);
+        if (submittedFields && Array.isArray(submittedFields)) {
+            for (const f of submittedFields) {
+                if (f.id && f.value !== undefined) {
+                    try {
+                        const [curr] = await db.query('SELECT options FROM document_fields WHERE id = ?', [f.id]);
+                        let curOpts = {};
+                        if (curr && curr[0]?.options) {
+                            try { curOpts = JSON.parse(curr[0].options); } catch (e) {}
+                        }
+                        curOpts.value = f.value;
+                        await db.query('UPDATE document_fields SET options = ? WHERE id = ?', [JSON.stringify(curOpts), f.id]);
+                        let targetRecId = recipientId;
+                        if (!targetRecId) {
+                            try {
+                                const [recRows] = await db.query('SELECT id FROM document_recipients WHERE document_id = ? LIMIT 1', [docId]);
+                                targetRecId = recRows && recRows[0] ? recRows[0].id : 1;
+                            } catch (e) {
+                                targetRecId = 1;
+                            }
+                        }
+                        await db.query(
+                            'INSERT INTO document_field_values (field_id, recipient_id, field_value, submitted_at) VALUES (?, ?, ?, NOW())',
+                            [f.id, targetRecId, String(f.value)]
+                        );
+                    } catch (eVal) {
+                        console.warn('Field value save warning:', eVal.message);
+                    }
+                }
+            }
+        }
 
         res.json({
             success: true,

@@ -100,11 +100,12 @@ export default function BexDocumentSheet({
               {placedFields.map((field) => {
                 if (field.type === 'Signature' || field.type === 'Initial') {
                   return (
-                    <div key={field.id} id="signature-field-container" className="relative sm:col-span-2">
+                    <div key={field.id} id={`doc-field-${field.id}`} className="relative sm:col-span-2">
                       <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2 print:text-slate-600">
-                        {field.label || 'Signature'}
+                        {field.label || field.type || 'Signature'}
+                        {field.required && <span className="text-red-500 ml-1 font-bold">*</span>}
                       </label>
-                      {signaturePlaced || isCompleted || signatureImage ? (
+                      {signaturePlaced || isCompleted || signatureImage || field.value ? (
                         <div className="relative inline-block">
                           <div
                             onClick={!isCompleted && onOpenSignatureModal ? onOpenSignatureModal : undefined}
@@ -114,7 +115,7 @@ export default function BexDocumentSheet({
                           >
                             <SignatureStamp
                               signerName={signerName}
-                              signatureImage={signatureImage}
+                              signatureImage={field.value || signatureImage}
                               signatureStyle={signatureStyle}
                               docId={displayDocId}
                             />
@@ -143,7 +144,10 @@ export default function BexDocumentSheet({
                             onClick={onOpenSignatureModal || undefined}
                             className="w-full p-4 border-2 border-emerald-600 bg-emerald-50 text-emerald-800 font-bold text-sm rounded-lg text-left flex items-center justify-between cursor-pointer hover:bg-emerald-100 transition shadow-2xs"
                           >
-                            <span>{field.label || 'Signature'}</span>
+                            <span className="flex items-center gap-1">
+                              <span>{field.label || 'Signature'}</span>
+                              <span className="text-red-500 font-bold">*</span>
+                            </span>
                             <PenTool size={16} />
                           </button>
                           {showTooltips && (
@@ -159,7 +163,7 @@ export default function BexDocumentSheet({
 
                 if (field.type === 'Stamp') {
                   return (
-                    <div key={field.id} className="w-full sm:w-64">
+                    <div key={field.id} id={`doc-field-${field.id}`} className="w-full sm:w-64">
                       <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2 print:text-slate-600">
                         {field.label || 'Stamp'}
                       </label>
@@ -180,9 +184,10 @@ export default function BexDocumentSheet({
 
                 if (field.type === 'Email') {
                   return (
-                    <div key={field.id} className="w-full sm:w-64">
+                    <div key={field.id} id={`doc-field-${field.id}`} className="w-full sm:w-64">
                       <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 print:text-slate-600">
                         {field.label || 'Email'}
+                        {field.required && <span className="text-red-500 ml-1 font-bold">*</span>}
                       </label>
                       {!isCompleted ? (
                         <input
@@ -202,22 +207,73 @@ export default function BexDocumentSheet({
                 }
 
                 if (field.type === 'Sign date') {
+                  const dateVal = field.value || new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
                   return (
-                    <div key={field.id} className="w-full sm:w-64">
+                    <div key={field.id} id={`doc-field-${field.id}`} className="w-full sm:w-64">
                       <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 print:text-slate-600">
                         {field.label || 'Sign date'}
+                        {field.required && <span className="text-red-500 ml-1 font-bold">*</span>}
                       </label>
-                      <div className="text-xs font-semibold text-slate-800 p-2.5 bg-slate-50 border border-slate-200 rounded-lg flex items-center gap-2">
-                        <Calendar size={14} className="text-slate-400" />
-                        <span>{field.value || new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
-                      </div>
+                      {!isCompleted ? (
+                        <div className="relative">
+                          <input
+                            type="text"
+                            value={field.value !== undefined ? field.value : dateVal}
+                            onChange={(e) => onUpdateField && onUpdateField(field.id, e.target.value)}
+                            className="w-full pl-8 pr-3 py-2.5 text-xs font-semibold text-slate-800 bg-white border border-slate-300 rounded-lg focus:border-[#007355] focus:ring-1 focus:ring-[#007355] outline-none shadow-2xs"
+                            placeholder="Enter or confirm date"
+                          />
+                          <Calendar size={14} className="absolute left-2.5 top-3 text-slate-400 pointer-events-none" />
+                        </div>
+                      ) : (
+                        <div className="text-xs font-semibold text-slate-800 p-2.5 bg-slate-50 border border-slate-200 rounded-lg flex items-center gap-2">
+                          <Calendar size={14} className="text-slate-400" />
+                          <span>{field.value || dateVal}</span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+
+                if (field.type === 'Split text') {
+                  const count = field.charCount || 10;
+                  const charArray = field.gridValue || (field.value ? String(field.value).split('') : ['s','-','1']);
+                  return (
+                    <div key={field.id} id={`doc-field-${field.id}`} className="w-full sm:col-span-2">
+                      <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 print:text-slate-600">
+                        {field.label || 'Split text'}
+                        {field.required && <span className="text-red-500 ml-1 font-bold">*</span>}
+                      </label>
+                      {!isCompleted ? (
+                        <div className="flex border border-sky-400 bg-white text-xs font-mono font-bold text-sky-900 w-fit rounded p-0.5 shadow-2xs">
+                          {Array.from({ length: count }).map((_, cIdx) => (
+                            <input
+                              key={cIdx}
+                              type="text"
+                              maxLength={1}
+                              value={charArray[cIdx] || ''}
+                              onChange={(e) => {
+                                const newGrid = [...charArray];
+                                newGrid[cIdx] = e.target.value;
+                                onUpdateField && onUpdateField(field.id, newGrid.join(''));
+                              }}
+                              style={{ width: `${field.width || 22}px`, height: `${field.height || 26}px` }}
+                              className="border-r last:border-r-0 border-sky-300 text-center bg-sky-50/40 text-[11px] font-bold text-sky-900 focus:bg-sky-100 focus:outline-none"
+                            />
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="font-mono text-xs font-bold text-slate-800 p-2 bg-slate-50 border border-slate-200 rounded w-fit">
+                          {field.value || charArray.join('')}
+                        </div>
+                      )}
                     </div>
                   );
                 }
 
                 if (field.type === 'Checkbox') {
                   return (
-                    <div key={field.id} className="flex items-center gap-2 pt-4">
+                    <div key={field.id} id={`doc-field-${field.id}`} className="flex items-center gap-2 pt-4">
                       <input
                         type="checkbox"
                         checked={field.value === true || field.value === 'true'}
@@ -225,16 +281,20 @@ export default function BexDocumentSheet({
                         disabled={isCompleted}
                         className="w-4 h-4 rounded text-[#007355] focus:ring-[#007355] cursor-pointer"
                       />
-                      <label className="text-xs font-semibold text-slate-700">{field.label || 'I agree to the terms'}</label>
+                      <label className="text-xs font-semibold text-slate-700">
+                        {field.label || 'I agree to the terms'}
+                        {field.required && <span className="text-red-500 ml-1 font-bold">*</span>}
+                      </label>
                     </div>
                   );
                 }
 
                 // Default Text / Full name / Job title / Company
                 return (
-                  <div key={field.id} className="w-full sm:w-64">
+                  <div key={field.id} id={`doc-field-${field.id}`} className="w-full sm:w-64">
                     <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 print:text-slate-600">
                       {field.label || field.type}
+                      {field.required && <span className="text-red-500 ml-1 font-bold">*</span>}
                     </label>
                     {!isCompleted ? (
                       <input

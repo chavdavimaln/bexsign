@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate, Link, useLocation } from 'react-router-dom';
 import { generateBexsignId } from '../utils/documentId';
 import { generateAndDownloadPdf } from '../utils/pdfGenerator';
 import { printDocumentSheet } from '../utils/documentPrinter';
@@ -64,6 +64,9 @@ const INITIAL_COLUMNS = [
 export default function DocumentsList() {
   const { statusFilter } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+
+  const isTrashView = location.pathname.includes('/trash') || statusFilter === 'trashed';
 
   const [documents, setDocuments] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -169,20 +172,23 @@ export default function DocumentsList() {
 
   useEffect(() => {
     fetchDocuments();
-  }, [statusFilter]);
+  }, [statusFilter, location.pathname]);
 
   const fetchDocuments = async () => {
     setLoading(true);
     try {
-      const response = await fetch('http://localhost:5000/api/documents');
+      const url = isTrashView
+        ? 'http://localhost:5000/api/trash'
+        : 'http://localhost:5000/api/documents';
+      const response = await fetch(url);
       const data = await response.json();
       if (data.success && Array.isArray(data.documents)) {
         setDocuments(data.documents);
       } else {
-        setDocuments(getFallbackDocuments());
+        setDocuments(isTrashView ? [] : getFallbackDocuments());
       }
     } catch (e) {
-      setDocuments(getFallbackDocuments());
+      setDocuments(isTrashView ? [] : getFallbackDocuments());
     } finally {
       setLoading(false);
     }
@@ -199,6 +205,7 @@ export default function DocumentsList() {
 
   const [activeMenuDoc, setActiveMenuDoc] = useState(null);
   const [menuPosition, setMenuPosition] = useState(null);
+  const actionMenuRef = useRef(null);
 
   const handleToggleMenu = (e, doc) => {
     e.stopPropagation();
@@ -215,7 +222,7 @@ export default function DocumentsList() {
     // Check if opening upwards is better suited
     const openUpwards = spaceBelow < 300 && spaceAbove > spaceBelow;
     const availableHeight = openUpwards ? spaceAbove : spaceBelow;
-    const maxHeight = Math.max(220, Math.min(520, availableHeight));
+    const maxHeight = Math.max(260, Math.min(520, availableHeight));
 
     setMenuPosition({
       top: openUpwards ? undefined : rect.bottom + 4,
@@ -227,7 +234,13 @@ export default function DocumentsList() {
   };
 
   useEffect(() => {
-    const handleCloseMenu = () => {
+    const handleCloseMenu = (e) => {
+      // If the scroll or resize event happened inside the action menu popup, do not close it
+      if (e && e.target && actionMenuRef.current) {
+        if (actionMenuRef.current === e.target || actionMenuRef.current.contains(e.target)) {
+          return;
+        }
+      }
       if (activeMenuDoc) {
         setActiveMenuDoc(null);
         setMenuPosition(null);
@@ -425,10 +438,57 @@ export default function DocumentsList() {
     handleActionToast('Exported form data CSV.');
   };
 
-  const executeDeleteDoc = () => {
-    if (selectedDoc) {
-      setDocuments(documents.filter(d => d.id !== selectedDoc.id));
-      handleActionToast(`Moved document "${selectedDoc.document_name || selectedDoc.name}" to trash.`);
+  const executeDeleteDoc = async () => {
+    if (!selectedDoc) return;
+    const docToDelete = selectedDoc;
+    const docName = docToDelete.document_name || docToDelete.name || 'Document';
+
+    setActiveModal(null);
+    setSelectedDoc(null);
+    setDocuments((prev) => prev.filter((d) => d.id !== docToDelete.id));
+    handleActionToast(`Moved document "${docName}" to trash.`);
+
+    try {
+      await fetch(`http://localhost:5000/api/trash/move/${docToDelete.id}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+    } catch (e) {
+      console.error('Error moving document to trash:', e);
+    }
+  };
+
+  const executePermanentDeleteDoc = async () => {
+    if (!selectedDoc) return;
+    const docToDelete = selectedDoc;
+    const docName = docToDelete.document_name || docToDelete.name || 'Document';
+
+    setActiveModal(null);
+    setSelectedDoc(null);
+    setDocuments((prev) => prev.filter((d) => d.id !== docToDelete.id));
+    handleActionToast(`Document "${docName}" permanently deleted.`);
+
+    try {
+      await fetch(`http://localhost:5000/api/trash/delete/${docToDelete.id}`, {
+        method: 'DELETE'
+      });
+    } catch (e) {
+      console.error('Error permanently deleting document:', e);
+    }
+  };
+
+  const handleRestoreDoc = async (doc) => {
+    if (!doc) return;
+    setActiveMenuDoc(null);
+    setDocuments((prev) => prev.filter((d) => d.id !== doc.id));
+    handleActionToast(`Document "${doc.document_name || doc.name}" restored to Drafts.`);
+
+    try {
+      await fetch(`http://localhost:5000/api/trash/restore/${doc.id}`, {
+        method: 'POST'
+      });
+    } catch (e) {
+      console.error('Error restoring document:', e);
     }
   };
 
@@ -509,6 +569,13 @@ export default function DocumentsList() {
     const docTemplates = (doc.templates || '-').toLowerCase();
     const docStatus = (doc.status || 'Draft').toLowerCase();
 
+    // Separate trashed documents from regular views
+    if (isTrashView) {
+      if (docStatus !== 'trashed') return false;
+    } else {
+      if (docStatus === 'trashed') return false;
+    }
+
     // Global search query
     const matchSearch =
       !searchQuery ||
@@ -517,6 +584,7 @@ export default function DocumentsList() {
 
     // Status filter from URL param (/documents/:statusFilter)
     const matchStatusParam =
+      isTrashView ||
       !statusFilter ||
       statusFilter === 'all' ||
       docStatus === statusFilter.toLowerCase();
@@ -572,12 +640,43 @@ export default function DocumentsList() {
     }
   };
 
-  const handleBulkDelete = () => {
+  const handleBulkDelete = async () => {
     if (selectedDocIds.length === 0) return;
-    if (window.confirm(`Move ${selectedDocIds.length} selected document(s) to trash?`)) {
-      setDocuments(documents.filter((d) => !selectedDocIds.includes(d.id)));
-      setSelectedDocIds([]);
-      handleActionToast(`Moved ${selectedDocIds.length} document(s) to trash.`);
+    const count = selectedDocIds.length;
+    const idsToDelete = [...selectedDocIds];
+
+    if (isTrashView) {
+      if (window.confirm(`Permanently delete ${count} selected document(s)? This cannot be undone.`)) {
+        setDocuments((prev) => prev.filter((d) => !idsToDelete.includes(d.id)));
+        setSelectedDocIds([]);
+        handleActionToast(`Permanently deleted ${count} document(s).`);
+
+        try {
+          await fetch('http://localhost:5000/api/trash/bulk-delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids: idsToDelete })
+          });
+        } catch (e) {
+          console.error('Error bulk deleting:', e);
+        }
+      }
+    } else {
+      if (window.confirm(`Move ${count} selected document(s) to trash?`)) {
+        setDocuments((prev) => prev.filter((d) => !idsToDelete.includes(d.id)));
+        setSelectedDocIds([]);
+        handleActionToast(`Moved ${count} document(s) to trash.`);
+
+        try {
+          await fetch('http://localhost:5000/api/trash/bulk-move', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids: idsToDelete })
+          });
+        } catch (e) {
+          console.error('Error bulk moving to trash:', e);
+        }
+      }
     }
   };
 
@@ -618,16 +717,22 @@ export default function DocumentsList() {
       {/* Header Bar */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">All documents</h1>
-          <p className="text-xs text-slate-500 mt-0.5">View status, manage signers, and execute document actions.</p>
+          <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">
+            {isTrashView ? 'Trash' : (statusFilter ? `${statusFilter.charAt(0).toUpperCase() + statusFilter.slice(1)} documents` : 'All documents')}
+          </h1>
+          <p className="text-xs text-slate-500 mt-0.5">
+            {isTrashView ? 'View trashed documents. Restore them to Drafts or permanently delete them.' : 'View status, manage signers, and execute document actions.'}
+          </p>
         </div>
         <div className="flex items-center gap-3">
-          <Link
-            to="/documents/create"
-            className="bg-[#007355] hover:bg-[#005c44] text-white px-5 py-2 rounded-lg font-extrabold text-xs shadow-md flex items-center gap-2 transition cursor-pointer"
-          >
-            <Plus size={16} /> Create Document
-          </Link>
+          {!isTrashView && (
+            <Link
+              to="/documents/create"
+              className="bg-[#007355] hover:bg-[#005c44] text-white px-5 py-2 rounded-lg font-extrabold text-xs shadow-md flex items-center gap-2 transition cursor-pointer"
+            >
+              <Plus size={16} /> Create Document
+            </Link>
+          )}
         </div>
       </div>
 
@@ -1127,6 +1232,7 @@ export default function DocumentsList() {
             />
 
             <div
+              ref={actionMenuRef}
               style={{
                 position: 'fixed',
                 top: menuPosition.top !== undefined ? `${menuPosition.top}px` : undefined,
@@ -1135,72 +1241,101 @@ export default function DocumentsList() {
                 maxHeight: menuPosition.maxHeight || '480px',
                 zIndex: 9999
               }}
-              className="w-56 bg-white border border-slate-200 rounded-xl shadow-2xl text-left py-1 text-xs font-semibold text-slate-700 overflow-y-auto"
+              className="w-56 bg-white border border-slate-200 rounded-xl shadow-2xl text-left py-1 text-xs font-semibold text-slate-700 overflow-y-auto overscroll-contain select-none"
+              onWheel={(e) => e.stopPropagation()}
             >
-              {/* IN PROGRESS ACTIONS */}
-              {(activeMenuDoc.status === 'In Progress' || !activeMenuDoc.status) && (
+              {/* TRASHED ACTIONS */}
+              {(isTrashView || activeMenuDoc.status?.toLowerCase() === 'trashed') ? (
                 <>
-                  <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><UserCheck size={15} /> Recipient status</button>
-                  <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/sign/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Eye size={15} /> View document</button>
-                  <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/send`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Edit size={15} /> Edit</button>
-                  <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/send`); handleActionToast('Document in correction state.'); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><FileCheck size={15} /> Correct document</button>
-                  <button onClick={() => triggerModal('extend', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Clock size={15} /> Extend</button>
-                  <button onClick={() => triggerModal('reminder', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Bell size={15} /> Send reminder</button>
-                  <button onClick={() => triggerModal('reminderSettings', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Sliders size={15} /> Reminder settings</button>
-                  <button onClick={() => triggerModal('recall', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 text-rose-600"><RotateCcw size={15} /> Recall</button>
-                  <button onClick={() => triggerModal('uploadSigned', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Upload size={15} /> Upload signed document</button>
-                  <button onClick={() => triggerModal('email', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Mail size={15} /> Email document</button>
-                  <button onClick={() => triggerModal('saveCloud', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Cloud size={15} /> Save to cloud</button>
+                  <button onClick={() => handleRestoreDoc(activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-emerald-50 text-emerald-700 flex items-center gap-2.5 font-bold"><RotateCcw size={15} /> Restore to Drafts</button>
                   <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleDownloadDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Download size={15} className="text-[#00a884]" /> Download</button>
-                  <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleEditAsNew(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Copy size={15} /> Edit as new</button>
-                  <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handlePrintDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Printer size={15} /> Print</button>
-                  <button onClick={() => triggerModal('versions', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><History size={15} /> Previous versions</button>
                   <button onClick={() => triggerModal('history', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Clock size={15} /> Activity history</button>
-                  <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleCopyDebugInfo(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Info size={15} /> Copy debug info</button>
-                  <button onClick={() => triggerModal('legal', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><ShieldCheck size={15} /> View legal disclosure</button>
                   <div className="border-t my-1" />
-                  <button onClick={() => triggerModal('delete', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-rose-50 text-rose-600 flex items-center gap-2.5"><Trash2 size={15} /> Delete</button>
+                  <button onClick={() => triggerModal('deletePermanent', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-rose-50 text-rose-600 flex items-center gap-2.5 font-bold"><Trash2 size={15} /> Delete permanently</button>
                 </>
-              )}
-
-              {/* COMPLETED ACTIONS (Matching PDF 4 Page 4 Image 2 & Requirements) */}
-              {activeMenuDoc.status === 'Completed' && (
+              ) : (
                 <>
-                  <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><UserCheck size={15} /> Recipient status</button>
-                  <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); setSelectedDoc(d); setActiveModal('viewCompleted'); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Eye size={15} /> View document</button>
-                  <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/send`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Edit size={15} /> Edit</button>
-                  <button onClick={() => triggerModal('certificate', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><FileCheck size={15} /> Completion certificate</button>
-                  <button onClick={() => triggerModal('email', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Mail size={15} /> Email document</button>
-                  <button onClick={() => triggerModal('saveCloud', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Cloud size={15} /> Save to cloud</button>
-                  <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleDownloadDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Download size={15} className="text-[#00a884]" /> Download</button>
-                  <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleEditAsNew(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Copy size={15} /> Edit as new</button>
-                  <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handlePrintDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Printer size={15} /> Print</button>
-                  <button onClick={() => triggerModal('formData', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Layers size={15} /> Form data</button>
-                  <button onClick={() => triggerModal('versions', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><History size={15} /> Previous versions</button>
-                  <button onClick={() => triggerModal('history', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Clock size={15} /> Activity history</button>
-                  <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleCopyDebugInfo(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Info size={15} /> Copy debug info</button>
-                  <button onClick={() => triggerModal('legal', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><ShieldCheck size={15} /> View legal disclosure</button>
-                  <div className="border-t my-1" />
-                  <button onClick={() => triggerModal('delete', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-rose-50 text-rose-600 flex items-center gap-2.5"><Trash2 size={15} /> Delete</button>
-                </>
-              )}
+                  {/* IN PROGRESS ACTIONS */}
+                  {(activeMenuDoc.status === 'In Progress' || !activeMenuDoc.status) && (
+                    <>
+                      <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><UserCheck size={15} /> Recipient status</button>
+                      <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/sign/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Eye size={15} /> View document</button>
+                      <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/send`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Edit size={15} /> Edit</button>
+                      <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/send`); handleActionToast('Document in correction state.'); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><FileCheck size={15} /> Correct document</button>
+                      <button onClick={() => triggerModal('extend', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Clock size={15} /> Extend</button>
+                      <button onClick={() => triggerModal('reminder', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Bell size={15} /> Send reminder</button>
+                      <button onClick={() => triggerModal('reminderSettings', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Sliders size={15} /> Reminder settings</button>
+                      <button onClick={() => triggerModal('recall', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 text-rose-600"><RotateCcw size={15} /> Recall</button>
+                      <button onClick={() => triggerModal('uploadSigned', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Upload size={15} /> Upload signed document</button>
+                      <button onClick={() => triggerModal('email', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Mail size={15} /> Email document</button>
+                      <button onClick={() => triggerModal('saveCloud', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Cloud size={15} /> Save to cloud</button>
+                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleDownloadDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Download size={15} className="text-[#00a884]" /> Download</button>
+                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleEditAsNew(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Copy size={15} /> Edit as new</button>
+                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handlePrintDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Printer size={15} /> Print</button>
+                      <button onClick={() => triggerModal('versions', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><History size={15} /> Previous versions</button>
+                      <button onClick={() => triggerModal('history', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Clock size={15} /> Activity history</button>
+                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleCopyDebugInfo(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Info size={15} /> Copy debug info</button>
+                      <button onClick={() => triggerModal('legal', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><ShieldCheck size={15} /> View legal disclosure</button>
+                      <div className="border-t my-1" />
+                      <button onClick={() => triggerModal('delete', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-rose-50 text-rose-600 flex items-center gap-2.5"><Trash2 size={15} /> Delete</button>
+                    </>
+                  )}
 
-              {/* DRAFT ACTIONS */}
-              {activeMenuDoc.status === 'Draft' && (
-                <>
-                  <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-800"><UserCheck size={15} /> Recipient status</button>
-                  <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/edit`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Edit size={15} /> Edit document</button>
-                  <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/send`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><ArrowRight size={15} /> Continue</button>
-                  <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/sign/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Eye size={15} /> View document</button>
-                  <button onClick={() => triggerModal('saveCloud', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Cloud size={15} /> Save to cloud</button>
-                  <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleDownloadDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Download size={15} className="text-[#00a884]" /> Download</button>
-                  <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleEditAsNew(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Copy size={15} /> Edit as new</button>
-                  <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handlePrintDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Printer size={15} /> Print</button>
-                  <button onClick={() => triggerModal('history', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Clock size={15} /> Activity history</button>
-                  <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleCopyDebugInfo(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Info size={15} /> Copy debug info</button>
-                  <button onClick={() => triggerModal('legal', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><ShieldCheck size={15} /> View legal disclosure</button>
-                  <div className="border-t my-1" />
-                  <button onClick={() => triggerModal('delete', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-rose-50 text-rose-600 flex items-center gap-2.5"><Trash2 size={15} /> Delete</button>
+                  {/* COMPLETED ACTIONS (Matching PDF 4 Page 4 Image 2 & Requirements) */}
+                  {activeMenuDoc.status === 'Completed' && (
+                    <>
+                      <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><UserCheck size={15} /> Recipient status</button>
+                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); setSelectedDoc(d); setActiveModal('viewCompleted'); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Eye size={15} /> View document</button>
+                      <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/send`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Edit size={15} /> Edit</button>
+                      <button onClick={() => triggerModal('certificate', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><FileCheck size={15} /> Completion certificate</button>
+                      <button onClick={() => triggerModal('email', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Mail size={15} /> Email document</button>
+                      <button onClick={() => triggerModal('saveCloud', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Cloud size={15} /> Save to cloud</button>
+                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleDownloadDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Download size={15} className="text-[#00a884]" /> Download</button>
+                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleEditAsNew(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Copy size={15} /> Edit as new</button>
+                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handlePrintDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Printer size={15} /> Print</button>
+                      <button onClick={() => triggerModal('formData', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Layers size={15} /> Form data</button>
+                      <button onClick={() => triggerModal('versions', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><History size={15} /> Previous versions</button>
+                      <button onClick={() => triggerModal('history', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Clock size={15} /> Activity history</button>
+                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleCopyDebugInfo(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Info size={15} /> Copy debug info</button>
+                      <button onClick={() => triggerModal('legal', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><ShieldCheck size={15} /> View legal disclosure</button>
+                      <div className="border-t my-1" />
+                      <button onClick={() => triggerModal('delete', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-rose-50 text-rose-600 flex items-center gap-2.5"><Trash2 size={15} /> Delete</button>
+                    </>
+                  )}
+
+                  {/* DRAFT ACTIONS */}
+                  {activeMenuDoc.status === 'Draft' && (
+                    <>
+                      <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-800"><UserCheck size={15} /> Recipient status</button>
+                      <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/edit`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Edit size={15} /> Edit document</button>
+                      <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/send`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><ArrowRight size={15} /> Continue</button>
+                      <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/sign/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Eye size={15} /> View document</button>
+                      <button onClick={() => triggerModal('saveCloud', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Cloud size={15} /> Save to cloud</button>
+                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleDownloadDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Download size={15} className="text-[#00a884]" /> Download</button>
+                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleEditAsNew(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Copy size={15} /> Edit as new</button>
+                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handlePrintDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Printer size={15} /> Print</button>
+                      <button onClick={() => triggerModal('history', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Clock size={15} /> Activity history</button>
+                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleCopyDebugInfo(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Info size={15} /> Copy debug info</button>
+                      <button onClick={() => triggerModal('legal', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><ShieldCheck size={15} /> View legal disclosure</button>
+                      <div className="border-t my-1" />
+                      <button onClick={() => triggerModal('delete', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-rose-50 text-rose-600 flex items-center gap-2.5"><Trash2 size={15} /> Delete</button>
+                    </>
+                  )}
+
+                  {/* OTHER DOCUMENT ACTIONS (Recalled, Declined, Expired, Voided, etc.) */}
+                  {!['in progress', 'completed', 'draft'].includes((activeMenuDoc.status || '').toLowerCase()) && (
+                    <>
+                      <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><UserCheck size={15} /> Recipient status</button>
+                      <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/sign/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Eye size={15} /> View document</button>
+                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleDownloadDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Download size={15} className="text-[#00a884]" /> Download</button>
+                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleEditAsNew(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Copy size={15} /> Edit as new</button>
+                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handlePrintDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Printer size={15} /> Print</button>
+                      <button onClick={() => triggerModal('history', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Clock size={15} /> Activity history</button>
+                      <button onClick={() => triggerModal('legal', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><ShieldCheck size={15} /> View legal disclosure</button>
+                      <div className="border-t my-1" />
+                      <button onClick={() => triggerModal('delete', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-rose-50 text-rose-600 flex items-center gap-2.5"><Trash2 size={15} /> Delete</button>
+                    </>
+                  )}
                 </>
               )}
             </div>
@@ -1404,13 +1539,13 @@ export default function DocumentsList() {
 
       {/* 9. Activity History Drawer Modal (Page 16 PDF) */}
       {activeModal === 'history' && selectedDoc && (
-        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white text-slate-900 rounded-xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-white text-slate-900 rounded-xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 space-y-4 text-xs my-auto">
             <div className="flex justify-between items-center pb-2 border-b border-slate-100">
               <h3 className="text-base font-bold text-slate-900">Activity history</h3>
               <button onClick={() => setActiveModal(null)} className="text-slate-400 hover:text-slate-700"><X size={18} /></button>
             </div>
-            <div className="w-full border border-slate-200 rounded-lg overflow-hidden">
+            <div className="w-full border border-slate-200 rounded-lg max-h-[380px] overflow-y-auto">
               <table className="w-full text-left border-collapse text-xs table-fixed">
                 <thead>
                   <tr className="bg-slate-50 text-slate-500 font-extrabold border-b">
@@ -1427,7 +1562,7 @@ export default function DocumentsList() {
               </table>
             </div>
             <div className="flex justify-end pt-3 border-t">
-              <button onClick={() => setActiveModal(null)} className="px-4 py-1.5 border border-slate-300 rounded font-semibold">Close</button>
+              <button onClick={() => setActiveModal(null)} className="px-4 py-1.5 border border-slate-300 rounded font-semibold hover:bg-slate-50">Close</button>
             </div>
           </div>
         </div>
@@ -1435,8 +1570,8 @@ export default function DocumentsList() {
 
       {/* 10. Copy Debug Info Modal (Page 5 & 17 PDF) */}
       {activeModal === 'debug' && selectedDoc && (
-        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white text-slate-900 rounded-xl max-w-sm w-full p-6 shadow-2xl border border-slate-200 space-y-4 text-xs font-mono">
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-white text-slate-900 rounded-xl max-w-sm w-full p-6 shadow-2xl border border-slate-200 space-y-4 text-xs font-mono my-auto">
             <div className="flex justify-between items-center pb-2 border-b border-slate-100 font-sans">
               <h3 className="text-base font-bold text-slate-900">Debug information</h3>
               <button onClick={() => setActiveModal(null)} className="text-slate-400 hover:text-slate-700"><X size={18} /></button>
@@ -1449,25 +1584,44 @@ export default function DocumentsList() {
               <p>Created on - Aug 27, 2026 02:33</p>
             </div>
             <div className="flex justify-end gap-2 pt-2 border-t font-sans">
-              <button onClick={() => setActiveModal(null)} className="px-4 py-1.5 border rounded font-semibold">Close</button>
+              <button onClick={() => setActiveModal(null)} className="px-4 py-1.5 border rounded font-semibold hover:bg-slate-50">Close</button>
               <button onClick={() => handleActionToast('Debug info copied to clipboard!')} className="bg-[#00a884] text-white px-5 py-1.5 rounded font-extrabold shadow">Copy</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* 11. Delete Confirmation Modal (Page 6 & 17 PDF) */}
+      {/* 11. Delete Confirmation Modal (Move to Trash) */}
       {activeModal === 'delete' && selectedDoc && (
-        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white text-slate-900 rounded-xl max-w-sm w-full p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-white text-slate-900 rounded-xl max-w-sm w-full p-6 shadow-2xl border border-slate-200 space-y-4 text-xs my-auto">
             <div className="flex justify-between items-center pb-2 border-b border-slate-100">
               <h3 className="text-base font-bold text-slate-900">Move to trash</h3>
-              <button onClick={() => setActiveModal(null)} className="text-slate-400 hover:text-slate-700"><X size={18} /></button>
+              <button onClick={() => { setActiveModal(null); setSelectedDoc(null); }} className="text-slate-400 hover:text-slate-700"><X size={18} /></button>
             </div>
-            <p className="text-slate-700 font-medium">Are you sure you want to move the document to trash?</p>
+            <p className="text-slate-700 font-medium">Are you sure you want to move the document <span className="font-bold text-slate-900">"{selectedDoc.document_name || selectedDoc.name || 'Untitled'}"</span> to trash?</p>
             <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
-              <button onClick={() => setActiveModal(null)} className="px-4 py-1.5 border border-slate-300 rounded text-xs font-semibold">No</button>
-              <button onClick={executeDeleteDoc} className="bg-[#E71414] text-white px-5 py-1.5 rounded text-xs font-extrabold shadow">Yes</button>
+              <button onClick={() => { setActiveModal(null); setSelectedDoc(null); }} className="px-4 py-1.5 border border-slate-300 rounded text-xs font-semibold hover:bg-slate-50">No</button>
+              <button onClick={executeDeleteDoc} className="bg-[#E71414] hover:bg-red-700 text-white px-5 py-1.5 rounded text-xs font-extrabold shadow">Yes</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 11b. Permanent Delete Confirmation Modal */}
+      {activeModal === 'deletePermanent' && selectedDoc && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-white text-slate-900 rounded-xl max-w-sm w-full p-6 shadow-2xl border border-slate-200 space-y-4 text-xs my-auto">
+            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+              <h3 className="text-base font-bold text-rose-600">Permanently delete</h3>
+              <button onClick={() => { setActiveModal(null); setSelectedDoc(null); }} className="text-slate-400 hover:text-slate-700"><X size={18} /></button>
+            </div>
+            <p className="text-slate-700 font-medium">
+              Are you sure you want to permanently delete <span className="font-bold text-slate-900">"{selectedDoc.document_name || selectedDoc.name || 'Untitled'}"</span>? This action cannot be undone.
+            </p>
+            <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+              <button onClick={() => { setActiveModal(null); setSelectedDoc(null); }} className="px-4 py-1.5 border border-slate-300 rounded text-xs font-semibold hover:bg-slate-50">No</button>
+              <button onClick={executePermanentDeleteDoc} className="bg-[#E71414] hover:bg-red-700 text-white px-5 py-1.5 rounded text-xs font-extrabold shadow">Yes, Delete</button>
             </div>
           </div>
         </div>
@@ -1475,8 +1629,8 @@ export default function DocumentsList() {
 
       {/* 12. Legal Disclosure Modal */}
       {activeModal === 'legal' && (
-        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white text-slate-900 rounded-xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-white text-slate-900 rounded-xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 text-xs my-auto">
             <div className="flex justify-between items-center pb-2 border-b border-slate-100">
               <h3 className="text-base font-bold text-slate-900">Electronic Record and Signature Disclosure</h3>
               <button onClick={() => setActiveModal(null)} className="text-slate-400 hover:text-slate-700"><X size={18} /></button>

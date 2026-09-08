@@ -92,4 +92,18 @@ router.post('/create', upload.single('templateFile'), async (req, res) => {
     }
 });
 
+// @route   DELETE /api/templates/:id
+// @desc    Delete a template
+router.delete('/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        await db.query('DELETE FROM templates WHERE id = ?', [id]);
+        res.json({ success: true, message: 'Template deleted successfully' });
+    } catch (err) {
+        console.error('Delete Template Error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 module.exports = router;
+

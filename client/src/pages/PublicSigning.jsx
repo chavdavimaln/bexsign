@@ -141,10 +141,34 @@ export default function PublicSigning() {
       }
 
       // 2. Fetch server database state
-      const res = await fetch(`http://localhost:5000/api/documents/${docId}`);
-      const data = await res.json();
-      if (data.success && data.document) {
-        const doc = data.document;
+      let doc = null;
+      try {
+        const res = await fetch(`http://localhost:5000/api/documents/${docId}`);
+        const data = await res.json();
+        if (data.success && data.document) {
+          doc = data.document;
+        }
+      } catch (eDoc) {}
+
+      // Fallback: fetch via token route if document was not found directly
+      if (!doc || !doc.id) {
+        try {
+          const resToken = await fetch(`http://localhost:5000/api/signatures/token/${docId}`);
+          const tokenData = await resToken.json();
+          if (tokenData.success) {
+            doc = {
+              document_name: tokenData.recipient?.document_title,
+              recipient_email: tokenData.recipient?.email,
+              custom_message: tokenData.recipient?.custom_message,
+              fields: tokenData.fields,
+              fieldsByDoc: tokenData.fieldsByDoc,
+              status: tokenData.recipient?.status || 'In Progress'
+            };
+          }
+        } catch (eTok) {}
+      }
+
+      if (doc) {
         setDocumentDetails({
           title: doc.document_name || doc.title || 'Document 1.pdf',
           message: doc.custom_message || 'check the document for signature',
@@ -154,6 +178,27 @@ export default function PublicSigning() {
           status: doc.status || 'In Progress',
           expiresIn: '15 days'
         });
+
+        // Populate fieldsByDoc directly from server response
+        if (doc.fieldsByDoc && Object.keys(doc.fieldsByDoc).length > 0) {
+          setFieldsByDoc(doc.fieldsByDoc);
+          try {
+            localStorage.setItem(`bexsign_doc_${docId}_fields_by_doc`, JSON.stringify(doc.fieldsByDoc));
+            localStorage.setItem(`bexsign_doc_${docId}_fields`, JSON.stringify(Object.values(doc.fieldsByDoc).flat()));
+          } catch (e) {}
+        } else if (doc.fields && Array.isArray(doc.fields) && doc.fields.length > 0) {
+          const byDoc = {};
+          doc.fields.forEach(f => {
+            const idx = f.docIndex !== undefined ? f.docIndex : ((f.page || 1) - 1);
+            if (!byDoc[idx]) byDoc[idx] = [];
+            byDoc[idx].push(f);
+          });
+          setFieldsByDoc(byDoc);
+          try {
+            localStorage.setItem(`bexsign_doc_${docId}_fields_by_doc`, JSON.stringify(byDoc));
+            localStorage.setItem(`bexsign_doc_${docId}_fields`, JSON.stringify(doc.fields));
+          } catch (e) {}
+        }
 
         if (!loadedDocs || loadedDocs.length === 0) {
           if (doc.files && Array.isArray(doc.files) && doc.files.length > 0) {
@@ -443,7 +488,40 @@ export default function PublicSigning() {
       setValidationError('⚠ Please confirm electronic record and signature disclosure consent.');
       return;
     }
-    if (!signaturePlaced) {
+
+    // Validate all required placed fields
+    const currentFields = fieldsByDoc[activeDocIndex] || [];
+    const missingField = currentFields.find(f => {
+      if (f.required === false) return false;
+      if (f.type === 'Signature' || f.type === 'Initial') {
+        return !signaturePlaced && !signatureData && !f.value;
+      }
+      if (f.type === 'Sign date') {
+        return !f.value || String(f.value).trim() === '';
+      }
+      if (f.type === 'Checkbox' || f.type === 'Stamp') {
+        return false;
+      }
+      return f.value === undefined || f.value === null || String(f.value).trim() === '' || f.value === f.type;
+    });
+
+    if (missingField) {
+      showPopupAlert(
+        `Please complete the required field "${missingField.label || missingField.type}" before finishing.`,
+        {
+          title: 'Field Required',
+          type: 'warning'
+        }
+      );
+      setValidationError(`⚠ Please complete the required "${missingField.label || missingField.type}" field.`);
+      const sigElement = document.getElementById(`doc-field-${missingField.id}`) || document.getElementById('signature-field-container');
+      if (sigElement) {
+        sigElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+      return;
+    }
+
+    if (!signaturePlaced && currentFields.length === 0) {
       showPopupAlert(
         'Please click on the Signature field below to adopt and place your signature before finishing.',
         {
@@ -477,7 +555,9 @@ export default function PublicSigning() {
           signerName: typedName,
           signerEmail: documentDetails.recipient,
           signatureStyle: selectedStyle,
-          recipientId: 1
+          recipientId: 1,
+          fields: Object.values(fieldsByDoc).flat(),
+          fieldsByDoc: fieldsByDoc
         })
       });
     } catch (e) {
@@ -802,9 +882,30 @@ export default function PublicSigning() {
               <span>Back</span>
             </button>
             <span className="text-xs font-bold text-slate-800">Documents</span>
-            <span className="bg-emerald-100 text-emerald-800 px-3 py-0.5 rounded-full text-[11px] font-bold">
-              Fields remaining: {signaturePlaced ? 0 : 2}
-            </span>
+            {(() => {
+              const currentFields = fieldsByDoc[activeDocIndex] || [];
+              const remCount = currentFields.length > 0
+                ? currentFields.filter(f => {
+                    if (f.required === false) return false;
+                    if (f.type === 'Signature' || f.type === 'Initial') {
+                      return !signaturePlaced && !signatureData && !f.value;
+                    }
+                    if (f.type === 'Sign date') {
+                      return !f.value || String(f.value).trim() === '';
+                    }
+                    if (f.type === 'Checkbox' || f.type === 'Stamp') {
+                      return false;
+                    }
+                    return f.value === undefined || f.value === null || String(f.value).trim() === '' || f.value === f.type;
+                  }).length
+                : (signaturePlaced ? 0 : 1);
+
+              return (
+                <span className="bg-emerald-100 text-emerald-800 px-3 py-0.5 rounded-full text-[11px] font-bold">
+                  Fields remaining: {remCount}
+                </span>
+              );
+            })()}
           </div>
 
           <div className="flex items-center gap-3 text-xs">
@@ -864,12 +965,34 @@ export default function PublicSigning() {
       )}
 
       {/* Top Banner Message when Fields Completed (Page 11) */}
-      {signaturePlaced && (
-        <div className="bg-emerald-50 border-b border-emerald-200 text-emerald-800 px-6 py-2 text-center text-xs font-bold flex items-center justify-center gap-2 sticky top-21 z-20">
-          <CheckCircle2 size={16} className="text-[#007355]" />
-          <span>You've successfully filled all fields. Click Finish to complete.</span>
-        </div>
-      )}
+      {(() => {
+        const currentFields = fieldsByDoc[activeDocIndex] || [];
+        const isAllFilled = currentFields.length > 0
+          ? currentFields.every(f => {
+              if (f.required === false) return true;
+              if (f.type === 'Signature' || f.type === 'Initial') {
+                return Boolean(signaturePlaced || signatureData || f.value);
+              }
+              if (f.type === 'Sign date') {
+                return Boolean(f.value && String(f.value).trim() !== '');
+              }
+              if (f.type === 'Checkbox' || f.type === 'Stamp') {
+                return true;
+              }
+              return Boolean(f.value !== undefined && f.value !== null && String(f.value).trim() !== '' && f.value !== f.type);
+            })
+          : signaturePlaced;
+
+        if (isAllFilled) {
+          return (
+            <div className="bg-emerald-50 border-b border-emerald-200 text-emerald-800 px-6 py-2 text-center text-xs font-bold flex items-center justify-center gap-2 sticky top-21 z-20">
+              <CheckCircle2 size={16} className="text-[#007355]" />
+              <span>You've successfully filled all fields. Click Finish to complete.</span>
+            </div>
+          );
+        }
+        return null;
+      })()}
 
       {/* Validation Error Banner */}
       {validationError && (

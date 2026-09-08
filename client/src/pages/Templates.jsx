@@ -139,11 +139,19 @@ export default function Templates() {
     }
   };
 
-  const handleBulkDelete = () => {
+  const handleBulkDelete = async () => {
     if (selectedIds.length === 0) return;
-    if (window.confirm(`Delete ${selectedIds.length} selected template(s)?`)) {
-      setTemplates(templates.filter((t) => !selectedIds.includes(t.id)));
+    const idsToDelete = [...selectedIds];
+    if (window.confirm(`Delete ${idsToDelete.length} selected template(s)?`)) {
+      setTemplates(templates.filter((t) => !idsToDelete.includes(t.id)));
       setSelectedIds([]);
+      for (const id of idsToDelete) {
+        try {
+          await fetch(`http://localhost:5000/api/templates/${id}`, { method: 'DELETE' });
+        } catch (e) {
+          console.error('Error deleting template:', e);
+        }
+      }
     }
   };
 

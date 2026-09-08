@@ -101,8 +101,8 @@ export default function DocumentVersionsModal({ doc, onClose, onViewVersion }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="bg-white text-slate-900 rounded-lg max-w-2xl w-full shadow-2xl border border-slate-200 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+    <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+      <div className="bg-white text-slate-900 rounded-lg max-w-2xl w-full shadow-2xl border border-slate-200 overflow-hidden my-auto animate-in fade-in zoom-in-95 duration-150">
         {/* Modal Header */}
         <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
           <h2 className="text-base font-bold text-slate-900">Previous versions</h2>
@@ -116,7 +116,7 @@ export default function DocumentVersionsModal({ doc, onClose, onViewVersion }) {
 
         {/* Modal Body */}
         <div className="p-6">
-          <div className="border border-slate-200 rounded overflow-hidden">
+          <div className="border border-slate-200 rounded max-h-[380px] overflow-y-auto">
             <table className="w-full text-left text-xs border-collapse">
               <thead>
                 <tr className="bg-slate-100/80 border-b border-slate-200 text-[11px] font-extrabold text-slate-600 tracking-wider">

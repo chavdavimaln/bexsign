@@ -619,7 +619,13 @@ export default function DocumentEditor() {
 
   const handleSaveDraft = async () => {
     try {
-      const allFlat = Object.values(fieldsByDoc).flat();
+      const allFlat = Object.entries(fieldsByDoc).flatMap(([docIdx, fList]) => 
+        (fList || []).map(f => ({
+          ...f,
+          docIndex: f.docIndex !== undefined ? f.docIndex : parseInt(docIdx) || 0,
+          page: f.page || (parseInt(docIdx) || 0) + 1
+        }))
+      );
       if (id) {
         localStorage.setItem(`bexsign_doc_${id}_documents`, JSON.stringify(documentsList));
         localStorage.setItem(`bexsign_doc_${id}_fields_by_doc`, JSON.stringify(fieldsByDoc));
@@ -677,9 +683,13 @@ export default function DocumentEditor() {
       id: Date.now(),
       type,
       label: type,
-      value: type === 'Split text' ? '' : (type === 'Checkbox' ? 'true' : type),
+      value: type === 'Split text' ? '' : (type === 'Checkbox' ? 'true' : (type === 'Sign date' ? 'Aug 26 2026' : (type === 'Full name' ? (selectedRecipient.name || 'Manu Yadav') : type))),
       x: 60 + (fieldsOnDoc.length * 20) % 200,
       y: 420 + (fieldsOnDoc.length * 35) % 220,
+      width: type === 'Signature' || type === 'Initial' ? 200 : (type === 'Stamp' ? 180 : 160),
+      height: type === 'Signature' || type === 'Initial' ? 70 : 40,
+      docIndex: activeDocIndex,
+      page: activeDocIndex + 1,
       required: true,
       assigneeId: selectedRecipient.id,
       assignee: `${selectedRecipient.name}`,
@@ -690,7 +700,7 @@ export default function DocumentEditor() {
       textColor: selectedRecipient.color,
       ...(type === 'Split text' ? { charCount: 10, charSpace: 0, width: 16, height: 20, gridValue: ['s','-','1','','','','','','',''] } : {}),
       ...(type === 'Sign date' ? { dateFormat: 'MMM dd yyyy HH:mm z', value: 'Aug 26 2026' } : {}),
-      ...(type === 'Full name' ? { nameFormat: 'Full Name', value: 'Manu Yadav' } : {}),
+      ...(type === 'Full name' ? { nameFormat: 'Full Name', value: (selectedRecipient.name || 'Manu Yadav') } : {}),
       ...(type === 'Checkbox' ? { checked: true } : {})
     };
     setFieldsOnDoc([...fieldsOnDoc, newField]);
@@ -2954,7 +2964,13 @@ export default function DocumentEditor() {
                 onClick={async () => {
                   setShowConfirmModal(false);
                   const targetEmail = recipientList[0]?.email || recipientEmail || 'vimal@bexcodeservices.com';
-                  const allFlat = Object.values(fieldsByDoc).flat();
+                  const allFlat = Object.entries(fieldsByDoc).flatMap(([docIdx, fList]) => 
+                    (fList || []).map(f => ({
+                      ...f,
+                      docIndex: f.docIndex !== undefined ? f.docIndex : parseInt(docIdx) || 0,
+                      page: f.page || (parseInt(docIdx) || 0) + 1
+                    }))
+                  );
 
                   // Persist to localStorage for envelope
                   if (id) {
