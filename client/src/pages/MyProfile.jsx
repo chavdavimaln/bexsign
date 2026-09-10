@@ -1,50 +1,288 @@
-import React, { useState } from 'react';
-import { User, Calendar, Shield, CheckCircle2 } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { 
+  User, 
+  Calendar, 
+  Shield, 
+  CheckCircle2, 
+  Lock, 
+  Eye, 
+  EyeOff, 
+  Sparkles, 
+  Mail, 
+  AlertCircle, 
+  KeyRound, 
+  Check 
+} from 'lucide-react';
+import { showPopupAlert } from '../components/GlobalAlertModal';
 
 export default function MyProfile() {
-  const [profile, setProfile] = useState({
-    firstName: 'Vimal',
-    lastName: 'Chavda',
-    email: 'vimal@bexsign.com',
-    company: 'Bexsign Inc.',
-    phone: '+1 (555) 019-2831'
+  const [profile, setProfile] = useState(() => {
+    try {
+      const saved = localStorage.getItem('user');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return {
+          firstName: parsed.firstName || parsed.first_name || 'Vimal',
+          lastName: parsed.lastName || parsed.last_name || 'Chavda',
+          email: parsed.email || 'vimal@bexcodeservices.com',
+          company: parsed.company || 'Bexsign Inc.',
+          phone: parsed.phone || '+1 (555) 019-2831'
+        };
+      }
+    } catch (e) {}
+    return {
+      firstName: 'Vimal',
+      lastName: 'Chavda',
+      email: 'vimal@bexcodeservices.com',
+      company: 'Bexsign Inc.',
+      phone: '+1 (555) 019-2831'
+    };
   });
 
   const [delegate, setDelegate] = useState({
-    delegateTo: 'sarah@bexsign.com',
+    delegateTo: 'sarah@bexcodeservices.com',
     startDate: '2026-08-28',
     endDate: '2026-09-05',
     reason: 'Vacation leave'
   });
 
-  const [successMsg, setSuccessMsg] = useState('');
+  // Password Management State
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [passwordLoading, setPasswordLoading] = useState(false);
+  const [emailLoading, setEmailLoading] = useState(false);
 
-  const handleSaveProfile = (e) => {
+  const [successMsg, setSuccessMsg] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
+
+  useEffect(() => {
+    fetchProfile();
+  }, []);
+
+  const fetchProfile = async () => {
+    try {
+      const res = await fetch('http://localhost:5000/api/settings/profile/1');
+      const data = await res.json();
+      if (data && data.first_name) {
+        setProfile(prev => ({
+          ...prev,
+          firstName: data.first_name || prev.firstName,
+          lastName: data.last_name || prev.lastName,
+          email: data.email || 'vimal@bexcodeservices.com',
+          company: data.company || prev.company,
+          phone: data.phone || prev.phone
+        }));
+      }
+    } catch (e) {
+      console.warn('Profile fetch fallback:', e);
+    }
+  };
+
+  const handleSaveProfile = async (e) => {
     e.preventDefault();
-    setSuccessMsg('Profile information updated successfully.');
+    setErrorMsg('');
+    try {
+      await fetch('http://localhost:5000/api/settings/profile/1', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          firstName: profile.firstName,
+          lastName: profile.lastName,
+          email: profile.email,
+          company: profile.company,
+          phone: profile.phone
+        })
+      });
+
+      // Update local storage user session
+      try {
+        const stored = localStorage.getItem('user');
+        const userObj = stored ? JSON.parse(stored) : {};
+        userObj.firstName = profile.firstName;
+        userObj.lastName = profile.lastName;
+        userObj.name = `${profile.firstName} ${profile.lastName}`;
+        userObj.email = profile.email;
+        userObj.company = profile.company;
+        localStorage.setItem('user', JSON.stringify(userObj));
+      } catch (err) {}
+
+      setSuccessMsg('Profile information updated successfully.');
+      showPopupAlert('Profile Updated', 'Your profile details have been saved successfully.', 'success');
+      setTimeout(() => setSuccessMsg(''), 4000);
+    } catch (err) {
+      setErrorMsg('Failed to update profile.');
+    }
+  };
+
+  // Generate strong random password
+  const generateStrongPassword = () => {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%&*';
+    let generated = 'Bex#';
+    for (let i = 0; i < 8; i++) {
+      generated += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    setNewPassword(generated);
+    setConfirmPassword(generated);
+    setShowNewPassword(true);
+    setShowConfirmPassword(true);
+    showPopupAlert('Password Generated', `A secure password was generated: ${generated}`, 'info');
+  };
+
+  // Handle manual / generated password save
+  const handleChangePassword = async (e) => {
+    e.preventDefault();
+    setErrorMsg('');
+    setSuccessMsg('');
+
+    if (!newPassword || newPassword.length < 6) {
+      setErrorMsg('Password must be at least 6 characters long.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setErrorMsg('New password and confirmation password do not match.');
+      return;
+    }
+
+    setPasswordLoading(true);
+    try {
+      let data = null;
+
+      // 1. Try /api/change-password
+      try {
+        const res = await fetch('http://localhost:5000/api/change-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: profile.email,
+            newPassword: newPassword,
+            sendEmail: true
+          })
+        });
+        if (res.ok) {
+          data = await res.json();
+        }
+      } catch (e1) {}
+
+      // 2. Fallback to /api/auth/change-password
+      if (!data || !data.success) {
+        try {
+          const res = await fetch('http://localhost:5000/api/auth/change-password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              email: profile.email,
+              newPassword: newPassword,
+              sendEmail: true
+            })
+          });
+          if (res.ok) {
+            data = await res.json();
+          }
+        } catch (e2) {}
+      }
+
+      // 3. Fallback to /api/settings/password/1
+      if (!data || !data.success) {
+        try {
+          const res = await fetch('http://localhost:5000/api/settings/password/1', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              newPassword: newPassword,
+              sendEmail: true
+            })
+          });
+          if (res.ok) {
+            data = await res.json();
+          }
+        } catch (e3) {}
+      }
+
+      if (data && data.success) {
+        setSuccessMsg(data.message || 'Password updated successfully!');
+        showPopupAlert('Password Updated', data.message || 'Your password has been changed successfully.', 'success');
+        setNewPassword('');
+        setConfirmPassword('');
+        setTimeout(() => setSuccessMsg(''), 4000);
+      } else {
+        setErrorMsg((data && data.error) || 'Failed to update password. Please ensure password is at least 6 characters.');
+      }
+    } catch (err) {
+      setErrorMsg('Error updating password: ' + (err.message || 'Please check backend connection.'));
+    } finally {
+      setPasswordLoading(false);
+    }
+  };
+
+  // Handle sending email to change password
+  const handleSendResetEmail = async () => {
+    setErrorMsg('');
+    setEmailLoading(true);
+    try {
+      let data = null;
+
+      try {
+        const res = await fetch('http://localhost:5000/api/send-reset-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: profile.email })
+        });
+        if (res.ok) data = await res.json();
+      } catch (e1) {}
+
+      if (!data || !data.success) {
+        try {
+          const res = await fetch('http://localhost:5000/api/auth/send-reset-email', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: profile.email })
+          });
+          if (res.ok) data = await res.json();
+        } catch (e2) {}
+      }
+
+      if (data && data.success) {
+        showPopupAlert('Email Dispatched', data.message || `Password reset instructions sent to ${profile.email}`, 'success');
+      } else {
+        setErrorMsg((data && data.error) || 'Failed to dispatch email.');
+      }
+    } catch (err) {
+      setErrorMsg('Error requesting password reset email: ' + err.message);
+    } finally {
+      setEmailLoading(false);
+    }
   };
 
   const handleSaveDelegate = (e) => {
     e.preventDefault();
     setSuccessMsg('Vacation signing delegation activated successfully!');
+    setTimeout(() => setSuccessMsg(''), 4000);
   };
 
   return (
-    <div className="max-w-4xl mx-auto space-y-8">
+    <div className="max-w-4xl mx-auto space-y-8 pb-12 font-sans">
       <div>
-        <h1 className="text-2xl font-extrabold text-slate-900">My Profile & Settings</h1>
-        <p className="text-xs text-slate-500 mt-1">Manage account credentials, personal data, and signing delegation policies.</p>
+        <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">My Profile & Settings</h1>
+        <p className="text-xs text-slate-500 mt-1">Manage account credentials, personal data, password security, and signing delegation policies.</p>
       </div>
 
       {successMsg && (
-        <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg text-xs font-bold flex items-center gap-2">
+        <div className="p-3.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl text-xs font-bold flex items-center gap-2 shadow-2xs">
           <CheckCircle2 size={16} /> {successMsg}
         </div>
       )}
 
-      {/* Profile Form */}
+      {errorMsg && (
+        <div className="p-3.5 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs font-bold flex items-center gap-2 shadow-2xs">
+          <AlertCircle size={16} /> {errorMsg}
+        </div>
+      )}
+
+      {/* 1. Profile Details Form */}
       <form onSubmit={handleSaveProfile} className="bg-white rounded-xl border border-slate-200 p-6 shadow-2xs space-y-4">
-        <h2 className="text-base font-bold text-slate-900 flex items-center gap-2 border-b pb-3">
+        <h2 className="text-base font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-3">
           <User className="text-[#E71414]" size={18} /> Personal Details
         </h2>
 
@@ -55,7 +293,8 @@ export default function MyProfile() {
               type="text"
               value={profile.firstName}
               onChange={(e) => setProfile({ ...profile, firstName: e.target.value })}
-              className="w-full border border-slate-300 rounded-lg p-2.5"
+              className="w-full border border-slate-300 rounded-lg p-2.5 text-slate-900 focus:border-[#007355] focus:ring-1 focus:ring-[#007355] outline-none font-medium"
+              required
             />
           </div>
           <div>
@@ -64,16 +303,18 @@ export default function MyProfile() {
               type="text"
               value={profile.lastName}
               onChange={(e) => setProfile({ ...profile, lastName: e.target.value })}
-              className="w-full border border-slate-300 rounded-lg p-2.5"
+              className="w-full border border-slate-300 rounded-lg p-2.5 text-slate-900 focus:border-[#007355] focus:ring-1 focus:ring-[#007355] outline-none font-medium"
+              required
             />
           </div>
           <div>
-            <label className="block font-bold text-slate-700 mb-1">Email Address</label>
+            <label className="block font-bold text-slate-700 mb-1">Email Address (Login ID)</label>
             <input
               type="email"
               value={profile.email}
-              disabled
-              className="w-full bg-slate-100 border border-slate-300 rounded-lg p-2.5 text-slate-500"
+              onChange={(e) => setProfile({ ...profile, email: e.target.value })}
+              className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2.5 text-slate-800 font-semibold focus:border-[#007355] focus:ring-1 focus:ring-[#007355] outline-none"
+              required
             />
           </div>
           <div>
@@ -82,21 +323,122 @@ export default function MyProfile() {
               type="text"
               value={profile.company}
               onChange={(e) => setProfile({ ...profile, company: e.target.value })}
-              className="w-full border border-slate-300 rounded-lg p-2.5"
+              className="w-full border border-slate-300 rounded-lg p-2.5 text-slate-900 focus:border-[#007355] focus:ring-1 focus:ring-[#007355] outline-none font-medium"
             />
           </div>
         </div>
 
         <div className="flex justify-end pt-2">
-          <button type="submit" className="btn-primary px-5 py-2 rounded-lg text-xs font-bold">
+          <button type="submit" className="btn-primary px-5 py-2 rounded-lg text-xs font-bold shadow hover:shadow-md transition">
             Save Profile
           </button>
         </div>
       </form>
 
-      {/* Delegation Module (Section 39 PDF Requirement) */}
+      {/* 2. Password & Security Management (Requirement) */}
+      <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-2xs space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-100 pb-3 gap-2">
+          <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
+            <KeyRound className="text-[#E71414]" size={18} /> Password & Security Management
+          </h2>
+          <button
+            type="button"
+            onClick={handleSendResetEmail}
+            disabled={emailLoading}
+            className="flex items-center gap-1.5 text-xs text-[#007355] hover:text-[#005c44] font-bold border border-[#007355]/30 hover:border-[#007355] px-3 py-1.5 rounded-lg transition bg-[#007355]/5"
+          >
+            <Mail size={14} />
+            <span>{emailLoading ? 'Sending...' : 'Send Password Change Link to Email'}</span>
+          </button>
+        </div>
+
+        <p className="text-xs text-slate-500">
+          Update your account login password. You can manually enter a password, generate a secure strong password automatically, or toggle visibility.
+        </p>
+
+        <form onSubmit={handleChangePassword} className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+            {/* New Password */}
+            <div>
+              <div className="flex justify-between items-center mb-1">
+                <label className="font-bold text-slate-700">New Password</label>
+                <button
+                  type="button"
+                  onClick={generateStrongPassword}
+                  className="text-[11px] font-bold text-[#007355] hover:underline flex items-center gap-1"
+                >
+                  <Sparkles size={12} /> Auto Generate Strong Password
+                </button>
+              </div>
+              <div className="relative">
+                <input
+                  type={showNewPassword ? 'text' : 'password'}
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="Enter new password (min. 6 chars)"
+                  className="w-full border border-slate-300 rounded-lg p-2.5 pr-10 text-slate-900 font-mono text-xs focus:border-[#007355] focus:ring-1 focus:ring-[#007355] outline-none"
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowNewPassword(!showNewPassword)}
+                  className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600"
+                >
+                  {showNewPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+            </div>
+
+            {/* Confirm Password */}
+            <div>
+              <div className="flex justify-between items-center mb-1">
+                <label className="font-bold text-slate-700">Confirm Password</label>
+                {confirmPassword && (
+                  <span className={`text-[10px] font-bold flex items-center gap-1 ${newPassword === confirmPassword ? 'text-emerald-600' : 'text-rose-500'}`}>
+                    {newPassword === confirmPassword ? <Check size={12} /> : null}
+                    {newPassword === confirmPassword ? 'Passwords match' : 'Does not match'}
+                  </span>
+                )}
+              </div>
+              <div className="relative">
+                <input
+                  type={showConfirmPassword ? 'text' : 'password'}
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  placeholder="Confirm new password"
+                  className={`w-full border rounded-lg p-2.5 pr-10 text-slate-900 font-mono text-xs outline-none ${
+                    confirmPassword && newPassword !== confirmPassword 
+                      ? 'border-rose-400 focus:border-rose-500' 
+                      : 'border-slate-300 focus:border-[#007355] focus:ring-1 focus:ring-[#007355]'
+                  }`}
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                  className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600"
+                >
+                  {showConfirmPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex justify-end pt-2">
+            <button
+              type="submit"
+              disabled={passwordLoading}
+              className="px-5 py-2 bg-[#007355] hover:bg-[#005c44] text-white rounded-lg text-xs font-bold transition shadow"
+            >
+              {passwordLoading ? 'Updating Password...' : 'Update Password'}
+            </button>
+          </div>
+        </form>
+      </div>
+
+      {/* 3. Delegation Module (Section 39 PDF Requirement) */}
       <form onSubmit={handleSaveDelegate} className="bg-white rounded-xl border border-slate-200 p-6 shadow-2xs space-y-4">
-        <h2 className="text-base font-bold text-slate-900 flex items-center gap-2 border-b pb-3">
+        <h2 className="text-base font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-3">
           <Shield className="text-[#E71414]" size={18} /> Signing Delegation (Vacation Mode)
         </h2>
 
@@ -111,7 +453,7 @@ export default function MyProfile() {
               type="email"
               value={delegate.delegateTo}
               onChange={(e) => setDelegate({ ...delegate, delegateTo: e.target.value })}
-              className="w-full border border-slate-300 rounded-lg p-2.5"
+              className="w-full border border-slate-300 rounded-lg p-2.5 focus:border-[#007355] outline-none"
               required
             />
           </div>
@@ -122,7 +464,7 @@ export default function MyProfile() {
               type="date"
               value={delegate.startDate}
               onChange={(e) => setDelegate({ ...delegate, startDate: e.target.value })}
-              className="w-full border border-slate-300 rounded-lg p-2.5"
+              className="w-full border border-slate-300 rounded-lg p-2.5 focus:border-[#007355] outline-none"
               required
             />
           </div>
@@ -133,7 +475,7 @@ export default function MyProfile() {
               type="date"
               value={delegate.endDate}
               onChange={(e) => setDelegate({ ...delegate, endDate: e.target.value })}
-              className="w-full border border-slate-300 rounded-lg p-2.5"
+              className="w-full border border-slate-300 rounded-lg p-2.5 focus:border-[#007355] outline-none"
               required
             />
           </div>
@@ -146,7 +488,7 @@ export default function MyProfile() {
             value={delegate.reason}
             onChange={(e) => setDelegate({ ...delegate, reason: e.target.value })}
             placeholder="e.g. Annual Leave"
-            className="w-full border border-slate-300 rounded-lg p-2.5 text-xs"
+            className="w-full border border-slate-300 rounded-lg p-2.5 text-xs focus:border-[#007355] outline-none"
           />
         </div>
 

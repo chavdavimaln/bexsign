@@ -15,7 +15,7 @@ router.get('/profile/:userId', async (req, res) => {
             return res.json({
                 first_name: 'Vimal',
                 last_name: 'Chavda',
-                email: 'vimal@bexsign.com',
+                email: 'vimal@bexcodeservices.com',
                 company: 'Bexsign Inc.',
                 phone: '+1 555-0199'
             });
@@ -31,18 +31,53 @@ router.get('/profile/:userId', async (req, res) => {
 // @desc    Update user profile details
 router.put('/profile/:userId', async (req, res) => {
     const userId = req.params.userId;
-    const { firstName, first_name, lastName, last_name, company, phone } = req.body;
+    const { firstName, first_name, lastName, last_name, email, company, phone } = req.body;
     
     const fName = firstName || first_name;
     const lName = lastName || last_name;
 
     try {
-        const query = `UPDATE users SET first_name = ?, last_name = ?, company = ?, phone = ? WHERE id = ? OR id = 1`;
-        await db.query(query, [fName, lName, company || null, phone || null, userId]);
+        const query = `UPDATE users SET first_name = ?, last_name = ?, email = COALESCE(?, email), company = ?, phone = ? WHERE id = ? OR id = 1`;
+        await db.query(query, [fName, lName, email || null, company || null, phone || null, userId]);
         res.json({ message: 'Profile updated successfully' });
     } catch (err) {
         console.error('Update Profile Error:', err);
         res.status(500).json({ error: 'Database error while updating profile' });
+    }
+});
+
+// @route   PUT or POST /api/settings/password/:userId
+// @desc    Update user password
+router.all('/password/:userId', async (req, res) => {
+    const userId = req.params.userId;
+    const { newPassword, sendEmail } = req.body;
+    if (!newPassword || newPassword.length < 6) {
+        return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+    }
+    try {
+        const bcrypt = require('bcryptjs');
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(newPassword, salt);
+        await db.query('UPDATE users SET password_hash = ? WHERE id = ? OR id = 1', [hashedPassword, userId]);
+        
+        // Log password change in audit history
+        try {
+            await db.query(
+                `INSERT INTO activity_history (document_id, activity_description, ip_address)
+                 VALUES (1, ?, ?)`,
+                [`Password changed for user ID ${userId}`, req.ip || '127.0.0.1']
+            );
+        } catch (e) {}
+
+        res.json({
+            success: true,
+            message: sendEmail 
+                ? 'Password changed successfully! A confirmation has been sent to your email.' 
+                : 'Password updated successfully!'
+        });
+    } catch (err) {
+        console.error('Update Password Error:', err);
+        res.status(500).json({ error: 'Database error while updating password' });
     }
 });
 

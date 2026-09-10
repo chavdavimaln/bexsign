@@ -149,9 +149,9 @@ router.post('/upload', upload.any(), async (req, res) => {
                         const r = recipientList[i];
                         if (r.email) {
                             await db.query(
-                                `INSERT INTO document_recipients (document_id, recipient_name, recipient_email, recipient_role, signing_order)
-                                 VALUES (?, ?, ?, ?, ?)`,
-                                [existingDocId, r.name || 'Signer', r.email, r.role || 'Needs to sign', i + 1]
+                                `INSERT INTO document_recipients (document_id, name, email, role, signing_order_index, status)
+                                 VALUES (?, ?, ?, ?, ?, 'pending')`,
+                                [existingDocId, r.name || 'Signer', r.email, r.role || 'signer', i + 1]
                             );
                         }
                     }
@@ -235,9 +235,9 @@ router.post('/upload', upload.any(), async (req, res) => {
                     const r = recipientList[i];
                     if (r.email) {
                         await db.query(
-                            `INSERT INTO document_recipients (document_id, recipient_name, recipient_email, recipient_role, signing_order)
-                             VALUES (?, ?, ?, ?, ?)`,
-                            [documentId, r.name || 'Signer', r.email, r.role || 'Needs to sign', i + 1]
+                            `INSERT INTO document_recipients (document_id, name, email, role, signing_order_index, status)
+                             VALUES (?, ?, ?, ?, ?, 'pending')`,
+                            [documentId, r.name || 'Signer', r.email, r.role || 'signer', i + 1]
                         );
                     }
                 }
@@ -695,6 +695,35 @@ router.post('/send/:id', async (req, res) => {
             "UPDATE documents SET status = 'In Progress' WHERE id = ?",
             [id]
         );
+
+        // Synchronize recipients to document_recipients table on send
+        const recList = req.body.recipients || req.body.recipientList;
+        if (recList && Array.isArray(recList) && recList.length > 0) {
+            try {
+                await db.query('DELETE FROM document_recipients WHERE document_id = ?', [id]);
+                for (let i = 0; i < recList.length; i++) {
+                    const r = recList[i];
+                    if (r.email) {
+                        await db.query(
+                            `INSERT INTO document_recipients (document_id, name, email, role, signing_order_index, status)
+                             VALUES (?, ?, ?, ?, ?, 'pending')`,
+                            [id, r.name || 'Signer', r.email, r.role || 'signer', i + 1]
+                        );
+                    }
+                }
+            } catch (eRecSave) {
+                console.warn('Recipients save warning on send:', eRecSave.message);
+            }
+        } else if (recipientEmail) {
+            try {
+                await db.query('DELETE FROM document_recipients WHERE document_id = ?', [id]);
+                await db.query(
+                    `INSERT INTO document_recipients (document_id, name, email, role, signing_order_index, status)
+                     VALUES (?, ?, ?, 'signer', 1, 'pending')`,
+                    [id, recipientName || 'Signer', recipientEmail]
+                );
+            } catch (eRecSingle) {}
+        }
 
         // Synchronize multiple documents to document_files on dispatch
         if (req.body.documents && Array.isArray(req.body.documents)) {

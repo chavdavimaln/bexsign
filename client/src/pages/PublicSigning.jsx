@@ -94,6 +94,15 @@ export default function PublicSigning() {
   const [hasDrawn, setHasDrawn] = useState(false);
   const [validationError, setValidationError] = useState('');
   const [isCompleted, setIsCompleted] = useState(false);
+  const [showConfirmChangeSigModal, setShowConfirmChangeSigModal] = useState(false);
+
+  const handleOpenSignatureModal = () => {
+    if (signaturePlaced) {
+      setShowConfirmChangeSigModal(true);
+    } else {
+      setShowSignatureModal(true);
+    }
+  };
 
   // Canvas drawing ref
   const canvasRef = useRef(null);
@@ -150,10 +159,22 @@ export default function PublicSigning() {
         }
       } catch (eDoc) {}
 
+      // Determine active user email for isolation and saved signature
+      let activeUserEmail = '';
+      let activeUserName = '';
+      try {
+        const userStr = localStorage.getItem('user');
+        if (userStr) {
+          const u = JSON.parse(userStr);
+          activeUserEmail = u.email;
+          activeUserName = u.name || `${u.firstName || ''} ${u.lastName || ''}`.trim();
+        }
+      } catch (e) {}
+
       // Fallback: fetch via token route if document was not found directly
       if (!doc || !doc.id) {
         try {
-          const resToken = await fetch(`http://localhost:5000/api/signatures/token/${docId}`);
+          const resToken = await fetch(`http://localhost:5000/api/signatures/token/${docId}?email=${encodeURIComponent(activeUserEmail || 'vimal@bexcodeservices.com')}`);
           const tokenData = await resToken.json();
           if (tokenData.success) {
             doc = {
@@ -235,15 +256,21 @@ export default function PublicSigning() {
           if (doc.signer_name) setTypedName(doc.signer_name);
           if (doc.signature_style) setSelectedStyle(doc.signature_style);
         } else {
-          // Auto-fetch saved signature from employee directory by email
-          const targetEmail = doc.recipient_email || 'vimal@bexcodeservices.com';
-          const savedSig = await fetchSignatureForEmail(targetEmail);
-          if (savedSig && (savedSig.signature_image || savedSig.employee_name)) {
+          // Auto-fetch saved signature from portal directory for existing user (manager, leader, team member, anyone)
+          const targetEmail = activeUserEmail || doc.recipient_email || 'vimal@bexcodeservices.com';
+          const targetName = activeUserName || doc.signer_name || 'Vimal Chavda';
+          const savedSig = await fetchSignatureForEmail(targetEmail) || await fetchSignatureForEmail(doc.recipient_email) || await fetchSignatureForEmail('vimal@bexcodeservices.com');
+          if (savedSig && (savedSig.signature_image || savedSig.signature_id || savedSig.employee_name)) {
             if (savedSig.employee_name) setTypedName(savedSig.employee_name);
+            else if (targetName) setTypedName(targetName);
+
             if (savedSig.signature_image) {
               setSignatureData(savedSig.signature_image);
               setSignaturePlaced(true);
               setSignatureType(savedSig.signature_image.startsWith('data:') ? 'draw' : 'type');
+            } else {
+              setSignaturePlaced(true);
+              setSignatureType('type');
             }
             if (savedSig.signature_style) setSelectedStyle(savedSig.signature_style);
           }
@@ -361,10 +388,19 @@ export default function PublicSigning() {
     } catch (e) {}
   };
 
-  const handleUpdateFieldValue = (fieldId, value) => {
+  const handleUpdateFieldValue = (fieldId, value, gridValue) => {
     setFieldsByDoc((prev) => {
       const currentList = prev[activeDocIndex] || [];
-      const updatedList = currentList.map((f) => (f.id === fieldId ? { ...f, value } : f));
+      const updatedList = currentList.map((f) => {
+        if (f.id === fieldId) {
+          return {
+            ...f,
+            value,
+            ...(gridValue ? { gridValue } : {})
+          };
+        }
+        return f;
+      });
       const nextByDoc = { ...prev, [activeDocIndex]: updatedList };
       try {
         localStorage.setItem(`bexsign_doc_${docId}_fields_by_doc`, JSON.stringify(nextByDoc));
@@ -1013,7 +1049,7 @@ export default function PublicSigning() {
           signatureImage={signatureData}
           signatureStyle={selectedStyle}
           signaturePlaced={signaturePlaced}
-          onOpenSignatureModal={() => setShowSignatureModal(true)}
+          onOpenSignatureModal={handleOpenSignatureModal}
           isCompleted={isCompleted}
           showTooltips={true}
           copiedId={copiedId}
@@ -1022,6 +1058,54 @@ export default function PublicSigning() {
           onUpdateField={handleUpdateFieldValue}
         />
       </main>
+
+      {/* Confirmation Modal to Change Saved Signature */}
+      {showConfirmChangeSigModal && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center z-50 p-4 font-sans text-slate-900">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95">
+            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center">
+                  <PenTool size={16} />
+                </div>
+                <h3 className="text-sm font-bold text-slate-900">Modify Saved Signature?</h3>
+              </div>
+              <button onClick={() => setShowConfirmChangeSigModal(false)} className="text-slate-400 hover:text-slate-700">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
+              <p className="text-xs text-slate-700 leading-relaxed">
+                You already have your official saved electronic signature active for <strong className="text-slate-900">{typedName}</strong>.
+              </p>
+              <p className="text-xs text-slate-500">
+                Do you want to change or redraw your signature for this document, or keep the existing saved signature?
+              </p>
+            </div>
+
+            <div className="flex justify-end items-center gap-2.5 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowConfirmChangeSigModal(false)}
+                className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-50 transition"
+              >
+                No, Keep Existing
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowConfirmChangeSigModal(false);
+                  setShowSignatureModal(true);
+                }}
+                className="px-4 py-2 bg-[#007355] hover:bg-[#005c44] text-white rounded-lg text-xs font-bold transition shadow"
+              >
+                Yes, Change Signature
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Signature Creation Popup Modal (Page 10 PDF) */}
       {showSignatureModal && (

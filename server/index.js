@@ -12,6 +12,7 @@ const reportRoutes = require('./routes/reports');
 const settingRoutes = require('./routes/settings');
 const contactRoutes = require('./contacts');
 const trashRoutes = require('./routes/trash');
+const userRoutes = require('./routes/users');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -34,6 +35,7 @@ app.get('/api/health', (req, res) => {
 
 // Mount REST Routes
 app.use('/api', authRoutes);
+app.use('/api/auth', authRoutes);
 app.use('/api/documents', documentRoutes);
 app.use('/api/signatures', signingRoutes);
 app.use('/api/templates', templateRoutes);
@@ -41,11 +43,22 @@ app.use('/api/reports', reportRoutes);
 app.use('/api/settings', settingRoutes);
 app.use('/api/contacts', contactRoutes);
 app.use('/api/trash', trashRoutes);
+app.use('/api/users', userRoutes);
 
 // Start Server
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
     console.log(`Bexsign Backend Server listening on http://localhost:${PORT}`);
     console.log(`Connected to MySQL Database: ${process.env.DB_NAME || 'db_bex_sign'}`);
+});
+
+server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+        console.error(`\n[BexSign Port Conflict] Port ${PORT} is already occupied by an existing process.`);
+        console.error(`Please make sure previous process on port ${PORT} is closed.\n`);
+        process.exit(1);
+    } else {
+        console.error('Server error:', err);
+    }
 });
 
 module.exports = app;

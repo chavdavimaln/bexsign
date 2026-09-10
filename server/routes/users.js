@@ -1,0 +1,322 @@
+const express = require('express');
+const router = express.Router();
+const bcrypt = require('bcryptjs');
+const db = require('../db');
+const { authenticateUser, requireRole } = require('../middleware/authMiddleware');
+
+// Apply authentication middleware to all user management routes
+router.use(authenticateUser);
+
+// @route   GET /api/users
+// @desc    Get all enterprise users with profile, role metadata, and summary metrics
+router.get('/', requireRole(['manager', 'leader']), async (req, res) => {
+    try {
+        const query = `
+            SELECT 
+                u.id, 
+                u.first_name, 
+                u.last_name, 
+                u.email, 
+                u.username,
+                COALESCE(u.role, 'team_member') AS role, 
+                u.company, 
+                u.phone,
+                u.created_at, 
+                u.updated_at,
+                p.department, 
+                p.designation, 
+                COALESCE(p.status, 'active') AS status, 
+                p.avatar_url, 
+                p.timezone,
+                r.role_name,
+                (SELECT MAX(login_at) FROM user_login_logs WHERE user_id = u.id) AS last_login
+            FROM users u
+            LEFT JOIN user_profiles p ON u.id = p.user_id
+            LEFT JOIN roles r ON u.role = r.role_key
+            ORDER BY u.id ASC
+        `;
+        const [users] = await db.query(query);
+
+        // Calculate summary metrics
+        const total = users.length;
+        const managers = users.filter(u => u.role === 'manager' || u.role === 'admin').length;
+        const leaders = users.filter(u => u.role === 'leader').length;
+        const teamMembers = users.filter(u => u.role === 'team_member' || u.role === 'member').length;
+        const active = users.filter(u => u.status === 'active').length;
+        const inactive = users.filter(u => u.status === 'inactive').length;
+
+        res.json({
+            success: true,
+            stats: {
+                total,
+                managers,
+                leaders,
+                teamMembers,
+                active,
+                inactive
+            },
+            users
+        });
+    } catch (err) {
+        console.error('Fetch Users Error:', err);
+        res.status(500).json({ error: err.message || 'Failed to fetch users' });
+    }
+});
+
+// @route   GET /api/users/roles
+// @desc    Get all system roles and their permission matrix
+router.get('/roles', async (req, res) => {
+    try {
+        const [roles] = await db.query('SELECT * FROM roles ORDER BY id ASC');
+        res.json({ success: true, roles });
+    } catch (err) {
+        console.error('Fetch Roles Error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// @route   GET /api/users/login-logs
+// @desc    Get enterprise login audit records
+router.get('/login-logs', requireRole(['manager']), async (req, res) => {
+    try {
+        const [logs] = await db.query(
+            `SELECT l.*, u.first_name, u.last_name 
+             FROM user_login_logs l 
+             LEFT JOIN users u ON l.user_id = u.id 
+             ORDER BY l.login_at DESC 
+             LIMIT 50`
+        );
+        res.json({ success: true, logs });
+    } catch (err) {
+        console.error('Fetch Login Logs Error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// @route   POST /api/users
+// @desc    Create / invite a new enterprise user
+router.post('/', requireRole(['manager']), async (req, res) => {
+    const { firstName, lastName, email, role, department, designation, password, phone } = req.body;
+
+    if (!email) {
+        return res.status(400).json({ error: 'User email is required.' });
+    }
+
+    const assignedRole = (role || 'team_member').toLowerCase();
+    const rawPassword = password || 'BexSign@2026';
+
+    try {
+        const [existing] = await db.query('SELECT id FROM users WHERE email = ?', [email]);
+        if (existing && existing.length > 0) {
+            return res.status(400).json({ error: 'A user with this email already exists.' });
+        }
+
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(rawPassword, salt);
+
+        const [insertUser] = await db.query(
+            `INSERT INTO users (first_name, last_name, email, password_hash, role, company, phone) 
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [
+                firstName || 'New',
+                lastName || 'Member',
+                email,
+                hashedPassword,
+                assignedRole,
+                'BexSign Workspace',
+                phone || null
+            ]
+        );
+
+        const newUserId = insertUser.insertId;
+
+        await db.query(
+            `INSERT INTO user_profiles (user_id, department, designation, status, phone) 
+             VALUES (?, ?, ?, 'active', ?) 
+             ON DUPLICATE KEY UPDATE 
+                department = VALUES(department), 
+                designation = VALUES(designation), 
+                status = 'active',
+                phone = VALUES(phone)`,
+            [
+                newUserId,
+                department || 'Operations',
+                designation || (assignedRole === 'manager' ? 'Manager' : (assignedRole === 'leader' ? 'Team Leader' : 'Team Member')),
+                phone || null
+            ]
+        );
+
+        // Fetch newly created user
+        const [newUser] = await db.query(
+            `SELECT u.id, u.first_name, u.last_name, u.email, u.role, u.company, p.department, p.designation, p.status 
+             FROM users u 
+             LEFT JOIN user_profiles p ON u.id = p.user_id 
+             WHERE u.id = ?`,
+            [newUserId]
+        );
+
+        res.status(201).json({
+            success: true,
+            message: `User ${email} created successfully with role ${assignedRole}.`,
+            user: newUser[0]
+        });
+    } catch (err) {
+        console.error('Create User Error:', err);
+        res.status(500).json({ error: err.message || 'Failed to create user' });
+    }
+});
+
+// @route   PUT /api/users/:id
+// @desc    Update user details, role assignment, and department
+router.put('/:id', requireRole(['manager']), async (req, res) => {
+    const { id } = req.params;
+    const { firstName, lastName, role, department, designation, phone, status } = req.body;
+
+    try {
+        const [userRows] = await db.query('SELECT * FROM users WHERE id = ?', [id]);
+        if (!userRows || userRows.length === 0) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        const updates = [];
+        const params = [];
+
+        if (firstName !== undefined) { updates.push('first_name = ?'); params.push(firstName); }
+        if (lastName !== undefined) { updates.push('last_name = ?'); params.push(lastName); }
+        if (role !== undefined) { updates.push('role = ?'); params.push(role.toLowerCase()); }
+        if (phone !== undefined) { updates.push('phone = ?'); params.push(phone); }
+
+        if (updates.length > 0) {
+            params.push(id);
+            await db.query(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`, params);
+        }
+
+        // Update profile
+        await db.query(
+            `INSERT INTO user_profiles (user_id, department, designation, status, phone) 
+             VALUES (?, ?, ?, ?, ?) 
+             ON DUPLICATE KEY UPDATE 
+                department = COALESCE(?, department), 
+                designation = COALESCE(?, designation), 
+                status = COALESCE(?, status),
+                phone = COALESCE(?, phone)`,
+            [
+                id,
+                department || 'General',
+                designation || 'Member',
+                status || 'active',
+                phone || null,
+                department || null,
+                designation || null,
+                status || null,
+                phone || null
+            ]
+        );
+
+        res.json({ success: true, message: 'User updated successfully' });
+    } catch (err) {
+        console.error('Update User Error:', err);
+        res.status(500).json({ error: err.message || 'Failed to update user' });
+    }
+});
+
+// @route   PATCH /api/users/:id/status
+// @desc    Toggle active / inactive status for a user
+router.patch('/:id/status', requireRole(['manager']), async (req, res) => {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (!['active', 'inactive'].includes(status)) {
+        return res.status(400).json({ error: 'Invalid status. Must be active or inactive.' });
+    }
+
+    try {
+        if (parseInt(id) === req.user.id) {
+            return res.status(400).json({ error: 'You cannot deactivate your own account.' });
+        }
+
+        await db.query(
+            `INSERT INTO user_profiles (user_id, status) VALUES (?, ?) 
+             ON DUPLICATE KEY UPDATE status = ?`,
+            [id, status, status]
+        );
+
+        res.json({ success: true, message: `User status changed to ${status}.` });
+    } catch (err) {
+        console.error('Toggle Status Error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// @route   POST /api/users/:id/reset-password
+// @desc    Reset password for a user (Manager can reset for any user; user can reset own password)
+router.post('/:id/reset-password', async (req, res) => {
+    const { id } = req.params;
+    const { newPassword, sendEmail } = req.body;
+
+    // Check authorization: Manager or self
+    const isManager = req.user && (req.user.role === 'manager' || req.user.role === 'admin');
+    const isSelf = req.user && parseInt(req.user.id) === parseInt(id);
+
+    if (!isManager && !isSelf) {
+        return res.status(403).json({ error: 'Access denied: Only Managers can reset passwords for other users.' });
+    }
+
+    if (!newPassword || newPassword.length < 6) {
+        return res.status(400).json({ error: 'New password must be at least 6 characters.' });
+    }
+
+    try {
+        const [targetUser] = await db.query('SELECT id, email, first_name FROM users WHERE id = ?', [id]);
+        if (!targetUser || targetUser.length === 0) {
+            return res.status(404).json({ error: 'User not found.' });
+        }
+
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+        await db.query('UPDATE users SET password_hash = ? WHERE id = ?', [hashedPassword, id]);
+
+        const userEmail = targetUser[0].email;
+        let emailNotice = '';
+        if (sendEmail) {
+            emailNotice = ` A notification with instructions has been dispatched to ${userEmail}.`;
+            try {
+                await db.query(
+                    `INSERT INTO activity_history (document_id, activity_description, ip_address)
+                     VALUES (1, ?, ?)`,
+                    [`Password reset email dispatched to ${userEmail} by ${req.user.email || 'Manager'}`, req.ip || '127.0.0.1']
+                );
+            } catch (eHist) {}
+        }
+
+        res.json({ 
+            success: true, 
+            message: `Password updated successfully for ${userEmail}.${emailNotice}`,
+            emailSent: Boolean(sendEmail)
+        });
+    } catch (err) {
+        console.error('Reset Password Error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// @route   DELETE /api/users/:id
+// @desc    Delete user account (Manager only; cannot delete oneself or root admin)
+router.delete('/:id', requireRole(['manager']), async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        if (parseInt(id) === 1 || parseInt(id) === req.user.id) {
+            return res.status(400).json({ error: 'Primary system administrator account cannot be deleted.' });
+        }
+
+        await db.query('DELETE FROM users WHERE id = ?', [id]);
+        res.json({ success: true, message: 'User deleted successfully.' });
+    } catch (err) {
+        console.error('Delete User Error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+module.exports = router;

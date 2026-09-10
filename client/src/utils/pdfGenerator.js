@@ -121,7 +121,23 @@ export async function generateAndDownloadPdf({
     : getDefaultDocContent(cleanDocTitle, documentText);
 
   // Wrap document text cleanly to prevent overflow and render multi-paragraph clauses
-  const rawParagraphs = cleanDocBody.split('\n');
+  const rawText = cleanDocBody.includes('<')
+    ? cleanDocBody
+        .replace(/<br\s*[\/]?>/gi, '\n')
+        .replace(/<\/p>/gi, '\n\n')
+        .replace(/<\/div>/gi, '\n')
+        .replace(/<\/h[1-6]>/gi, '\n\n')
+        .replace(/<\/tr>/gi, '\n')
+        .replace(/<\/li>/gi, '\n')
+        .replace(/<[^>]+>/g, '')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&nbsp;/g, ' ')
+    : cleanDocBody;
+  const rawParagraphs = rawText.split('\n');
   const wrappedBodyLines = [];
   for (const p of rawParagraphs) {
     const trimmed = p.trim();

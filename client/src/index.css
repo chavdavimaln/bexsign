@@ -91,3 +91,9 @@ body {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
 }
+
+/* Standard A4 Paper Print Media Rule (210mm x 297mm) */
+@page {
+  size: A4 portrait;
+  margin: 10mm 15mm;
+}

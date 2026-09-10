@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Link, useNavigate, Outlet, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -38,6 +38,14 @@ export default function Layout() {
     settings: false,
     signatures: false
   });
+
+  const currentUser = useMemo(() => {
+    try {
+      const saved = localStorage.getItem('user');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {}
+    return { name: 'Vimal Chavda', email: 'vimal@bexcodeservices.com', role: 'manager' };
+  }, []);
 
   // Modal triggers
   const [showAnnouncementsModal, setShowAnnouncementsModal] = useState(false);
@@ -97,6 +105,19 @@ export default function Layout() {
             >
               <LayoutDashboard size={18} className={isActive('/dashboard') ? 'text-[#E71414]' : 'text-slate-500'} />
               {sidebarOpen && <span>Dashboard</span>}
+            </Link>
+
+            {/* Users & Access (Zoho Sign Style) */}
+            <Link
+              to="/users"
+              className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition font-medium text-sm ${
+                isActive('/users') || isActive('/settings/users')
+                  ? 'bg-purple-50 text-purple-700 font-semibold'
+                  : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900'
+              }`}
+            >
+              <Users size={18} className={isActive('/users') || isActive('/settings/users') ? 'text-purple-600' : 'text-slate-500'} />
+              {sidebarOpen && <span>Users & Roles</span>}
             </Link>
 
             {/* Documents Collapsible Header */}
@@ -227,6 +248,7 @@ export default function Layout() {
               {sidebarOpen && openSubmenu.settings && (
                 <div className="ml-6 pl-2 border-l border-slate-200 space-y-1 my-1 text-xs text-slate-600">
                   <Link to="/settings/general" className="block py-1.5 px-2 hover:text-[#E71414]">General</Link>
+                  <Link to="/settings/users" className="flex items-center gap-1.5 py-1.5 px-2 hover:text-[#E71414] font-semibold text-purple-700"><Users size={13}/> Users & Roles</Link>
                   <Link to="/settings/profile" className="flex items-center gap-1.5 py-1.5 px-2 hover:text-[#E71414]"><User size={13}/> My Profile</Link>
                   <Link to="/settings/integrations" className="block py-1.5 px-2 hover:text-[#E71414]">Integrations</Link>
                   <Link to="/settings/notifications" className="block py-1.5 px-2 hover:text-[#E71414]">My Notifications</Link>
@@ -317,12 +339,19 @@ export default function Layout() {
             </button>
 
             <div className="flex items-center gap-3 border-l pl-4 border-slate-200">
-              <div className="h-9 w-9 rounded-full bg-[#E71414] text-white flex items-center justify-center font-bold text-sm shadow-sm">
-                V
+              <div className="h-9 w-9 rounded-full bg-gradient-to-tr from-purple-700 to-indigo-600 text-white flex items-center justify-center font-bold text-sm shadow-sm">
+                {(currentUser.name || 'Vimal Chavda')[0]}
               </div>
               <div className="hidden sm:block text-left text-xs">
-                <p className="font-bold text-slate-800">Vimal Chavda</p>
-                <p className="text-slate-500">vimal@bexsign.com</p>
+                <div className="flex items-center gap-1.5">
+                  <p className="font-bold text-slate-800">{currentUser.name || 'Vimal Chavda'}</p>
+                  <span className={`px-1.5 py-0.2 rounded text-[9px] font-black uppercase ${
+                    currentUser.role === 'leader' ? 'bg-blue-100 text-blue-700' : (currentUser.role === 'team_member' ? 'bg-slate-100 text-slate-700' : 'bg-purple-100 text-purple-700')
+                  }`}>
+                    {currentUser.role || 'Manager'}
+                  </span>
+                </div>
+                <p className="text-slate-500 text-[11px]">{currentUser.email || 'vimal@bexcodeservices.com'}</p>
               </div>
               <button
                 onClick={handleLogout}

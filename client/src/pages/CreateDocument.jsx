@@ -39,13 +39,16 @@ export default function CreateDocument() {
       const data = await res.json();
 
       if (data.documentId) {
-        navigate(`/documents/${data.documentId}/edit`);
+        localStorage.setItem(`bexsign_doc_${data.documentId}_is_new`, 'true');
+        navigate(`/documents/${data.documentId}/edit`, { state: { fromCreate: true } });
       } else {
-        navigate('/documents/1/edit');
+        localStorage.setItem('bexsign_doc_1_is_new', 'true');
+        navigate('/documents/1/edit', { state: { fromCreate: true } });
       }
     } catch (err) {
       console.warn('Backend offline fallback:', err);
-      navigate('/documents/1/edit');
+      localStorage.setItem('bexsign_doc_1_is_new', 'true');
+      navigate('/documents/1/edit', { state: { fromCreate: true } });
     }
   };
 

@@ -23,7 +23,11 @@ import {
   RotateCw,
   Plus,
   CheckCircle2,
-  FileText
+  FileText,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
+  Layers
 } from 'lucide-react';
 
 export default function RichTextDocumentEditor({ onBack }) {
@@ -33,6 +37,9 @@ export default function RichTextDocumentEditor({ onBack }) {
   const [fontSize, setFontSize] = useState('14');
   const [textColor, setTextColor] = useState('#0f172a');
   const [bgColor, setBgColor] = useState('#ffffff');
+  const [zoomLevel, setZoomLevel] = useState(100);
+  const [wordCount, setWordCount] = useState(0);
+  const [charCount, setCharCount] = useState(0);
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [statusMsg, setStatusMsg] = useState('');
 
@@ -41,6 +48,37 @@ export default function RichTextDocumentEditor({ onBack }) {
   // Formatting helpers
   const applyFormat = (command, value = null) => {
     document.execCommand(command, false, value);
+  };
+
+  const applyFontSize = (sizeInput) => {
+    const numericSize = parseInt(String(sizeInput).replace(/[^0-9]/g, ''), 10);
+    if (!numericSize) return;
+    const pxSize = `${numericSize}px`;
+
+    document.execCommand('styleWithCSS', false, false);
+    document.execCommand('fontSize', false, '7');
+    if (editorRef.current) {
+      const fonts = editorRef.current.querySelectorAll('font[size="7"]');
+      fonts.forEach(f => {
+        const span = document.createElement('span');
+        span.style.fontSize = pxSize;
+        while (f.firstChild) span.appendChild(f.firstChild);
+        f.parentNode.replaceChild(span, f);
+      });
+      const spans = editorRef.current.querySelectorAll('span[style*="xxx-large"], span[style*="-webkit-xxx-large"]');
+      spans.forEach(s => {
+        s.style.fontSize = pxSize;
+      });
+    }
+    setFontSize(String(numericSize));
+  };
+
+  const updateCounts = () => {
+    if (!editorRef.current) return;
+    const text = editorRef.current.innerText || '';
+    const words = text.trim().split(/\s+/).filter(Boolean);
+    setWordCount(words.length);
+    setCharCount(text.length);
   };
 
   // AI Auto-Draft Generator
@@ -69,6 +107,7 @@ export default function RichTextDocumentEditor({ onBack }) {
           </p>
           <br/>
         `;
+        updateCounts();
       }
       setIsAiLoading(false);
       setStatusMsg('AI Draft generated successfully!');
@@ -161,6 +200,7 @@ export default function RichTextDocumentEditor({ onBack }) {
 
         {/* Basic Styles */}
         <button
+          onMouseDown={(e) => e.preventDefault()}
           onClick={() => applyFormat('bold')}
           className="p-1.5 hover:bg-slate-200 rounded text-slate-800 font-bold"
           title="Bold (Ctrl+B)"
@@ -168,6 +208,7 @@ export default function RichTextDocumentEditor({ onBack }) {
           <Bold size={16} />
         </button>
         <button
+          onMouseDown={(e) => e.preventDefault()}
           onClick={() => applyFormat('italic')}
           className="p-1.5 hover:bg-slate-200 rounded text-slate-800 italic"
           title="Italic (Ctrl+I)"
@@ -175,6 +216,7 @@ export default function RichTextDocumentEditor({ onBack }) {
           <Italic size={16} />
         </button>
         <button
+          onMouseDown={(e) => e.preventDefault()}
           onClick={() => applyFormat('underline')}
           className="p-1.5 hover:bg-slate-200 rounded text-slate-800 underline"
           title="Underline (Ctrl+U)"
@@ -205,19 +247,18 @@ export default function RichTextDocumentEditor({ onBack }) {
         <select
           value={fontSize}
           onChange={(e) => {
-            setFontSize(e.target.value);
-            applyFormat('fontSize', '3');
+            applyFontSize(e.target.value);
           }}
           className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-medium focus:outline-none"
         >
-          <option value="10">10</option>
-          <option value="12">12</option>
-          <option value="14">14</option>
-          <option value="16">16</option>
-          <option value="18">18</option>
-          <option value="20">20</option>
-          <option value="24">24</option>
-          <option value="32">32</option>
+          <option value="10">10 px</option>
+          <option value="12">12 px</option>
+          <option value="14">14 px</option>
+          <option value="16">16 px</option>
+          <option value="18">18 px</option>
+          <option value="20">20 px</option>
+          <option value="24">24 px</option>
+          <option value="32">32 px</option>
         </select>
 
         <div className="h-5 w-px bg-slate-300 mx-1" />
@@ -317,43 +358,131 @@ export default function RichTextDocumentEditor({ onBack }) {
         </button>
       </div>
 
-      {/* Main Rich Text Content Editable Sheet Container */}
-      <main className="flex-1 p-8 overflow-y-auto flex justify-center items-start bg-slate-100">
-        <div className="w-[800px] min-h-[950px] bg-white border border-slate-300 rounded-sm shadow-xl p-12 relative">
-          <div
-            ref={editorRef}
-            contentEditable
-            suppressContentEditableWarning
-            className="w-full min-h-[850px] outline-none font-sans text-slate-800 text-sm leading-relaxed"
-            style={{ fontFamily }}
-          >
-            <p className="text-slate-400 italic">
-              Type or paste your document content here... Or click <strong>AI Writer</strong> above to generate a standard agreement draft.
-            </p>
+      {/* Main Rich Text Content Editable Sheet Container (Standard A4: 210mm x 297mm = 794px x 1123px) */}
+      <main className="flex-1 p-6 sm:p-10 overflow-y-auto flex flex-col items-center bg-slate-200/80 print:p-0 print:bg-white">
+        {/* MS Word Horizontal Ruler (Standard A4: 210mm / 794px) */}
+        <div
+          style={{
+            transform: `scale(${zoomLevel / 100})`,
+            transformOrigin: 'top center',
+            transition: 'transform 0.15s ease'
+          }}
+          className="w-[794px] mb-2 bg-slate-100 border border-slate-300 rounded-t-xs shadow-2xs select-none text-[9px] text-slate-500 font-mono flex items-center justify-between px-1 h-5 relative overflow-hidden print:hidden"
+        >
+          {/* Left Margin Shading (1 inch / 25.4mm) */}
+          <div className="absolute left-0 top-0 bottom-0 w-12 bg-slate-200/90 border-r border-slate-300 flex items-center justify-center text-[8px] text-slate-400 font-bold">
+            ◀ L
+          </div>
+          {/* Centered Numbers / Ticks across 210mm */}
+          <div className="flex-1 flex justify-between px-14 text-slate-400 font-medium">
+            <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>10</span><span>11</span><span>12</span><span>13</span><span>14</span><span>15</span><span>16</span><span>17</span><span>18</span>
+          </div>
+          {/* Right Margin Shading */}
+          <div className="absolute right-0 top-0 bottom-0 w-12 bg-slate-200/90 border-l border-slate-300 flex items-center justify-center text-[8px] text-slate-400 font-bold">
+            R ▶
+          </div>
+        </div>
+
+        {/* Authentic A4 Page Sheet Canvas (210mm x 297mm = 794px x 1123px) */}
+        <div
+          style={{
+            transform: `scale(${zoomLevel / 100})`,
+            transformOrigin: 'top center',
+            transition: 'transform 0.15s ease'
+          }}
+          className="w-[794px] min-h-[1123px] max-w-[794px] bg-white border border-slate-300 rounded-xs shadow-[0_4px_30px_rgba(0,0,0,0.18)] p-12 sm:p-14 relative flex flex-col justify-between select-text"
+        >
+          {/* Word Document Header Line */}
+          <div className="border-b border-slate-200 pb-3 mb-6 flex justify-between items-center text-[10px] text-slate-400 font-mono select-none">
+            <span className="font-bold text-slate-600 uppercase tracking-wider">{fileName.replace(/\.pdf$/i, '')}</span>
+            <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded border border-slate-200 font-semibold">
+              A4 Standard • 210 × 297 mm
+            </span>
+          </div>
+
+          {/* Document Content Area */}
+          <div className="flex-1 flex flex-col">
+            <div
+              ref={editorRef}
+              contentEditable
+              suppressContentEditableWarning
+              onInput={updateCounts}
+              onKeyUp={updateCounts}
+              className="w-full min-h-[920px] outline-none font-sans text-slate-800 text-sm leading-relaxed cursor-text"
+              style={{ fontFamily, fontSize: `${fontSize}px` }}
+            >
+              <p className="text-slate-400 italic">
+                Type or paste your document content here... Or click <strong>AI Writer</strong> above to generate a standard agreement draft.
+              </p>
+            </div>
+          </div>
+
+          {/* Word Document Footer Line */}
+          <div className="border-t border-slate-200 pt-3 mt-6 flex justify-between items-center text-[10px] text-slate-400 font-mono select-none">
+            <span>Page 1 of 1 • BexSign Word Document Editor</span>
+            <span>210 × 297 mm • MS Word Standard</span>
           </div>
         </div>
       </main>
 
-      {/* Bottom Footer Bar (Matching Image 2 buttons) */}
-      <footer className="h-16 bg-white border-t border-slate-200 px-8 flex items-center justify-between shrink-0 shadow-md">
-        <div className="flex items-center gap-3">
+      {/* Bottom Status Bar with Word/Char Stats and Zoom (Matching MS Word Status Bar) */}
+      <footer className="h-12 bg-white border-t border-slate-200 px-6 flex items-center justify-between shrink-0 shadow-md text-xs text-slate-600 select-none">
+        <div className="flex items-center gap-4">
           <button
             onClick={handleSaveAndCreate}
-            className="bg-[#2d9d78] hover:bg-[#237d60] text-white px-6 py-2.5 rounded text-sm font-bold transition shadow-xs flex items-center gap-2"
+            className="bg-[#2d9d78] hover:bg-[#237d60] text-white px-4 py-1.5 rounded text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer"
           >
-            <CheckCircle2 size={16} /> Save & Create
+            <CheckCircle2 size={15} /> Save & Create
           </button>
           <button
             onClick={() => {
               alert('Generating PDF preview...');
               handleSaveAndCreate();
             }}
-            className="bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 px-5 py-2.5 rounded text-sm font-semibold transition"
+            className="bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 px-3.5 py-1.5 rounded text-xs font-semibold transition cursor-pointer"
           >
             Preview as PDF
           </button>
+          <div className="h-4 w-px bg-slate-200 mx-1 hidden sm:block" />
+          <span className="hidden sm:inline text-slate-500 font-medium">Page 1 of 1</span>
+          <span className="hidden sm:inline text-slate-300">•</span>
+          <span className="hidden sm:inline text-slate-700 font-semibold">{wordCount} words</span>
+          <span className="hidden md:inline text-slate-300">•</span>
+          <span className="hidden md:inline text-slate-500">{charCount} characters</span>
         </div>
-        <span className="text-xs text-slate-400 font-medium">Bexsign Rich Text Content Editor</span>
+
+        {/* Right: A4 Badge and Zoom Controls */}
+        <div className="flex items-center gap-2.5">
+          <span className="text-[#007355] font-mono text-[10px] font-bold px-2 py-0.5 bg-emerald-50 rounded border border-emerald-200">
+            A4 (210 × 297 mm)
+          </span>
+          <div className="h-4 w-px bg-slate-200 mx-1" />
+          <button
+            type="button"
+            onClick={() => setZoomLevel(prev => Math.max(50, prev - 10))}
+            className="p-1 hover:bg-slate-100 rounded text-slate-600 cursor-pointer"
+            title="Zoom Out"
+          >
+            <ZoomOut size={14} />
+          </button>
+          <span className="font-mono text-[11px] text-slate-600 w-9 text-center">{zoomLevel}%</span>
+          <button
+            type="button"
+            onClick={() => setZoomLevel(prev => Math.min(150, prev + 10))}
+            className="p-1 hover:bg-slate-100 rounded text-slate-600 cursor-pointer"
+            title="Zoom In"
+          >
+            <ZoomIn size={14} />
+          </button>
+          <button
+            type="button"
+            onClick={() => setZoomLevel(100)}
+            className="p-1 hover:bg-slate-100 rounded text-slate-600 cursor-pointer"
+            title="Reset Zoom (100%)"
+          >
+            <Maximize2 size={14} />
+          </button>
+        </div>
       </footer>
     </div>
   );

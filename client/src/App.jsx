@@ -28,6 +28,7 @@ import Integrations from './pages/Integrations';
 import MyProfile from './pages/MyProfile';
 import Settings from './pages/Settings';
 import SignaturesModule from './pages/SignaturesModule';
+import UserManagement from './pages/UserManagement';
 
 export default function App() {
   return (
@@ -74,6 +75,8 @@ export default function App() {
           <Route path="/reports/:tab" element={<Reports />} />
 
           {/* Others & Settings */}
+          <Route path="/users" element={<UserManagement />} />
+          <Route path="/settings/users" element={<UserManagement />} />
           <Route path="/others/:tab" element={<Settings />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/settings/profile" element={<MyProfile />} />

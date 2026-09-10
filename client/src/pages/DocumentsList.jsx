@@ -587,7 +587,8 @@ export default function DocumentsList() {
       isTrashView ||
       !statusFilter ||
       statusFilter === 'all' ||
-      docStatus === statusFilter.toLowerCase();
+      docStatus === statusFilter.toLowerCase() ||
+      ((statusFilter === 'in-progress' || statusFilter === 'in-process' || statusFilter === 'inprogress') && (docStatus === 'in progress' || docStatus === 'in process'));
 
     // Inline column filters (matching BexSign)
     const matchColName = !columnFilters.name || docName.includes(columnFilters.name.toLowerCase());
@@ -598,7 +599,7 @@ export default function DocumentsList() {
     const matchColRecipientName = !columnFilters.recipientName || docRecipientName.includes(columnFilters.recipientName.toLowerCase());
     const matchColSignform = !columnFilters.signform || docSignform.includes(columnFilters.signform.toLowerCase());
     const matchColTemplates = !columnFilters.templates || docTemplates.includes(columnFilters.templates.toLowerCase());
-    const matchColStatus = !columnFilters.status || docStatus.includes(columnFilters.status.toLowerCase());
+    const matchColStatus = !columnFilters.status || docStatus.includes(columnFilters.status.toLowerCase()) || (((columnFilters.status || '').toLowerCase().includes('process') || (columnFilters.status || '').toLowerCase().includes('progress')) && (docStatus.includes('progress') || docStatus.includes('process')));
 
     return (
       matchSearch &&
@@ -1161,9 +1162,9 @@ export default function DocumentsList() {
                             COMPLETED
                           </span>
                         )}
-                        {docStatus === 'IN PROGRESS' && (
+                        {(docStatus === 'IN PROGRESS' || docStatus === 'IN PROCESS') && (
                           <span className="bg-[#d97706] text-white text-[10px] px-2 py-0.5 rounded font-black tracking-wider uppercase inline-block">
-                            IN PROGRESS
+                            IN PROCESS
                           </span>
                         )}
                         {docStatus === 'DRAFT' && (
@@ -1176,7 +1177,7 @@ export default function DocumentsList() {
                             RECALLED
                           </span>
                         )}
-                        {!['COMPLETED', 'IN PROGRESS', 'DRAFT', 'RECALLED'].includes(docStatus) && (
+                        {!['COMPLETED', 'IN PROGRESS', 'IN PROCESS', 'DRAFT', 'RECALLED'].includes(docStatus) && (
                           <span className="bg-slate-200 text-slate-700 text-[10px] px-2 py-0.5 rounded font-black uppercase inline-block">
                             {docStatus}
                           </span>

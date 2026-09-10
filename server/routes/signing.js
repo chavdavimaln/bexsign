@@ -13,27 +13,50 @@ const { sendDocumentCompletedEmail } = require('../utils/emailService');
 router.get('/token/:token', async (req, res) => {
     const { token } = req.params;
     try {
-        // Query recipient by secure token or ID
-        const [recipients] = await db.query(
-            `SELECT r.*, d.document_name as document_title, d.file_path, d.status as document_status 
-             FROM document_recipients r 
-             JOIN documents d ON r.document_id = d.id 
-             WHERE r.secure_token = ? OR r.id = ?`,
-            [token, parseInt(token) || 0]
-        );
+        const queryEmail = (req.query.email || req.query.signerEmail || '').trim().toLowerCase();
+
+        // Query recipient by secure token or ID or matching document + email
+        let recipientQuery = `SELECT r.*, d.document_name as document_title, d.file_path, d.status as document_status 
+                              FROM document_recipients r 
+                              JOIN documents d ON r.document_id = d.id 
+                              WHERE r.secure_token = ? OR r.id = ?`;
+        let recipientParams = [token, parseInt(token) || 0];
+
+        if (queryEmail) {
+            recipientQuery += ` OR (r.document_id = ? AND LOWER(r.email) = ?)`;
+            recipientParams.push(parseInt(token) || 0, queryEmail);
+        }
+
+        const [recipients] = await db.query(recipientQuery, recipientParams);
 
         if (!recipients || recipients.length === 0) {
             // Check if document ID was passed directly
             const docId = parseInt(token) || 1;
             const [docs] = await db.query('SELECT * FROM documents WHERE id = ?', [docId]);
             const doc = docs[0] || {};
-            const email = doc.recipient_email || 'vimal@bexcodeservices.com';
-            const existingSig = await getEmployeeSignatureByEmail(email);
+            const email = queryEmail || doc.recipient_email || 'vimal@bexcodeservices.com';
+            const isCompleted = (doc.status === 'Completed');
+            const existingSig = await getEmployeeSignatureByEmail(email) || await getEmployeeSignatureByEmail('vimal@bexcodeservices.com');
 
             const [fieldRows] = await db.query('SELECT * FROM document_fields WHERE document_id = ? ORDER BY id ASC', [docId]);
             const fieldsList = fieldRows.map(r => {
                 let parsedOpts = {};
                 try { if (r.options) parsedOpts = JSON.parse(r.options); } catch (e) {}
+
+                // Check assignment
+                const fieldAssigneeEmail = (parsedOpts.assigneeEmail || '').toLowerCase();
+                const fieldAssigneeName = (parsedOpts.assignee || '').toLowerCase().trim();
+                let isAssignedToOther = false;
+
+                if (fieldAssigneeEmail && email && fieldAssigneeEmail !== email.toLowerCase()) {
+                    isAssignedToOther = true;
+                }
+
+                // Zoho Sign privacy: mask other recipient's values while document is in process
+                const shouldMask = !isCompleted && isAssignedToOther;
+                let resolvedVal = parsedOpts.value !== undefined ? parsedOpts.value : (r.field_type === 'Sign date' ? new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '');
+                if (shouldMask) resolvedVal = '';
+
                 return {
                     id: r.id,
                     type: r.field_type,
@@ -44,9 +67,13 @@ router.get('/token/:token', async (req, res) => {
                     height: r.height || 40,
                     page: r.page_number || 1,
                     docIndex: parsedOpts.docIndex !== undefined ? parsedOpts.docIndex : ((r.page_number || 1) - 1),
-                    value: parsedOpts.value !== undefined ? parsedOpts.value : (r.field_type === 'Sign date' ? new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : ''),
+                    value: resolvedVal,
                     required: Boolean(r.is_required),
-                    ...parsedOpts
+                    isAssignedToOther,
+                    assignee: parsedOpts.assignee || '',
+                    assigneeEmail: parsedOpts.assigneeEmail || '',
+                    ...parsedOpts,
+                    ...(shouldMask ? { value: '', gridValue: null } : {})
                 };
             });
 
@@ -64,8 +91,8 @@ router.get('/token/:token', async (req, res) => {
                     name: existingSig?.employee_name || 'Vimal Chavda',
                     email: email,
                     role: 'signer',
-                    status: 'pending',
-                    document_title: doc.document_name || 'Employment Agreement.pdf',
+                    status: doc.status || 'In Progress',
+                    document_title: doc.document_name || 'Document 1.pdf',
                     custom_message: doc.custom_message || 'Please review and sign this agreement.',
                     file_path: doc.file_path || '/uploads/sample.pdf'
                 },
@@ -76,6 +103,7 @@ router.get('/token/:token', async (req, res) => {
         }
 
         const recipient = recipients[0];
+        const isCompleted = (recipient.document_status === 'Completed');
         const [fieldRows] = await db.query(
             `SELECT * FROM document_fields WHERE document_id = ? ORDER BY id ASC`,
             [recipient.document_id]
@@ -84,6 +112,28 @@ router.get('/token/:token', async (req, res) => {
         const fieldsList = (fieldRows || []).map(r => {
             let parsedOpts = {};
             try { if (r.options) parsedOpts = JSON.parse(r.options); } catch (e) {}
+
+            // Match assignment against recipient
+            const fieldRecipientId = r.recipient_id || parsedOpts.assigneeId;
+            const fieldAssigneeEmail = (parsedOpts.assigneeEmail || '').toLowerCase();
+            const fieldAssigneeName = (parsedOpts.assignee || '').toLowerCase().trim();
+            const curRecEmail = (recipient.email || '').toLowerCase();
+            const curRecName = (recipient.name || '').toLowerCase().trim();
+
+            let isAssignedToOther = false;
+            if (fieldAssigneeEmail && curRecEmail && fieldAssigneeEmail !== curRecEmail) {
+                isAssignedToOther = true;
+            } else if (fieldRecipientId && String(fieldRecipientId) !== String(recipient.id)) {
+                isAssignedToOther = true;
+            } else if (fieldAssigneeName && curRecName && fieldAssigneeName !== curRecName) {
+                isAssignedToOther = true;
+            }
+
+            // Zoho Sign privacy: mask other recipient's values while document is in process
+            const shouldMask = !isCompleted && isAssignedToOther;
+            let resolvedVal = parsedOpts.value !== undefined ? parsedOpts.value : (r.field_type === 'Sign date' ? new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '');
+            if (shouldMask) resolvedVal = '';
+
             return {
                 id: r.id,
                 type: r.field_type,
@@ -94,9 +144,13 @@ router.get('/token/:token', async (req, res) => {
                 height: r.height || 40,
                 page: r.page_number || 1,
                 docIndex: parsedOpts.docIndex !== undefined ? parsedOpts.docIndex : ((r.page_number || 1) - 1),
-                value: parsedOpts.value !== undefined ? parsedOpts.value : (r.field_type === 'Sign date' ? new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : ''),
+                value: resolvedVal,
                 required: Boolean(r.is_required),
-                ...parsedOpts
+                isAssignedToOther,
+                assignee: parsedOpts.assignee || 'Other Signer',
+                assigneeEmail: parsedOpts.assigneeEmail || '',
+                ...parsedOpts,
+                ...(shouldMask ? { value: '', gridValue: null } : {})
             };
         });
 
@@ -108,7 +162,7 @@ router.get('/token/:token', async (req, res) => {
         });
 
         // Auto-fetch signature from employee_signatures by email
-        const existingSig = await getEmployeeSignatureByEmail(recipient.email);
+        const existingSig = await getEmployeeSignatureByEmail(recipient.email) || await getEmployeeSignatureByEmail('vimal@bexcodeservices.com');
 
         res.json({
             success: true,
@@ -182,13 +236,50 @@ router.post('/submit', async (req, res) => {
 
     try {
         if (docId) {
-            await db.query("UPDATE documents SET status = 'Completed' WHERE id = ?", [docId]);
+            // 1. Mark this specific recipient as signed in document_recipients
+            try {
+                if (email) {
+                    await db.query(
+                        "UPDATE document_recipients SET status = 'signed', signed_at = NOW() WHERE document_id = ? AND (LOWER(email) = LOWER(?) OR id = ?)",
+                        [docId, email, recipientId || 0]
+                    );
+                }
+            } catch (eRec) {
+                console.warn('Recipient status update warning:', eRec.message);
+            }
+
+            // 2. Check if all signers on this document have completed signing
+            let allCompleted = true;
+            try {
+                const [recipients] = await db.query(
+                    "SELECT id, email, status, role FROM document_recipients WHERE document_id = ? AND role = 'signer'",
+                    [docId]
+                );
+                if (recipients && recipients.length > 0) {
+                    const pendingSigners = recipients.filter(r => r.status !== 'signed');
+                    if (pendingSigners.length > 0) {
+                        allCompleted = false;
+                    }
+                }
+            } catch (eCheck) {
+                console.warn('Recipient check error:', eCheck.message);
+            }
+
+            const finalStatus = allCompleted ? 'Completed' : 'In Progress';
+
+            // 3. Update documents table status
+            await db.query(
+                "UPDATE documents SET status = ?, completed_at = ? WHERE id = ?",
+                [finalStatus, allCompleted ? new Date() : null, docId]
+            );
+
+            // 4. Update document_identifiers signature_status
             await markDocumentSigned(docId, {
                 signerName: name,
                 signerEmail: email,
                 signatureImage: signatureData || null,
                 signatureStyle: style,
-                status: 'Completed',
+                status: finalStatus,
                 ipAddress: req.ip || '223.181.69.208'
             });
 
@@ -202,17 +293,19 @@ router.post('/submit', async (req, res) => {
                 });
             } catch (eSig) {}
 
-            // Send completed email
-            try {
-                const [docs] = await db.query('SELECT * FROM documents WHERE id = ?', [docId]);
-                const docTitle = docs[0]?.document_name || 'Document';
-                await sendDocumentCompletedEmail({
-                    to: email,
-                    documentName: docTitle,
-                    senderEmail: 'manu.yadav@oladigital.health'
-                });
-            } catch (eMail) {
-                console.warn('Completed email dispatch warning:', eMail.message);
+            // Send completed email ONLY IF all signers have completed
+            if (allCompleted) {
+                try {
+                    const [docs] = await db.query('SELECT * FROM documents WHERE id = ?', [docId]);
+                    const docTitle = docs[0]?.document_name || 'Document';
+                    await sendDocumentCompletedEmail({
+                        to: email,
+                        documentName: docTitle,
+                        senderEmail: 'manu.yadav@oladigital.health'
+                    });
+                } catch (eMail) {
+                    console.warn('Completed email dispatch warning:', eMail.message);
+                }
             }
         }
 

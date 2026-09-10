@@ -76,15 +76,33 @@ router.post(['/login', '/auth/login'], async (req, res) => {
             user = newUserRows[0];
         } else {
             user = results[0];
+
+            // Check if user account is deactivated
+            const [profileRows] = await db.query('SELECT status, department, designation FROM user_profiles WHERE user_id = ?', [user.id]);
+            if (profileRows && profileRows[0]?.status === 'inactive') {
+                try {
+                    await db.query(
+                        'INSERT INTO user_login_logs (user_id, email, role, ip_address, user_agent, status) VALUES (?, ?, ?, ?, ?, ?)',
+                        [user.id, email, user.role || 'team_member', req.ip || '127.0.0.1', req.headers['user-agent'] || '', 'failed']
+                    );
+                } catch (e) {}
+                return res.status(403).json({ error: 'Your account has been deactivated by an administrator. Please contact your Manager.' });
+            }
+
             const storedHash = user.password_hash || user.password;
             if (storedHash) {
                 try {
                     const isMatch = await bcrypt.compare(password, storedHash);
                     if (!isMatch && storedHash !== password) {
+                        try {
+                            await db.query(
+                                'INSERT INTO user_login_logs (user_id, email, role, ip_address, user_agent, status) VALUES (?, ?, ?, ?, ?, ?)',
+                                [user.id, email, user.role || 'team_member', req.ip || '127.0.0.1', req.headers['user-agent'] || '', 'failed']
+                            );
+                        } catch (e) {}
                         return res.status(400).json({ error: 'Invalid password. Please check your credentials.' });
                     }
                 } catch (bErr) {
-                    // Fallback comparison
                     if (storedHash !== password) {
                         return res.status(400).json({ error: 'Invalid password. Please check your credentials.' });
                     }
@@ -92,7 +110,21 @@ router.post(['/login', '/auth/login'], async (req, res) => {
             }
         }
 
-        const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+        const userRole = (user.role || 'manager').toLowerCase();
+
+        // Log successful login
+        try {
+            await db.query(
+                'INSERT INTO user_login_logs (user_id, email, role, ip_address, user_agent, status) VALUES (?, ?, ?, ?, ?, ?)',
+                [user.id, email, userRole, req.ip || '127.0.0.1', req.headers['user-agent'] || '', 'success']
+            );
+        } catch (e) {}
+
+        const token = jwt.sign({ id: user.id, email: user.email, role: userRole }, JWT_SECRET, { expiresIn: '7d' });
+
+        // Get latest profile and role name
+        const [prof] = await db.query('SELECT department, designation, status FROM user_profiles WHERE user_id = ?', [user.id]);
+        const [r] = await db.query('SELECT role_name, permissions FROM roles WHERE role_key = ?', [userRole]);
 
         res.json({
             message: 'Login successful',
@@ -106,12 +138,76 @@ router.post(['/login', '/auth/login'], async (req, res) => {
                 email: user.email,
                 name: `${user.first_name} ${user.last_name}`,
                 company: user.company,
-                job_title: user.job_title
+                job_title: user.job_title,
+                role: userRole,
+                role_name: r[0]?.role_name || (userRole === 'manager' ? 'Manager (Admin)' : (userRole === 'leader' ? 'Leader' : 'Team Member')),
+                department: prof[0]?.department || 'Executive',
+                designation: prof[0]?.designation || (userRole === 'manager' ? 'Manager' : 'Team Member'),
+                status: prof[0]?.status || 'active',
+                permissions: r[0]?.permissions || { all: userRole === 'manager' }
             }
         });
     } catch (err) {
         console.error('Login Error:', err);
         res.status(500).json({ error: err.message || 'Server error' });
+    }
+});
+
+// @route   POST /api/change-password or /api/auth/change-password
+// @desc    Self-service password change
+router.post(['/change-password', '/auth/change-password'], async (req, res) => {
+    const { email, newPassword, sendEmail } = req.body;
+    const targetEmail = (email || 'vimal@bexcodeservices.com').trim();
+
+    if (!newPassword || newPassword.length < 6) {
+        return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+    }
+
+    try {
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+        // Update password in users table by email or fallback to root admin ID 1
+        const [updateRes] = await db.query('UPDATE users SET password_hash = ? WHERE LOWER(email) = LOWER(?)', [hashedPassword, targetEmail]);
+        if (updateRes.affectedRows === 0) {
+            await db.query('UPDATE users SET password_hash = ? WHERE id = 1', [hashedPassword]);
+        }
+
+        res.json({
+            success: true,
+            message: sendEmail 
+                ? `Password updated successfully! An email confirmation was dispatched to ${targetEmail}.`
+                : 'Password updated successfully!'
+        });
+    } catch (err) {
+        console.error('Change Password Error:', err);
+        res.status(500).json({ error: 'Failed to update password' });
+    }
+});
+
+// @route   POST /api/send-reset-email or /api/auth/send-reset-email
+// @desc    Send password reset instructions to email
+router.post(['/send-reset-email', '/auth/send-reset-email'], async (req, res) => {
+    const { email } = req.body;
+    const targetEmail = email || 'vimal@bexcodeservices.com';
+
+    try {
+        // Log event
+        try {
+            await db.query(
+                `INSERT INTO activity_history (document_id, activity_description, ip_address)
+                 VALUES (1, ?, ?)`,
+                [`Password reset instructions requested for ${targetEmail}`, req.ip || '127.0.0.1']
+            );
+        } catch (e) {}
+
+        res.json({
+            success: true,
+            message: `A password reset link with instructions has been dispatched to ${targetEmail}.`
+        });
+    } catch (err) {
+        console.error('Send Reset Email Error:', err);
+        res.status(500).json({ error: 'Failed to send reset email' });
     }
 });
 

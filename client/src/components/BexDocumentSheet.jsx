@@ -1,5 +1,5 @@
 import React from 'react';
-import { Copy, PenTool, CheckCircle2, Calendar } from 'lucide-react';
+import { Copy, PenTool, CheckCircle2, Calendar, Lock } from 'lucide-react';
 import SignatureStamp from './SignatureStamp';
 import { generateBexsignId } from '../utils/documentId';
 import { getDefaultDocContent } from '../utils/documentDefaults';
@@ -43,7 +43,7 @@ export default function BexDocumentSheet({
   return (
     <div
       id="printable-document-sheet"
-      className={`bg-white border border-slate-300 rounded-lg max-w-2xl w-full min-h-[720px] p-8 sm:p-12 shadow-md flex flex-col justify-between text-slate-800 font-sans print:border-none print:shadow-none print:p-8 print:max-w-none print:w-full print:min-h-0 print:m-0 select-text ${className}`}
+      className={`bg-white border border-slate-300 rounded-xs w-[794px] min-h-[1123px] max-w-[794px] p-10 sm:p-14 shadow-lg flex flex-col justify-between text-slate-800 font-sans print:border-none print:shadow-none print:p-8 print:max-w-none print:w-full print:min-h-0 print:m-0 select-text ${className}`}
     >
       <div className="space-y-6">
         {/* Top Header: BexSign Document ID */}
@@ -74,6 +74,15 @@ export default function BexDocumentSheet({
                 ? documentText
                 : getDefaultDocContent(documentName, documentText);
 
+              if (/<[a-z][\s\S]*>/i.test(fullContent)) {
+                return (
+                  <div
+                    className="text-xs text-slate-700 leading-relaxed font-sans space-y-2"
+                    dangerouslySetInnerHTML={{ __html: fullContent }}
+                  />
+                );
+              }
+
               const paragraphs = fullContent.split(/\n\n+/);
               return paragraphs.map((para, pIdx) => {
                 const trimmed = para.trim();
@@ -98,6 +107,52 @@ export default function BexDocumentSheet({
           {placedFields && placedFields.length > 0 ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
               {placedFields.map((field) => {
+                const isOtherSignerField = !isCompleted && Boolean(
+                  field.isAssignedToOther ||
+                  (field.assigneeEmail && signerEmail && field.assigneeEmail.toLowerCase() !== signerEmail.toLowerCase())
+                );
+
+                if (isOtherSignerField) {
+                  if (field.type === 'Signature' || field.type === 'Initial') {
+                    return (
+                      <div key={field.id} id={`doc-field-${field.id}`} className="relative sm:col-span-2 p-4 bg-slate-50 border border-dashed border-slate-300 rounded-xl max-w-sm shadow-2xs">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                            {field.label || field.type || 'Signature'}
+                          </span>
+                          <span className="text-[9px] font-bold bg-slate-200 text-slate-600 px-2 py-0.5 rounded flex items-center gap-1">
+                            <Lock size={10} /> Other Signer
+                          </span>
+                        </div>
+                        <p className="text-xs font-semibold text-slate-600">
+                          Assigned to: <strong className="text-slate-800">{field.assignee || 'Another Signer'}</strong>
+                        </p>
+                        <p className="text-[10px] text-slate-400 mt-1">
+                          • Confidential • Masked until all signers complete
+                        </p>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div key={field.id} id={`doc-field-${field.id}`} className="w-full sm:w-64 p-3.5 bg-slate-50 border border-dashed border-slate-300 rounded-xl shadow-2xs">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                          {field.label || field.type}
+                        </span>
+                        <span className="text-[9px] font-bold bg-slate-200 text-slate-600 px-2 py-0.5 rounded flex items-center gap-1">
+                          <Lock size={10} /> Other Signer
+                        </span>
+                      </div>
+                      <p className="text-xs font-semibold text-slate-600">
+                        Assigned to: <strong className="text-slate-800">{field.assignee || 'Another Signer'}</strong>
+                      </p>
+                      <p className="text-[10px] text-slate-400 mt-1">
+                        • Confidential • Masked during signing
+                      </p>
+                    </div>
+                  );
+                }
+
                 if (field.type === 'Signature' || field.type === 'Initial') {
                   return (
                     <div key={field.id} id={`doc-field-${field.id}`} className="relative sm:col-span-2">
@@ -237,7 +292,10 @@ export default function BexDocumentSheet({
 
                 if (field.type === 'Split text') {
                   const count = field.charCount || 10;
-                  const charArray = field.gridValue || (field.value ? String(field.value).split('') : ['s','-','1']);
+                  const charArray = Array.isArray(field.gridValue) && field.gridValue.length > 0
+                    ? field.gridValue
+                    : (field.value !== undefined && field.value !== null ? String(field.value).split('') : ['s','-','1']);
+
                   return (
                     <div key={field.id} id={`doc-field-${field.id}`} className="w-full sm:col-span-2">
                       <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 print:text-slate-600">
@@ -249,16 +307,51 @@ export default function BexDocumentSheet({
                           {Array.from({ length: count }).map((_, cIdx) => (
                             <input
                               key={cIdx}
+                              id={`split-cell-${field.id}-${cIdx}`}
                               type="text"
                               maxLength={1}
-                              value={charArray[cIdx] || ''}
+                              value={charArray[cIdx] !== undefined ? charArray[cIdx] : ''}
                               onChange={(e) => {
-                                const newGrid = [...charArray];
-                                newGrid[cIdx] = e.target.value;
-                                onUpdateField && onUpdateField(field.id, newGrid.join(''));
+                                const val = e.target.value;
+                                const newGrid = Array.from({ length: count }, (_, i) => charArray[i] !== undefined ? charArray[i] : '');
+                                newGrid[cIdx] = val;
+                                onUpdateField && onUpdateField(field.id, newGrid.join(''), newGrid);
+
+                                if (val && cIdx < count - 1) {
+                                  const nextInput = document.getElementById(`split-cell-${field.id}-${cIdx + 1}`);
+                                  if (nextInput) {
+                                    nextInput.focus();
+                                    nextInput.select();
+                                  }
+                                }
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Backspace' && (!charArray[cIdx] || charArray[cIdx] === '') && cIdx > 0) {
+                                  const prevInput = document.getElementById(`split-cell-${field.id}-${cIdx - 1}`);
+                                  if (prevInput) {
+                                    prevInput.focus();
+                                    prevInput.select();
+                                  }
+                                } else if (e.key === 'ArrowRight' && cIdx < count - 1) {
+                                  const nextInput = document.getElementById(`split-cell-${field.id}-${cIdx + 1}`);
+                                  if (nextInput) nextInput.focus();
+                                } else if (e.key === 'ArrowLeft' && cIdx > 0) {
+                                  const prevInput = document.getElementById(`split-cell-${field.id}-${cIdx - 1}`);
+                                  if (prevInput) prevInput.focus();
+                                }
+                              }}
+                              onPaste={(e) => {
+                                e.preventDefault();
+                                const pasted = e.clipboardData.getData('text') || '';
+                                if (!pasted) return;
+                                const newGrid = Array.from({ length: count }, (_, i) => charArray[i] !== undefined ? charArray[i] : '');
+                                for (let p = 0; p < pasted.length && (cIdx + p) < count; p++) {
+                                  newGrid[cIdx + p] = pasted[p];
+                                }
+                                onUpdateField && onUpdateField(field.id, newGrid.join(''), newGrid);
                               }}
                               style={{ width: `${field.width || 22}px`, height: `${field.height || 26}px` }}
-                              className="border-r last:border-r-0 border-sky-300 text-center bg-sky-50/40 text-[11px] font-bold text-sky-900 focus:bg-sky-100 focus:outline-none"
+                              className="border-r last:border-r-0 border-sky-300 text-center bg-sky-50/40 text-[11px] font-bold text-sky-900 focus:bg-sky-100 focus:outline-none transition selection:bg-sky-200"
                             />
                           ))}
                         </div>
