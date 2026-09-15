@@ -22,6 +22,7 @@ import {
   RotateCcw,
   RotateCw,
   Plus,
+  Minus,
   CheckCircle2,
   FileText,
   ZoomIn,
@@ -35,6 +36,7 @@ export default function RichTextDocumentEditor({ onBack }) {
   const [fileName, setFileName] = useState('Document 1');
   const [fontFamily, setFontFamily] = useState('Verdana');
   const [fontSize, setFontSize] = useState('14');
+  const [fontSizeInput, setFontSizeInput] = useState('14');
   const [textColor, setTextColor] = useState('#0f172a');
   const [bgColor, setBgColor] = useState('#ffffff');
   const [zoomLevel, setZoomLevel] = useState(100);
@@ -44,33 +46,111 @@ export default function RichTextDocumentEditor({ onBack }) {
   const [statusMsg, setStatusMsg] = useState('');
 
   const editorRef = useRef(null);
+  const savedSelectionRef = useRef(null);
+
+  const saveSelection = () => {
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0 && editorRef.current && editorRef.current.contains(sel.anchorNode)) {
+      savedSelectionRef.current = sel.getRangeAt(0).cloneRange();
+    }
+  };
+
+  const restoreSelection = () => {
+    if (savedSelectionRef.current) {
+      const sel = window.getSelection();
+      if (sel) {
+        sel.removeAllRanges();
+        sel.addRange(savedSelectionRef.current);
+      }
+    }
+  };
 
   // Formatting helpers
   const applyFormat = (command, value = null) => {
+    if (editorRef.current) editorRef.current.focus();
+    restoreSelection();
     document.execCommand(command, false, value);
+    saveSelection();
   };
 
   const applyFontSize = (sizeInput) => {
-    const numericSize = parseInt(String(sizeInput).replace(/[^0-9]/g, ''), 10);
-    if (!numericSize) return;
+    const rawNum = parseInt(String(sizeInput).replace(/[^0-9]/g, ''), 10);
+    if (!rawNum || isNaN(rawNum)) return;
+    const numericSize = Math.max(8, Math.min(96, rawNum));
     const pxSize = `${numericSize}px`;
 
-    document.execCommand('styleWithCSS', false, false);
-    document.execCommand('fontSize', false, '7');
-    if (editorRef.current) {
-      const fonts = editorRef.current.querySelectorAll('font[size="7"]');
-      fonts.forEach(f => {
-        const span = document.createElement('span');
-        span.style.fontSize = pxSize;
-        while (f.firstChild) span.appendChild(f.firstChild);
-        f.parentNode.replaceChild(span, f);
-      });
-      const spans = editorRef.current.querySelectorAll('span[style*="xxx-large"], span[style*="-webkit-xxx-large"]');
-      spans.forEach(s => {
-        s.style.fontSize = pxSize;
-      });
-    }
     setFontSize(String(numericSize));
+    setFontSizeInput(String(numericSize));
+
+    if (editorRef.current) editorRef.current.focus();
+    restoreSelection();
+
+    let sel = window.getSelection();
+    let range = null;
+    if (sel && sel.rangeCount > 0) {
+      range = sel.getRangeAt(0);
+    }
+
+    const isInsideEditor = range && editorRef.current && editorRef.current.contains(range.commonAncestorContainer);
+
+    if (isInsideEditor && !range.collapsed) {
+      document.execCommand('styleWithCSS', false, false);
+      document.execCommand('fontSize', false, '7');
+
+      const createdSpans = [];
+      if (editorRef.current) {
+        const query = 'font[size="7"], font[size="+7"], span[style*="-webkit-xxx-large"], span[style*="xxx-large"]';
+        const matched = Array.from(editorRef.current.querySelectorAll(query));
+        if (matched.length > 0) {
+          matched.forEach((el) => {
+            const span = document.createElement('span');
+            span.style.fontSize = pxSize;
+            span.querySelectorAll('*').forEach((child) => {
+              if (child.style && child.style.fontSize) child.style.fontSize = '';
+              if (child.tagName === 'FONT') child.removeAttribute('size');
+            });
+            while (el.firstChild) {
+              span.appendChild(el.firstChild);
+            }
+            el.parentNode.replaceChild(span, el);
+            createdSpans.push(span);
+          });
+        }
+      }
+
+      if (createdSpans.length > 0) {
+        try {
+          const newRange = document.createRange();
+          newRange.setStartBefore(createdSpans[0]);
+          newRange.setEndAfter(createdSpans[createdSpans.length - 1]);
+          sel.removeAllRanges();
+          sel.addRange(newRange);
+          savedSelectionRef.current = newRange.cloneRange();
+        } catch (e) {
+          saveSelection();
+        }
+      }
+    } else if (isInsideEditor && range.collapsed) {
+      let container = range.startContainer;
+      if (container && container.nodeType === 3) {
+        container = container.parentNode;
+      }
+      const block = container ? container.closest('p, h1, h2, h3, h4, h5, h6, li, td, th') : null;
+      if (block && block !== editorRef.current) {
+        block.style.fontSize = pxSize;
+        block.querySelectorAll('span, font').forEach((child) => {
+          if (child.style && child.style.fontSize) child.style.fontSize = '';
+          if (child.tagName === 'FONT') child.removeAttribute('size');
+        });
+      } else if (container && container !== editorRef.current) {
+        container.style.fontSize = pxSize;
+      } else if (editorRef.current) {
+        editorRef.current.style.fontSize = pxSize;
+      }
+      saveSelection();
+    } else if (editorRef.current) {
+      editorRef.current.style.fontSize = pxSize;
+    }
   };
 
   const updateCounts = () => {
@@ -243,23 +323,96 @@ export default function RichTextDocumentEditor({ onBack }) {
           <option value="Times New Roman">Times New Roman</option>
         </select>
 
-        {/* Font Size Dropdown */}
-        <select
-          value={fontSize}
-          onChange={(e) => {
-            applyFontSize(e.target.value);
-          }}
-          className="px-2 py-1 bg-white border border-slate-300 rounded text-xs font-medium focus:outline-none"
-        >
-          <option value="10">10 px</option>
-          <option value="12">12 px</option>
-          <option value="14">14 px</option>
-          <option value="16">16 px</option>
-          <option value="18">18 px</option>
-          <option value="20">20 px</option>
-          <option value="24">24 px</option>
-          <option value="32">32 px</option>
-        </select>
+        {/* Font Size Controls */}
+        <div className="flex items-center gap-0.5">
+          <button
+            type="button"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              saveSelection();
+            }}
+            onClick={() => {
+              const curr = parseInt(fontSizeInput || fontSize || '14', 10);
+              const next = Math.max(8, curr - 1);
+              applyFontSize(next);
+            }}
+            className="p-1 hover:bg-slate-200 rounded text-slate-700 w-6 h-6 flex items-center justify-center border border-slate-300"
+            title="Decrease Font Size"
+          >
+            <Minus size={12} />
+          </button>
+
+          <input
+            type="text"
+            value={fontSizeInput}
+            onChange={(e) => setFontSizeInput(e.target.value)}
+            onMouseDown={() => saveSelection()}
+            onFocus={() => saveSelection()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                applyFontSize(fontSizeInput);
+                e.target.blur();
+              } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                const curr = parseInt(fontSizeInput || fontSize || '14', 10);
+                applyFontSize(Math.min(96, curr + 1));
+              } else if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                const curr = parseInt(fontSizeInput || fontSize || '14', 10);
+                applyFontSize(Math.max(8, curr - 1));
+              }
+            }}
+            onBlur={() => {
+              const rawNum = parseInt(String(fontSizeInput).replace(/[^0-9]/g, ''), 10);
+              if (rawNum && !isNaN(rawNum)) {
+                applyFontSize(rawNum);
+              } else {
+                setFontSizeInput(fontSize);
+              }
+            }}
+            className="w-8 text-center text-xs font-semibold py-1 border border-slate-300 rounded focus:outline-none"
+            title="Type font size in px and press Enter"
+          />
+
+          <select
+            value={fontSize}
+            onChange={(e) => {
+              applyFontSize(e.target.value);
+            }}
+            className="px-1 py-1 bg-white border border-slate-300 rounded text-xs font-medium focus:outline-none cursor-pointer"
+          >
+            <option value="8">8 px</option>
+            <option value="10">10 px</option>
+            <option value="12">12 px</option>
+            <option value="14">14 px</option>
+            <option value="16">16 px</option>
+            <option value="18">18 px</option>
+            <option value="20">20 px</option>
+            <option value="24">24 px</option>
+            <option value="28">28 px</option>
+            <option value="32">32 px</option>
+            <option value="36">36 px</option>
+            <option value="48">48 px</option>
+          </select>
+
+          <button
+            type="button"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              saveSelection();
+            }}
+            onClick={() => {
+              const curr = parseInt(fontSizeInput || fontSize || '14', 10);
+              const next = Math.min(96, curr + 1);
+              applyFontSize(next);
+            }}
+            className="p-1 hover:bg-slate-200 rounded text-slate-700 w-6 h-6 flex items-center justify-center border border-slate-300"
+            title="Increase Font Size"
+          >
+            <Plus size={12} />
+          </button>
+        </div>
 
         <div className="h-5 w-px bg-slate-300 mx-1" />
 

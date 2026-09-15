@@ -4,7 +4,7 @@ const conn = mysql.createConnection({
   host: 'localhost',
   user: 'root',
   password: '',
-  database: 'db_bex_signature',
+  database: 'db_bex_sign',
   multipleStatements: true
 });
 

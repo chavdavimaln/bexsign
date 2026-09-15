@@ -82,7 +82,7 @@ function dataUrlToJpegBytes(dataUrl) {
  * Generate and download a certified BexSign PDF document
  * with authentic signature stamp, vector handwritten stroke or actual drawn/uploaded signature image.
  */
-export async function generateAndDownloadPdf({
+export async function generatePdfBlob({
   documentName = 'Document 1.pdf',
   documentText = 'check the document for signature',
   docId = 1,
@@ -965,6 +965,34 @@ startxref
   }
 
   const blob = new Blob(blobParts, { type: 'application/pdf' });
+  return { blob, cleanFileName };
+}
+
+/**
+ * Generate PDF and return base64 string + clean filename for email attachment
+ */
+export async function generatePdfBase64(options) {
+  const { blob, cleanFileName } = await generatePdfBlob(options);
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      try {
+        const base64 = reader.result.split(',')[1];
+        resolve({ base64, filename: cleanFileName });
+      } catch (err) {
+        reject(err);
+      }
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
+ * Generate PDF and trigger browser file download
+ */
+export async function generateAndDownloadPdf(options) {
+  const { blob, cleanFileName } = await generatePdfBlob(options);
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;

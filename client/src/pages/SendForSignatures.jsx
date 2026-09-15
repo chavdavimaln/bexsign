@@ -24,16 +24,109 @@ import {
   Edit3,
   PenTool,
   RotateCw,
-  Copy
+  Copy,
+  ChevronUp,
+  Loader2,
+  AlertCircle
 } from 'lucide-react';
 import { showPopupAlert } from '../components/GlobalAlertModal';
 import { getDefaultDocContent, DEFAULT_DOCUMENT_TEXTS } from '../utils/documentDefaults';
+
+const API_BASE = 'http://localhost:5000/api';
+// Zoho Sign limits
+const MAX_RECIPIENTS = 25;
+const MAX_DOCUMENTS = 40;
+const MAX_FILE_SIZE = 25 * 1024 * 1024;
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const SIGNING_ROLE_LABELS = ['Needs to sign', 'In-person signer', 'Approver'];
+const AUTOSAVE_DELAY_MS = 1500;
+
+function getCurrentUser() {
+  try {
+    const u = JSON.parse(localStorage.getItem('user') || 'null');
+    if (u && u.email) {
+      const fullName = u.name || `${u.firstName || u.first_name || ''} ${u.lastName || u.last_name || ''}`.trim();
+      return { id: u.id || 1, email: u.email, name: fullName || u.email.split('@')[0] };
+    }
+  } catch (e) {}
+  return { id: 1, email: 'vimal@bexcodeservices.com', name: 'Vimal Chavda' };
+}
+
+function toRoleLabel(role) {
+  const low = String(role || '').toLowerCase();
+  if (low.includes('approv')) return 'Approver';
+  if (low.includes('in-person') || low.includes('inperson')) return 'In-person signer';
+  if (low.includes('copy') || low.includes('view') || low === 'cc') return 'Receives a copy';
+  return 'Needs to sign';
+}
+
+function newUploadKey(seed) {
+  return `${seed || 'doc'}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+}
+
+function cleanRecipientList(list, { validOnly = false } = {}) {
+  return (list || [])
+    .filter((r) => r.email && r.email.trim() && (!validOnly || EMAIL_PATTERN.test(r.email.trim())))
+    .map((r, idx) => ({
+      email: r.email.trim(),
+      name: r.name && r.name.trim() ? r.name.trim() : r.email.trim().split('@')[0],
+      role: r.role || 'Needs to sign',
+      deliveryMode: r.deliveryMode || 'Email',
+      privateNote: r.privateNote || '',
+      signingOrder: idx + 1
+    }));
+}
+
+function buildSnapshotKey(state) {
+  return JSON.stringify({
+    docs: (state.documentsList || []).map((d) => [d.name, d.documentText, d.fileId || null, d.file ? d.uploadKey : null]),
+    recipients: (state.recipients || []).map((r) => [r.email, r.name, r.role, r.deliveryMode, r.privateNote]),
+    settings: [
+      state.sendInOrder, state.daysToComplete, state.agreementValidUntil, state.documentType, state.folder,
+      state.description, state.allowComments, state.autoReminders, state.reminderEveryDays, state.noteToAll
+    ]
+  });
+}
+
+function clearDraftCache(docId) {
+  ['documents', 'recipients', 'fields_by_doc', 'fields', 'is_new', 'settings', 'extra_pages'].forEach((key) => {
+    localStorage.removeItem(`bexsign_doc_${docId}_${key}`);
+  });
+  localStorage.removeItem('bexsign_draft_documents');
+}
+
+function DraftSaveIndicator({ saveState, isDraft }) {
+  if (!isDraft) return null;
+  if (saveState.status === 'saving') {
+    return (
+      <span className="text-[11px] font-semibold text-slate-500 flex items-center gap-1.5">
+        <Loader2 size={12} className="animate-spin" /> Saving draft...
+      </span>
+    );
+  }
+  if (saveState.status === 'saved') {
+    return (
+      <span className="text-[11px] font-semibold text-emerald-700 flex items-center gap-1.5">
+        <CheckCircle2 size={12} /> Draft saved{saveState.at ? ` at ${saveState.at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}
+      </span>
+    );
+  }
+  if (saveState.status === 'error') {
+    return (
+      <span className="text-[11px] font-semibold text-red-600 flex items-center gap-1.5" title={saveState.error}>
+        <AlertCircle size={12} /> Draft not saved: {saveState.error}
+      </span>
+    );
+  }
+  return <span className="text-[11px] font-medium text-slate-400">Changes are saved as a draft automatically</span>;
+}
 
 export default function SendForSignatures() {
   const navigate = useNavigate();
   const { id } = useParams();
   const location = useLocation();
   const fileInputRef = useRef(null);
+  const [currentUser] = useState(getCurrentUser);
   const [currentCreatedId, setCurrentCreatedId] = useState(id ? parseInt(id) : null);
 
   // Multi-Document State (Pages 4 & 5)
@@ -45,6 +138,7 @@ export default function SendForSignatures() {
         if (Array.isArray(parsed) && parsed.length > 0) {
           return parsed.map((d, idx) => ({
             ...d,
+            file: null,
             id: d.id || Date.now() + idx,
             documentText: d.documentText || getDefaultDocContent(d.name, d.customMessage)
           }));
@@ -80,11 +174,11 @@ export default function SendForSignatures() {
 
   // Recipient State
   const [sendInOrder, setSendInOrder] = useState(true);
-  const [recipients, setRecipients] = useState([
+  const [recipients, setRecipients] = useState(() => [
     {
       id: 1,
-      email: 'vimal@bexcodeservices.com',
-      name: 'Vimal Chavda',
+      email: currentUser.email,
+      name: currentUser.name,
       role: 'Needs to sign',
       deliveryMode: 'Email',
       auth: 'Email OTP',
@@ -107,6 +201,44 @@ export default function SendForSignatures() {
   const [autoReminders, setAutoReminders] = useState(true);
   const [reminderEveryDays, setReminderEveryDays] = useState('5');
   const [noteToAll, setNoteToAll] = useState('');
+
+  // Draft State (Zoho Sign: a request stays a Draft until it is sent or discarded)
+  const [requestStatus, setRequestStatus] = useState(id ? null : 'Draft');
+  const [saveState, setSaveState] = useState({ status: 'idle', at: null, error: '' });
+  const [showDiscardModal, setShowDiscardModal] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [dragRecipientIndex, setDragRecipientIndex] = useState(null);
+  const [armedDragIndex, setArmedDragIndex] = useState(null);
+  const draftIdRef = useRef(id ? parseInt(id) : null);
+  const savePromiseRef = useRef(null);
+  const lastSavedKeyRef = useRef(null);
+  const skipNextAutosaveRef = useRef(true);
+  const discardedRef = useRef(false);
+  const saveDraftRef = useRef(null);
+  const latestRef = useRef({});
+
+  const isDraftRequest = requestStatus === 'Draft';
+  latestRef.current = {
+    documentsList, recipients, sendInOrder, daysToComplete, agreementValidUntil, documentType, folder,
+    description, allowComments, autoReminders, reminderEveryDays, noteToAll, requestStatus
+  };
+  const draftSnapshotKey = buildSnapshotKey(latestRef.current);
+
+  // Per-row recipient problems (duplicate / invalid email) shown as red inputs
+  const recipientIssues = (() => {
+    const counts = {};
+    recipients.forEach((r) => {
+      const key = (r.email || '').trim().toLowerCase();
+      if (key) counts[key] = (counts[key] || 0) + 1;
+    });
+    return recipients.map((r) => {
+      const email = (r.email || '').trim();
+      if (!email) return '';
+      if (counts[email.toLowerCase()] > 1) return 'This email is added more than once';
+      if (email.includes('@') && !EMAIL_PATTERN.test(email)) return 'Enter a valid email address';
+      return '';
+    });
+  })();
 
   // Loading existing draft if id is passed
   useEffect(() => {
@@ -131,29 +263,32 @@ export default function SendForSignatures() {
 
   const fetchDraftData = async () => {
     try {
-      const res = await fetch(`http://localhost:5000/api/documents/${id}`);
+      const res = await fetch(`${API_BASE}/documents/${id}`);
       const data = await res.json();
       if (data.success && data.document) {
         const doc = data.document;
         let loadedDocs = [];
-        try {
-          const savedDocs = localStorage.getItem(`bexsign_doc_${id}_documents`);
-          if (savedDocs) {
-            loadedDocs = JSON.parse(savedDocs);
-          }
-        } catch (e) {}
 
-        if (!loadedDocs || loadedDocs.length === 0) {
-          if (doc.files && Array.isArray(doc.files) && doc.files.length > 0) {
-            loadedDocs = doc.files.map((f, i) => ({
-              id: f.id || i + 1,
-              name: f.file_name || `Document ${i + 1}.pdf`,
-              pages: 1,
-              status: 'Ready',
-              documentText: f.document_text || getDefaultDocContent(f.file_name, doc.custom_message),
-              customMessage: doc.custom_message || 'check the document for signature'
-            }));
-          } else {
+        if (doc.files && Array.isArray(doc.files) && doc.files.length > 0) {
+          // Server documents are the source of truth (they carry the file ids used for field mapping)
+          loadedDocs = doc.files.map((f, i) => ({
+            id: f.id || i + 1,
+            fileId: f.id || null,
+            name: f.file_name || `Document ${i + 1}.pdf`,
+            pages: 1,
+            status: 'Ready',
+            file: null,
+            filePath: f.file_path || null,
+            fileSize: f.file_size ? `${f.file_size} KB` : undefined,
+            documentText: f.document_text || getDefaultDocContent(f.file_name, doc.custom_message),
+            customMessage: doc.custom_message || 'check the document for signature'
+          }));
+        } else {
+          try {
+            const savedDocs = localStorage.getItem(`bexsign_doc_${id}_documents`);
+            if (savedDocs) loadedDocs = JSON.parse(savedDocs);
+          } catch (e) {}
+          if (!loadedDocs || loadedDocs.length === 0) {
             const initialDocName = doc.document_name || doc.title || 'My doc vimal 2.pdf';
             loadedDocs = [
               {
@@ -166,92 +301,300 @@ export default function SendForSignatures() {
                 customMessage: doc.custom_message || 'check the document for signature'
               }
             ];
+          } else {
+            loadedDocs = loadedDocs.map((d) => ({
+              ...d,
+              file: null,
+              documentText: d.documentText || getDefaultDocContent(d.name, d.customMessage)
+            }));
           }
-        } else {
-          loadedDocs = loadedDocs.map((d) => ({
-            ...d,
-            documentText: d.documentText || getDefaultDocContent(d.name, d.customMessage)
-          }));
         }
 
+        skipNextAutosaveRef.current = true;
         setDocumentsList(loadedDocs);
         setActiveDocIndex(0);
         localStorage.setItem(`bexsign_doc_${id}_documents`, JSON.stringify(loadedDocs));
 
-        if (doc.custom_message) {
-          setNoteToAll(doc.custom_message);
+        if (doc.custom_message) setNoteToAll(doc.custom_message);
+        if (doc.signing_order) setSendInOrder(doc.signing_order === 'sequential');
+        if (doc.expiration_days) setDaysToComplete(String(doc.expiration_days));
+        if (doc.reminder_days) setReminderEveryDays(String(doc.reminder_days));
+        if (doc.document_type) setDocumentType(doc.document_type);
+        if (doc.description) setDescription(doc.description);
+        if (doc.validity) setAgreementValidUntil(doc.validity);
+        if (doc.folder_name) setFolder(doc.folder_name);
+        if (doc.auto_reminders !== undefined && doc.auto_reminders !== null) setAutoReminders(Boolean(doc.auto_reminders));
+        if (doc.allow_comments !== undefined && doc.allow_comments !== null) setAllowComments(Boolean(doc.allow_comments));
+
+        const realRecipients = (doc.recipients || []).filter((r) => !r.isFallback);
+        if (realRecipients.length > 0) {
+          const loadedRecs = realRecipients.map((r, idx) => ({
+            id: r.id || idx + 1,
+            serverId: r.id || null,
+            email: r.email || '',
+            name: r.name || (r.email ? r.email.split('@')[0] : `Signer ${idx + 1}`),
+            role: r.role_label || toRoleLabel(r.role),
+            deliveryMode: r.delivery_mode || 'Email',
+            auth: 'Email OTP',
+            passcode: '',
+            privateNote: r.private_note || '',
+            status: r.status
+          }));
+          setRecipients(loadedRecs);
+          localStorage.setItem(`bexsign_doc_${id}_recipients`, JSON.stringify(loadedRecs));
+        } else {
+          const savedRecs = localStorage.getItem(`bexsign_doc_${id}_recipients`);
+          if (savedRecs) {
+            try {
+              const parsed = JSON.parse(savedRecs);
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                setRecipients(parsed);
+              }
+            } catch (e) {}
+          } else if (doc.recipient_email) {
+            setRecipients([
+              {
+                id: 1,
+                email: doc.recipient_email,
+                name: doc.signer_name || doc.recipient_name || doc.recipient_email.split('@')[0],
+                role: 'Needs to sign',
+                deliveryMode: 'Email',
+                auth: 'Email OTP',
+                passcode: '',
+                privateNote: ''
+              }
+            ]);
+          }
         }
-        if (doc.recipient_email) {
-          setRecipients([
-            {
-              id: 1,
-              email: doc.recipient_email,
-              name: doc.signer_name || doc.recipient_name || 'Vimal Chavda',
-              role: 'Needs to sign',
-              deliveryMode: 'Email',
-              auth: 'Email OTP',
-              passcode: '',
-              privateNote: ''
-            }
-          ]);
-        }
+        setRequestStatus(doc.status || 'Draft');
       }
     } catch (e) {
       console.warn('Draft load warning:', e);
+      setRequestStatus((prev) => prev || 'Draft');
     }
+  };
+
+  // ---------------------------------------------------------------------------
+  // Draft persistence (creates the draft on first save, then updates it)
+  // ---------------------------------------------------------------------------
+  const buildRequestFormData = (snapshot, status) => {
+    const docsMeta = snapshot.documentsList.map((d, i) => ({
+      fileId: d.fileId || null,
+      uploadKey: d.file ? d.uploadKey : null,
+      name: (d.name || `Document ${i + 1}.pdf`).trim(),
+      documentText: d.documentText || getDefaultDocContent(d.name, d.customMessage || snapshot.noteToAll),
+      filePath: d.filePath || null
+    }));
+
+    const formData = new FormData();
+    if (draftIdRef.current) formData.append('documentId', draftIdRef.current);
+    formData.append('userId', currentUser.id);
+    formData.append('documentName', docsMeta[0]?.name || 'Untitled document');
+    formData.append('status', status);
+    formData.append('folderName', snapshot.folder || 'None');
+    formData.append('signingOrder', snapshot.sendInOrder ? 'sequential' : 'parallel');
+    formData.append('daysToComplete', snapshot.daysToComplete);
+    formData.append('agreementValidUntil', snapshot.agreementValidUntil);
+    formData.append('documentType', snapshot.documentType);
+    formData.append('description', snapshot.description);
+    formData.append('allowComments', snapshot.allowComments ? '1' : '0');
+    formData.append('autoReminders', snapshot.autoReminders ? '1' : '0');
+    formData.append('reminderDays', snapshot.reminderEveryDays);
+    formData.append('noteToAll', snapshot.noteToAll);
+    formData.append('recipients', JSON.stringify(cleanRecipientList(snapshot.recipients, { validOnly: true })));
+    formData.append('documentsMeta', JSON.stringify(docsMeta));
+    snapshot.documentsList.forEach((d) => {
+      if (d.file && d.uploadKey) {
+        formData.append(`file_${d.uploadKey}`, d.file, d.file.name);
+      }
+    });
+    return formData;
+  };
+
+  const saveDraft = async ({ silent = false, status } = {}) => {
+    if (discardedRef.current) return null;
+    while (savePromiseRef.current) {
+      try {
+        await savePromiseRef.current;
+      } catch (e) {}
+    }
+
+    const snapshot = latestRef.current;
+    const keyAtSend = buildSnapshotKey(snapshot);
+    const statusToSave = status || (snapshot.requestStatus && snapshot.requestStatus !== 'Draft' ? snapshot.requestStatus : 'Draft');
+
+    const run = (async () => {
+      setSaveState({ status: 'saving', at: null, error: '' });
+      const res = await fetch(`${API_BASE}/documents/upload`, {
+        method: 'POST',
+        body: buildRequestFormData(snapshot, statusToSave)
+      });
+      let data = {};
+      try {
+        data = await res.json();
+      } catch (e) {}
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || `Could not save the request (HTTP ${res.status}).`);
+      }
+
+      const newId = data.documentId;
+      const createdNow = draftIdRef.current !== newId;
+      draftIdRef.current = newId;
+      setCurrentCreatedId(newId);
+      if (createdNow && !id) {
+        // Keep the draft on refresh without remounting the page
+        window.history.replaceState(window.history.state, '', `/documents/${newId}/send`);
+      }
+      if (data.document?.status) setRequestStatus(data.document.status);
+
+      // Attach server file ids/paths to the documents that were just uploaded
+      const savedFiles = Array.isArray(data.files) ? data.files : [];
+      const unchangedDuringSave = buildSnapshotKey(latestRef.current) === keyAtSend;
+      const updatedDocs = latestRef.current.documentsList.map((d, idx) => {
+        let match = null;
+        if (d.file && d.uploadKey) match = savedFiles.find((f) => f.uploadKey === d.uploadKey);
+        if (!match && d.fileId) match = savedFiles.find((f) => String(f.id) === String(d.fileId));
+        if (!match && !d.fileId && !d.file && unchangedDuringSave) match = savedFiles[idx] || null;
+        if (!match) return d;
+        const next = { ...d, fileId: match.id, filePath: match.file_path };
+        if (d.file && d.uploadKey && match.uploadKey === d.uploadKey) {
+          next.file = null;
+          next.uploadKey = null;
+        }
+        return next;
+      });
+      latestRef.current = { ...latestRef.current, documentsList: updatedDocs };
+      setDocumentsList(updatedDocs);
+      lastSavedKeyRef.current = unchangedDuringSave ? buildSnapshotKey(latestRef.current) : keyAtSend;
+
+      localStorage.setItem(`bexsign_doc_${newId}_documents`, JSON.stringify(updatedDocs));
+      localStorage.setItem(`bexsign_doc_${newId}_recipients`, JSON.stringify(cleanRecipientList(snapshot.recipients)));
+      localStorage.removeItem('bexsign_draft_documents');
+
+      setSaveState({ status: 'saved', at: new Date(), error: '' });
+      return { documentId: newId, recipients: data.recipients || [], files: savedFiles, documents: updatedDocs };
+    })();
+
+    savePromiseRef.current = run;
+    try {
+      return await run;
+    } catch (err) {
+      setSaveState({ status: 'error', at: null, error: err.message });
+      if (!silent) throw err;
+      return null;
+    } finally {
+      savePromiseRef.current = null;
+    }
+  };
+  saveDraftRef.current = saveDraft;
+
+  // Auto-save: every change to a Draft request is persisted after a short pause
+  useEffect(() => {
+    if (skipNextAutosaveRef.current) {
+      skipNextAutosaveRef.current = false;
+      lastSavedKeyRef.current = draftSnapshotKey;
+      return;
+    }
+    if (requestStatus !== 'Draft' || discardedRef.current || draftSnapshotKey === lastSavedKeyRef.current) return;
+    const timer = setTimeout(() => {
+      saveDraftRef.current?.({ silent: true });
+    }, AUTOSAVE_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [draftSnapshotKey, requestStatus]);
+
+  // Leaving the page without discarding keeps the request as a draft
+  useEffect(() => {
+    const hasUnsavedDraft = () => latestRef.current.requestStatus === 'Draft'
+      && !discardedRef.current
+      && (Boolean(savePromiseRef.current) || buildSnapshotKey(latestRef.current) !== lastSavedKeyRef.current);
+
+    const handleBeforeUnload = (e) => {
+      if (hasUnsavedDraft()) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      if (hasUnsavedDraft() && !savePromiseRef.current) {
+        saveDraftRef.current?.({ silent: true });
+      }
+    };
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // Documents
+  // ---------------------------------------------------------------------------
+  const addFilesToDocuments = async (files) => {
+    if (!files || files.length === 0) return;
+    const tooLarge = files.filter((f) => f.size > MAX_FILE_SIZE);
+    const accepted = files.filter((f) => f.size <= MAX_FILE_SIZE);
+    if (tooLarge.length > 0) {
+      showPopupAlert(`${tooLarge.map((f) => f.name).join(', ')} ${tooLarge.length === 1 ? 'is' : 'are'} larger than 25 MB and cannot be added.`, {
+        title: 'File too large',
+        type: 'warning'
+      });
+    }
+    if (accepted.length === 0) return;
+
+    const newDocs = await Promise.all(
+      accepted.map(async (f, idx) => {
+        let text = '';
+        if (f.name.endsWith('.txt') || f.name.endsWith('.md') || f.type.startsWith('text/')) {
+          try {
+            text = await f.text();
+          } catch (err) {
+            text = getDefaultDocContent(f.name);
+          }
+        } else {
+          text = getDefaultDocContent(f.name);
+        }
+        const cleanName = f.name.endsWith('.pdf') ? f.name : `${f.name.replace(/\.[^/.]+$/, '')}.pdf`;
+        const docId = Date.now() + idx + Math.floor(Math.random() * 1000);
+        return {
+          id: docId,
+          name: cleanName,
+          pages: 1,
+          status: 'Ready',
+          file: f,
+          uploadKey: newUploadKey(docId),
+          fileSize: (f.size / 1024).toFixed(1) + ' KB',
+          documentText: text,
+          customMessage: noteToAll || 'check the document for signature'
+        };
+      })
+    );
+
+    setDocumentsList((prev) => {
+      const isPlaceholderOnly = prev.length === 1 && !prev[0].file && !prev[0].fileId && prev[0].name === 'My doc vimal 2.pdf' && !location.state?.fromCreate;
+      const base = isPlaceholderOnly ? [] : prev;
+      const room = MAX_DOCUMENTS - base.length;
+      if (newDocs.length > room) {
+        showPopupAlert(`A request can contain at most ${MAX_DOCUMENTS} documents. Only the first ${Math.max(room, 0)} file(s) were added.`, {
+          title: 'Document limit',
+          type: 'warning'
+        });
+      }
+      const updated = [...base, ...newDocs.slice(0, Math.max(room, 0))];
+      setActiveDocIndex(Math.max(0, updated.length - 1));
+      return updated;
+    });
+
+    setIsDropdownOpen(false);
   };
 
   const handleFileSelect = async (e) => {
     const files = Array.from(e.target.files || []);
-    if (files.length > 0) {
-      const newDocs = await Promise.all(
-        files.map(async (f, idx) => {
-          let text = '';
-          if (f.name.endsWith('.txt') || f.name.endsWith('.md') || f.type.startsWith('text/')) {
-            try {
-              text = await f.text();
-            } catch (err) {
-              text = getDefaultDocContent(f.name);
-            }
-          } else {
-            text = getDefaultDocContent(f.name);
-          }
-          const cleanName = f.name.endsWith('.pdf') ? f.name : `${f.name.replace(/\.[^/.]+$/, '')}.pdf`;
-          return {
-            id: Date.now() + idx + Math.floor(Math.random() * 1000),
-            name: cleanName,
-            pages: 1,
-            status: 'Ready',
-            file: f,
-            fileSize: (f.size / 1024).toFixed(1) + ' KB',
-            documentText: text,
-            customMessage: noteToAll || 'check the document for signature'
-          };
-        })
-      );
-
-      setDocumentsList((prev) => {
-        let updated;
-        if (prev.length === 1 && !prev[0].file && prev[0].name === 'My doc vimal 2.pdf' && !location.state?.fromCreate) {
-          updated = newDocs;
-        } else {
-          updated = [...prev, ...newDocs];
-        }
-        const activeId = id || currentCreatedId;
-        if (activeId) {
-          localStorage.setItem(`bexsign_doc_${activeId}_documents`, JSON.stringify(updated));
-        }
-        localStorage.setItem('bexsign_draft_documents', JSON.stringify(updated));
-        setActiveDocIndex(updated.length - 1);
-        return updated;
-      });
-
-      setIsDropdownOpen(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
+    await addFilesToDocuments(files);
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handleAddNewDoc = (customTitle = '') => {
+    if (documentsList.length >= MAX_DOCUMENTS) {
+      showPopupAlert(`A request can contain at most ${MAX_DOCUMENTS} documents.`, { title: 'Document limit', type: 'warning' });
+      return;
+    }
     const nextNum = documentsList.length + 1;
     const cleanTitle = customTitle || `Document ${nextNum}.pdf`;
     const newDoc = {
@@ -265,11 +608,6 @@ export default function SendForSignatures() {
     };
     setDocumentsList((prev) => {
       const updated = [...prev, newDoc];
-      const activeId = id || currentCreatedId;
-      if (activeId) {
-        localStorage.setItem(`bexsign_doc_${activeId}_documents`, JSON.stringify(updated));
-      }
-      localStorage.setItem('bexsign_draft_documents', JSON.stringify(updated));
       setActiveDocIndex(updated.length - 1);
       return updated;
     });
@@ -283,7 +621,7 @@ export default function SendForSignatures() {
     }
     const updated = documentsList.filter((_, idx) => idx !== indexToRemove);
     setDocumentsList(updated);
-    const activeId = id || currentCreatedId;
+    const activeId = draftIdRef.current || id || currentCreatedId;
     if (activeId) {
       localStorage.setItem(`bexsign_doc_${activeId}_documents`, JSON.stringify(updated));
       try {
@@ -294,158 +632,52 @@ export default function SendForSignatures() {
           let newIdx = 0;
           for (let i = 0; i < documentsList.length; i++) {
             if (i !== indexToRemove) {
-              if (parsed[i]) nextFields[newIdx] = parsed[i];
+              if (parsed[i]) nextFields[newIdx] = parsed[i].map((f) => ({ ...f, docIndex: newIdx }));
               newIdx++;
             }
           }
           localStorage.setItem(`bexsign_doc_${activeId}_fields_by_doc`, JSON.stringify(nextFields));
+          localStorage.setItem(`bexsign_doc_${activeId}_fields`, JSON.stringify(Object.values(nextFields).flat()));
         }
       } catch (e) {}
     }
-    localStorage.setItem('bexsign_draft_documents', JSON.stringify(updated));
     if (activeDocIndex >= updated.length) {
       setActiveDocIndex(Math.max(0, updated.length - 1));
     }
   };
 
-  const handleAddMe = () => {
-    // Check if current user is already in recipients
-    const exists = recipients.some((r) => r.email === 'vimal@bexcodeservices.com');
-    if (exists) {
-      showPopupAlert('You are already added as a recipient.', { title: 'Notice', type: 'info' });
-      return;
-    }
-    setRecipients([
-      ...recipients,
-      {
-        id: Date.now(),
-        email: 'vimal@bexcodeservices.com',
-        name: 'Vimal Chavda',
-        role: 'Needs to sign',
-        deliveryMode: 'Email',
-        auth: 'Email OTP',
-        passcode: '',
-        privateNote: ''
-      }
-    ]);
-  };
-
-  const handleAddRecipient = () => {
-    setRecipients([
-      ...recipients,
-      {
-        id: Date.now(),
-        email: '',
-        name: '',
-        role: 'Needs to sign',
-        deliveryMode: 'Email',
-        auth: 'Email OTP',
-        passcode: '',
-        privateNote: ''
-      }
-    ]);
-  };
-
-  const handleRemoveRecipient = (index) => {
-    if (recipients.length <= 1) {
-      showPopupAlert('At least one recipient is required.', { title: 'Action Required', type: 'warning' });
-      return;
-    }
-    const updated = recipients.filter((_, idx) => idx !== index);
-    setRecipients(updated);
-  };
-
-  const updateRecipientField = (index, field, value) => {
-    const updated = [...recipients];
-    updated[index][field] = value;
-    setRecipients(updated);
-  };
-
-  const openCustomizeModal = (index) => {
-    setActiveCustomizeIndex(index);
-  };
-
-  const closeCustomizeModal = () => {
-    setActiveCustomizeIndex(null);
-  };
-
-  // Card Actions & Editor Transitions
-  const handleOpenInEditor = (docIdx = activeDocIndex) => {
-    setActiveCardMenuIndex(null);
-    const docId = id || currentCreatedId || 1;
-    const cleanDocs = documentsList.map((d, i) => ({
-      id: d.id || i + 1,
-      name: (d.name || `Document ${i + 1}.pdf`).trim(),
-      pages: d.pages || 1,
-      status: d.status || 'Ready',
-      file_path: d.filePath || (d.file ? `/uploads/${d.file.name}` : '/uploads/sample.pdf'),
-      file_name: d.file ? d.file.name : `${(d.name || 'Document').replace(/\.pdf$/i, '')}.pdf`,
-      customMessage: d.customMessage || noteToAll || 'check the document for signature',
-      documentText: d.documentText || getDefaultDocContent(d.name, d.customMessage || noteToAll)
-    }));
-
-    localStorage.setItem(`bexsign_doc_${docId}_documents`, JSON.stringify(cleanDocs));
-    localStorage.setItem(`bexsign_doc_${docId}_recipients`, JSON.stringify(recipients));
-    localStorage.setItem('bexsign_draft_documents', JSON.stringify(cleanDocs));
-    navigate(`/documents/${docId}/edit`, { state: { documents: cleanDocs, activeDocIndex: docIdx } });
-  };
-
-  const handleCreateInEditor = () => {
-    const nextNum = documentsList.length + 1;
-    const docName = `Blank Agreement Document ${nextNum > 1 ? nextNum : ''}.pdf`.trim();
-    const newDoc = {
-      id: Date.now(),
-      name: docName,
-      pages: 1,
-      status: 'Ready',
-      file: null,
-      documentText: getDefaultDocContent(docName),
-      customMessage: noteToAll || 'check the document for signature'
-    };
-    const updated = [...documentsList, newDoc];
-    setDocumentsList(updated);
-    const newIdx = updated.length - 1;
-    setActiveDocIndex(newIdx);
-
-    const docId = id || currentCreatedId || Date.now();
-    setCurrentCreatedId(docId);
-    localStorage.setItem(`bexsign_doc_${docId}_documents`, JSON.stringify(updated));
-    localStorage.setItem(`bexsign_doc_${docId}_recipients`, JSON.stringify(recipients));
-    localStorage.setItem('bexsign_draft_documents', JSON.stringify(updated));
-
-    navigate(`/documents/${docId}/edit`, {
-      state: {
-        documents: updated,
-        activeDocIndex: newIdx,
-        fromCreate: true
-      }
-    });
-  };
-
   const handleDuplicateDoc = (idx) => {
     const source = documentsList[idx];
     if (!source) return;
+    if (documentsList.length >= MAX_DOCUMENTS) {
+      showPopupAlert(`A request can contain at most ${MAX_DOCUMENTS} documents.`, { title: 'Document limit', type: 'warning' });
+      return;
+    }
     const baseName = source.name.replace(/\.pdf$/i, '');
+    const duplicatedId = Date.now() + Math.floor(Math.random() * 1000);
     const duplicated = {
       ...source,
-      id: Date.now() + Math.floor(Math.random() * 1000),
+      id: duplicatedId,
+      fileId: null,
       name: `${baseName} (Copy).pdf`,
-      file: source.file || null
+      file: source.file || null,
+      uploadKey: source.file ? newUploadKey(duplicatedId) : null,
+      filePath: source.filePath || null
     };
     const nextList = [...documentsList.slice(0, idx + 1), duplicated, ...documentsList.slice(idx + 1)];
     setDocumentsList(nextList);
     setActiveDocIndex(idx + 1);
-    const activeId = id || currentCreatedId;
-    if (activeId) {
-      localStorage.setItem(`bexsign_doc_${activeId}_documents`, JSON.stringify(nextList));
-    }
-    localStorage.setItem('bexsign_draft_documents', JSON.stringify(nextList));
     showPopupAlert(`Duplicated "${source.name}" as "${duplicated.name}".`, { title: 'Document Duplicated', type: 'info' });
   };
 
   const handleReplaceFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file || targetReplaceDocIndex === null) return;
+    if (file.size > MAX_FILE_SIZE) {
+      showPopupAlert(`${file.name} is larger than 25 MB and cannot be used.`, { title: 'File too large', type: 'warning' });
+      e.target.value = '';
+      return;
+    }
     let text = '';
     if (file.name.endsWith('.txt') || file.name.endsWith('.md') || file.type.startsWith('text/')) {
       try {
@@ -464,15 +696,11 @@ export default function SendForSignatures() {
           ...copy[targetReplaceDocIndex],
           name: cleanName,
           file,
+          uploadKey: newUploadKey(copy[targetReplaceDocIndex].id),
           fileSize: (file.size / 1024).toFixed(1) + ' KB',
           documentText: text || copy[targetReplaceDocIndex].documentText
         };
       }
-      const activeId = id || currentCreatedId;
-      if (activeId) {
-        localStorage.setItem(`bexsign_doc_${activeId}_documents`, JSON.stringify(copy));
-      }
-      localStorage.setItem('bexsign_draft_documents', JSON.stringify(copy));
       return copy;
     });
     showPopupAlert(`Replaced with file "${cleanName}".`, { title: 'File Replaced', type: 'success' });
@@ -480,87 +708,190 @@ export default function SendForSignatures() {
     e.target.value = '';
   };
 
-  // Submit / Continue workflow
-  const handleContinue = async (e) => {
-    e.preventDefault();
+  // ---------------------------------------------------------------------------
+  // Recipients
+  // ---------------------------------------------------------------------------
+  const blankRecipient = (overrides = {}) => ({
+    id: Date.now() + Math.floor(Math.random() * 1000),
+    email: '',
+    name: '',
+    role: 'Needs to sign',
+    deliveryMode: 'Email',
+    auth: 'Email OTP',
+    passcode: '',
+    privateNote: '',
+    ...overrides
+  });
 
-    // 1. Validation
-    if (documentsList.length === 0 || !documentsList.some(d => d.name && d.name.trim())) {
-      showPopupAlert('Please add at least one document to proceed.', {
-        title: 'Document Required',
-        type: 'warning'
-      });
+  const handleAddMe = () => {
+    const exists = recipients.some((r) => (r.email || '').trim().toLowerCase() === currentUser.email.toLowerCase());
+    if (exists) {
+      showPopupAlert('You are already added as a recipient.', { title: 'Notice', type: 'info' });
       return;
     }
-
-    const validRecipients = recipients.filter((r) => r.email && r.email.trim() !== '');
-    if (validRecipients.length === 0) {
-      showPopupAlert('Please enter at least one recipient email address.', {
-        title: 'Recipient Required',
-        type: 'warning'
-      });
+    if (recipients.length >= MAX_RECIPIENTS) {
+      showPopupAlert(`A request can have at most ${MAX_RECIPIENTS} recipients.`, { title: 'Recipient limit', type: 'warning' });
       return;
     }
+    const emptyIndex = recipients.findIndex((r) => !(r.email || '').trim() && !(r.name || '').trim());
+    if (emptyIndex !== -1) {
+      setRecipients(recipients.map((r, idx) => (idx === emptyIndex ? { ...r, email: currentUser.email, name: currentUser.name } : r)));
+      return;
+    }
+    setRecipients([...recipients, blankRecipient({ email: currentUser.email, name: currentUser.name })]);
+  };
 
-    // Clean documents list
-    const cleanDocs = documentsList.map((d, i) => ({
-      id: d.id || i + 1,
-      name: (d.name || `Document ${i + 1}.pdf`).trim(),
-      pages: d.pages || 1,
-      status: d.status || 'Ready',
-      file_path: d.filePath || (d.file ? `/uploads/${d.file.name}` : '/uploads/sample.pdf'),
-      file_name: d.file ? d.file.name : `${(d.name || 'Document').replace(/\.pdf$/i, '')}.pdf`,
-      customMessage: d.customMessage || noteToAll || 'check the document for signature',
-      documentText: d.documentText || getDefaultDocContent(d.name, d.customMessage || noteToAll)
-    }));
+  const handleAddRecipient = () => {
+    if (recipients.length >= MAX_RECIPIENTS) {
+      showPopupAlert(`A request can have at most ${MAX_RECIPIENTS} recipients.`, { title: 'Recipient limit', type: 'warning' });
+      return;
+    }
+    setRecipients([...recipients, blankRecipient()]);
+  };
 
-    const primaryDoc = cleanDocs[0];
-    const primaryName = primaryDoc.name;
+  const handleRemoveRecipient = (index) => {
+    if (recipients.length <= 1) {
+      showPopupAlert('At least one recipient is required.', { title: 'Action Required', type: 'warning' });
+      return;
+    }
+    const updated = recipients.filter((_, idx) => idx !== index);
+    setRecipients(updated);
+  };
 
+  const updateRecipientField = (index, field, value) => {
+    setRecipients((prev) => prev.map((r, idx) => (idx === index ? { ...r, [field]: value } : r)));
+  };
+
+  const moveRecipient = (fromIndex, toIndex) => {
+    if (toIndex < 0 || toIndex >= recipients.length || fromIndex === toIndex) return;
+    setRecipients((prev) => {
+      const copy = [...prev];
+      const [moved] = copy.splice(fromIndex, 1);
+      copy.splice(toIndex, 0, moved);
+      return copy;
+    });
+  };
+
+  const handleRecipientDrop = (targetIndex) => {
+    if (dragRecipientIndex !== null) moveRecipient(dragRecipientIndex, targetIndex);
+    setDragRecipientIndex(null);
+    setArmedDragIndex(null);
+  };
+
+  const handleBulkCsv = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    let text = '';
     try {
-      const formData = new FormData();
-      const activeDocId = id || currentCreatedId;
-      if (activeDocId) {
-        formData.append('documentId', activeDocId);
-      }
-      formData.append('documentName', primaryName);
-      formData.append('recipientEmail', validRecipients[0].email);
-      formData.append('recipientName', validRecipients[0].name || 'Signer');
-      formData.append('folderName', folder || 'None');
-      formData.append('signingOrder', sendInOrder ? 'sequential' : 'parallel');
-      formData.append('daysToComplete', daysToComplete);
-      formData.append('agreementValidUntil', agreementValidUntil);
-      formData.append('documentType', documentType);
-      formData.append('description', description);
-      formData.append('allowComments', allowComments ? '1' : '0');
-      formData.append('autoReminders', autoReminders ? '1' : '0');
-      formData.append('reminderDays', reminderEveryDays);
-      formData.append('noteToAll', noteToAll);
-      formData.append('recipients', JSON.stringify(validRecipients));
-      formData.append('documentsMeta', JSON.stringify(cleanDocs));
+      text = await file.text();
+    } catch (err) {
+      showPopupAlert('The CSV file could not be read.', { title: 'Bulk Import', type: 'error' });
+      return;
+    }
 
-      // Append uploaded files
-      documentsList.forEach((d) => {
-        if (d.file) {
-          formData.append('documentFiles', d.file);
-        }
-      });
-      if (documentsList[0]?.file) {
-        formData.append('documentFile', documentsList[0].file);
-      }
+    const parsed = [];
+    text.split(/\r?\n/).forEach((line) => {
+      const cols = line.split(',').map((c) => c.trim().replace(/^"|"$/g, ''));
+      const emailIdx = cols.findIndex((c) => EMAIL_PATTERN.test(c));
+      if (emailIdx === -1) return;
+      const name = cols.find((c, i) => i !== emailIdx && c) || cols[emailIdx].split('@')[0];
+      parsed.push({ email: cols[emailIdx], name });
+    });
 
-      const res = await fetch('http://localhost:5000/api/documents/upload', {
-        method: 'POST',
-        body: formData
-      });
-      const data = await res.json();
+    const existing = new Set(recipients.map((r) => (r.email || '').trim().toLowerCase()).filter(Boolean));
+    const fresh = parsed.filter((p) => {
+      const key = p.email.toLowerCase();
+      if (existing.has(key)) return false;
+      existing.add(key);
+      return true;
+    });
+    const kept = recipients.filter((r) => (r.email || '').trim() || (r.name || '').trim());
+    const room = MAX_RECIPIENTS - kept.length;
+    const toAdd = fresh.slice(0, Math.max(room, 0));
+    setShowBulkModal(false);
 
-      const docId = data.documentId || activeDocId || 1;
-      setCurrentCreatedId(docId);
+    if (toAdd.length === 0) {
+      showPopupAlert('No new valid recipients were found in the CSV file. Use one "Name,Email" row per recipient.', { title: 'Bulk Import', type: 'warning' });
+      return;
+    }
+    setRecipients([...kept, ...toAdd.map((p, i) => blankRecipient({ id: Date.now() + i, email: p.email, name: p.name }))]);
+    showPopupAlert(
+      `${toAdd.length} recipient${toAdd.length === 1 ? '' : 's'} imported from CSV.${fresh.length > toAdd.length ? ` The limit of ${MAX_RECIPIENTS} recipients was reached.` : ''}`,
+      { title: 'Bulk Import', type: 'success' }
+    );
+  };
 
-      // Save documents list and settings in localStorage for instant access across field editor
-      localStorage.setItem(`bexsign_doc_${docId}_documents`, JSON.stringify(cleanDocs));
-      localStorage.setItem(`bexsign_doc_${docId}_recipients`, JSON.stringify(validRecipients));
+  const validateRecipients = (list) => {
+    const namedWithoutEmail = list.find((r) => !(r.email || '').trim() && (r.name || '').trim());
+    if (namedWithoutEmail) return `Enter the email address for ${namedWithoutEmail.name.trim()}.`;
+    const valid = list.filter((r) => r.email && r.email.trim());
+    if (valid.length === 0) return 'Please enter at least one recipient email address.';
+    if (valid.length > MAX_RECIPIENTS) return `A request can have at most ${MAX_RECIPIENTS} recipients.`;
+    const invalid = valid.find((r) => !EMAIL_PATTERN.test(r.email.trim()));
+    if (invalid) return `"${invalid.email.trim()}" is not a valid email address.`;
+    const seen = new Set();
+    for (const r of valid) {
+      const key = r.email.trim().toLowerCase();
+      if (seen.has(key)) return `${r.email.trim()} is added more than once.`;
+      seen.add(key);
+    }
+    if (!valid.some((r) => SIGNING_ROLE_LABELS.includes(r.role || 'Needs to sign'))) {
+      return 'Add at least one recipient who needs to sign or approve the document.';
+    }
+    return null;
+  };
+
+  const openCustomizeModal = (index) => {
+    setActiveCustomizeIndex(index);
+  };
+
+  const closeCustomizeModal = () => {
+    setActiveCustomizeIndex(null);
+  };
+
+  // ---------------------------------------------------------------------------
+  // Continue to the field editor (Step 2) / Save & close / Discard
+  // ---------------------------------------------------------------------------
+  const buildEditorDocuments = (docs) => docs.map((d, i) => ({
+    id: d.fileId || d.id || i + 1,
+    fileId: d.fileId || null,
+    name: (d.name || `Document ${i + 1}.pdf`).trim(),
+    pages: d.pages || 1,
+    status: d.status || 'Ready',
+    file_path: d.filePath || '/uploads/sample.pdf',
+    filePath: d.filePath || null,
+    file_name: (d.name || `Document ${i + 1}.pdf`).trim(),
+    customMessage: d.customMessage || noteToAll || 'check the document for signature',
+    documentText: d.documentText || getDefaultDocContent(d.name, d.customMessage || noteToAll)
+  }));
+
+  const buildEditorRecipients = (serverRecipients) => {
+    if (Array.isArray(serverRecipients) && serverRecipients.length > 0) {
+      return serverRecipients.map((r) => ({
+        id: r.id,
+        email: r.email,
+        name: r.name,
+        role: r.role_label || toRoleLabel(r.role),
+        deliveryMode: r.delivery_mode || 'Email',
+        privateNote: r.private_note || '',
+        status: r.status,
+        signingOrder: r.signing_order_index
+      }));
+    }
+    return cleanRecipientList(recipients).map((r, idx) => ({ ...r, id: idx + 1 }));
+  };
+
+  const openEditor = async (docIdx = activeDocIndex) => {
+    setIsProcessing(true);
+    try {
+      const saved = await saveDraft();
+      const docId = saved.documentId;
+      const editorDocs = buildEditorDocuments(saved.documents);
+      const editorRecipients = buildEditorRecipients(saved.recipients);
+
+      localStorage.setItem(`bexsign_doc_${docId}_documents`, JSON.stringify(editorDocs));
+      localStorage.setItem(`bexsign_doc_${docId}_recipients`, JSON.stringify(editorRecipients));
       const hasExistingFields = localStorage.getItem(`bexsign_doc_${docId}_fields_by_doc`) || localStorage.getItem(`bexsign_doc_${docId}_fields`);
       if (!hasExistingFields && !id) {
         localStorage.setItem(`bexsign_doc_${docId}_is_new`, 'true');
@@ -569,40 +900,112 @@ export default function SendForSignatures() {
       }
       localStorage.removeItem('bexsign_draft_documents');
       localStorage.setItem(`bexsign_doc_${docId}_settings`, JSON.stringify({
-        documentName: primaryName,
+        documentName: editorDocs[0]?.name,
         daysToComplete,
         noteToAll
       }));
 
-      // Transition to Step 2: Document Field Editor (Image 2)
-      navigate(`/documents/${docId}/edit`, { state: { documents: cleanDocs } });
+      // Step 2: Document Field Editor with every document and recipient
+      navigate(`/documents/${docId}/edit`, {
+        state: { documents: editorDocs, recipients: editorRecipients, activeDocIndex: docIdx }
+      });
     } catch (err) {
-      console.warn('Backend offline fallback:', err);
-      const fallbackDocId = id || 1;
-      localStorage.setItem(`bexsign_doc_${fallbackDocId}_documents`, JSON.stringify(cleanDocs));
-      localStorage.setItem(`bexsign_doc_${fallbackDocId}_recipients`, JSON.stringify(validRecipients));
-      const hasExistingFields = localStorage.getItem(`bexsign_doc_${fallbackDocId}_fields_by_doc`) || localStorage.getItem(`bexsign_doc_${fallbackDocId}_fields`);
-      if (!hasExistingFields && !id) {
-        localStorage.setItem(`bexsign_doc_${fallbackDocId}_is_new`, 'true');
-      } else {
-        localStorage.removeItem(`bexsign_doc_${fallbackDocId}_is_new`);
-      }
-      localStorage.removeItem('bexsign_draft_documents');
-      navigate(`/documents/${fallbackDocId}/edit`, { state: { documents: cleanDocs } });
+      showPopupAlert(err.message || 'The request could not be saved. Please make sure the server is running and try again.', {
+        title: 'Save failed',
+        type: 'error'
+      });
+    } finally {
+      setIsProcessing(false);
     }
   };
 
+  // Card Actions & Editor Transitions
+  const handleOpenInEditor = (docIdx = activeDocIndex) => {
+    setActiveCardMenuIndex(null);
+    openEditor(docIdx);
+  };
+
+  const handleCreateInEditor = () => {
+    if (documentsList.length >= MAX_DOCUMENTS) {
+      showPopupAlert(`A request can contain at most ${MAX_DOCUMENTS} documents.`, { title: 'Document limit', type: 'warning' });
+      return;
+    }
+    const nextNum = documentsList.length + 1;
+    const docName = `Blank Agreement Document ${nextNum > 1 ? nextNum : ''}.pdf`.replace(' .pdf', '.pdf');
+    const newDoc = {
+      id: Date.now(),
+      name: docName,
+      pages: 1,
+      status: 'Ready',
+      file: null,
+      documentText: getDefaultDocContent(docName),
+      customMessage: noteToAll || 'check the document for signature'
+    };
+    const updated = [...documentsList, newDoc];
+    setDocumentsList(updated);
+    const newIdx = updated.length - 1;
+    setActiveDocIndex(newIdx);
+    latestRef.current = { ...latestRef.current, documentsList: updated };
+    openEditor(newIdx);
+  };
+
+  // Submit / Continue workflow
+  const handleContinue = async (e) => {
+    e?.preventDefault?.();
+
+    if (documentsList.length === 0 || !documentsList.some(d => d.name && d.name.trim())) {
+      showPopupAlert('Please add at least one document to proceed.', {
+        title: 'Document Required',
+        type: 'warning'
+      });
+      return;
+    }
+
+    const recipientError = validateRecipients(recipients);
+    if (recipientError) {
+      showPopupAlert(recipientError, { title: 'Check recipients', type: 'warning' });
+      return;
+    }
+
+    await openEditor(activeDocIndex);
+  };
+
   const handleSaveAndClose = async () => {
+    setIsProcessing(true);
     try {
-      const activeDocId = id || currentCreatedId;
-      if (activeDocId) {
-        await fetch(`http://localhost:5000/api/documents/${activeDocId}/save`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ documentTitle: documentName || 'Draft Document', status: 'Draft' })
-        });
-      }
-    } catch (e) {}
+      await saveDraft();
+      showPopupAlert(
+        isDraftRequest
+          ? 'Your request has been saved as a draft. You can continue it any time from Sent documents > Draft.'
+          : 'Your changes have been saved.',
+        { title: isDraftRequest ? 'Draft saved' : 'Changes saved', type: 'success' }
+      );
+      navigate(isDraftRequest ? '/documents/sent/draft' : '/documents');
+    } catch (err) {
+      showPopupAlert(err.message || 'The draft could not be saved.', { title: 'Save failed', type: 'error' });
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleDiscardConfirmed = async () => {
+    discardedRef.current = true;
+    setShowDiscardModal(false);
+    setIsProcessing(true);
+    while (savePromiseRef.current) {
+      try {
+        await savePromiseRef.current;
+      } catch (e) {}
+    }
+    const draftId = draftIdRef.current;
+    if (draftId && latestRef.current.requestStatus === 'Draft') {
+      try {
+        await fetch(`${API_BASE}/documents/${draftId}?permanent=true`, { method: 'DELETE' });
+      } catch (e) {}
+      clearDraftCache(draftId);
+    }
+    localStorage.removeItem('bexsign_draft_documents');
+    setIsProcessing(false);
     navigate('/documents');
   };
 
@@ -629,10 +1032,11 @@ export default function SendForSignatures() {
 
       <div className="max-w-4xl mx-auto px-4 sm:px-8 pt-6 pb-12 space-y-8">
         {/* Page Title (Matching Screenshot 4 & Part 4 Page 2) */}
-        <div className="border-b border-slate-200 pb-4">
+        <div className="border-b border-slate-200 pb-4 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2">
           <h1 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
-            {id ? 'Edit document details' : 'Send for signatures'}
+            {requestStatus && requestStatus !== 'Draft' ? 'Edit document details' : 'Send for signatures'}
           </h1>
+          <DraftSaveIndicator saveState={saveState} isDraft={isDraftRequest} />
         </div>
 
         {/* ========================================================
@@ -800,46 +1204,9 @@ export default function SendForSignatures() {
             {/* Dropzone Box */}
             <div
               onDragOver={(e) => e.preventDefault()}
-              onDrop={async (e) => {
+              onDrop={(e) => {
                 e.preventDefault();
-                const files = Array.from(e.dataTransfer.files || []);
-                if (files.length > 0) {
-                  const newDocs = await Promise.all(
-                    files.map(async (f, idx) => {
-                      let text = '';
-                      if (f.name.endsWith('.txt') || f.name.endsWith('.md') || f.type.startsWith('text/')) {
-                        try {
-                          text = await f.text();
-                        } catch (err) {
-                          text = getDefaultDocContent(f.name);
-                        }
-                      } else {
-                        text = getDefaultDocContent(f.name);
-                      }
-                      const cleanName = f.name.endsWith('.pdf') ? f.name : `${f.name.replace(/\.[^/.]+$/, '')}.pdf`;
-                      return {
-                        id: Date.now() + idx + Math.floor(Math.random() * 1000),
-                        name: cleanName,
-                        pages: 1,
-                        status: 'Ready',
-                        file: f,
-                        fileSize: (f.size / 1024).toFixed(1) + ' KB',
-                        documentText: text,
-                        customMessage: noteToAll || 'check the document for signature'
-                      };
-                    })
-                  );
-                  setDocumentsList((prev) => {
-                    const updated = [...prev, ...newDocs];
-                    const activeId = id || currentCreatedId;
-                    if (activeId) {
-                      localStorage.setItem(`bexsign_doc_${activeId}_documents`, JSON.stringify(updated));
-                    }
-                    localStorage.setItem('bexsign_draft_documents', JSON.stringify(updated));
-                    setActiveDocIndex(updated.length - 1);
-                    return updated;
-                  });
-                }
+                addFilesToDocuments(Array.from(e.dataTransfer.files || []));
               }}
               className="w-60 h-60 border-2 border-dashed border-slate-300 rounded-lg flex flex-col items-center justify-center p-6 text-center bg-white hover:border-[#007355] transition relative shrink-0 shadow-2xs"
             >
@@ -1082,14 +1449,62 @@ export default function SendForSignatures() {
             {recipients.map((rec, index) => (
               <div
                 key={rec.id}
-                className="bg-white border border-slate-200 border-l-4 border-l-blue-500 rounded p-2 sm:p-2.5 flex flex-col md:flex-row items-stretch md:items-center gap-2 shadow-2xs transition"
+                draggable={armedDragIndex === index}
+                onDragStart={(e) => {
+                  setDragRecipientIndex(index);
+                  e.dataTransfer.effectAllowed = 'move';
+                }}
+                onDragOver={(e) => {
+                  if (dragRecipientIndex !== null) e.preventDefault();
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  handleRecipientDrop(index);
+                }}
+                onDragEnd={() => {
+                  setDragRecipientIndex(null);
+                  setArmedDragIndex(null);
+                }}
+                className={`bg-white border border-slate-200 border-l-4 border-l-blue-500 rounded p-2 sm:p-2.5 flex flex-col md:flex-row items-stretch md:items-center gap-2 shadow-2xs transition ${dragRecipientIndex === index ? 'opacity-50' : ''}`}
               >
                 {/* Grip Handle & Order Index */}
                 <div className="flex items-center gap-1.5 shrink-0">
-                  <GripVertical size={16} className="text-slate-400 cursor-grab" />
-                  <span className="w-6 h-6 border border-slate-300 text-xs font-bold text-slate-700 flex items-center justify-center rounded bg-slate-50 select-none">
-                    {index + 1}
+                  <span
+                    onMouseDown={() => setArmedDragIndex(index)}
+                    onMouseUp={() => setArmedDragIndex(null)}
+                    className="hidden md:inline-flex cursor-grab active:cursor-grabbing p-0.5 rounded hover:bg-slate-100"
+                    title="Drag to change the signing order"
+                  >
+                    <GripVertical size={16} className="text-slate-400" />
                   </span>
+                  <span className="flex md:hidden flex-col">
+                    <button
+                      type="button"
+                      disabled={index === 0}
+                      onClick={() => moveRecipient(index, index - 1)}
+                      className="text-slate-500 disabled:opacity-30"
+                      aria-label="Move recipient up"
+                    >
+                      <ChevronUp size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={index === recipients.length - 1}
+                      onClick={() => moveRecipient(index, index + 1)}
+                      className="text-slate-500 disabled:opacity-30"
+                      aria-label="Move recipient down"
+                    >
+                      <ChevronDown size={14} />
+                    </button>
+                  </span>
+                  {sendInOrder && (
+                    <span
+                      className="w-6 h-6 border border-slate-300 text-xs font-bold text-slate-700 flex items-center justify-center rounded bg-slate-50 select-none"
+                      title="Signing order"
+                    >
+                      {index + 1}
+                    </span>
+                  )}
                 </div>
 
                 {/* Email & Name Inline Inputs */}
@@ -1099,7 +1514,9 @@ export default function SendForSignatures() {
                     placeholder="Email"
                     value={rec.email}
                     onChange={(e) => updateRecipientField(index, 'email', e.target.value)}
-                    className="flex-1 p-2 text-xs border border-slate-300 sm:rounded-l sm:rounded-r-none rounded outline-none focus:border-[#007355] focus:ring-1 focus:ring-[#007355] transition"
+                    aria-invalid={Boolean(recipientIssues[index])}
+                    title={recipientIssues[index] || ''}
+                    className={`flex-1 min-w-0 p-2 text-xs border sm:rounded-l sm:rounded-r-none rounded outline-none focus:border-[#007355] focus:ring-1 focus:ring-[#007355] transition ${recipientIssues[index] ? 'border-red-400 bg-red-50' : 'border-slate-300'}`}
                   />
                   <input
                     type="text"
@@ -1167,7 +1584,8 @@ export default function SendForSignatures() {
           <button
             type="button"
             onClick={handleAddRecipient}
-            className="px-3 py-1.5 border border-slate-300 rounded text-xs font-semibold text-slate-700 hover:bg-slate-50 bg-white flex items-center gap-1.5 transition shadow-2xs mt-2"
+            disabled={recipients.length >= MAX_RECIPIENTS}
+            className="px-3 py-1.5 border border-slate-300 rounded text-xs font-semibold text-slate-700 hover:bg-slate-50 bg-white flex items-center gap-1.5 transition shadow-2xs mt-2 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Plus size={14} />
             <span>Add recipient</span>
@@ -1324,20 +1742,31 @@ export default function SendForSignatures() {
         {/* ========================================================
             SECTION 4: BOTTOM ACTION BAR (Matching Screenshot 4)
         ======================================================== */}
-        <div className="pt-6 border-t border-slate-200 flex items-center gap-3">
+        <div className="pt-6 border-t border-slate-200 flex flex-wrap items-center gap-3">
           <button
             type="button"
             onClick={handleContinue}
-            className="bg-[#007355] hover:bg-[#005c44] text-white px-7 py-2 rounded text-xs font-bold transition shadow-xs"
+            disabled={isProcessing}
+            className="bg-[#007355] hover:bg-[#005c44] disabled:opacity-60 text-white px-7 py-2 rounded text-xs font-bold transition shadow-xs flex items-center gap-1.5"
           >
+            {isProcessing && <Loader2 size={13} className="animate-spin" />}
             Continue
           </button>
           <button
             type="button"
             onClick={handleSaveAndClose}
-            className="bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 px-6 py-2 rounded text-xs font-bold transition shadow-2xs"
+            disabled={isProcessing}
+            className="bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-60 text-slate-700 px-6 py-2 rounded text-xs font-bold transition shadow-2xs"
           >
             Save & close
+          </button>
+          <button
+            type="button"
+            onClick={() => (isDraftRequest ? setShowDiscardModal(true) : navigate('/documents'))}
+            disabled={isProcessing}
+            className="sm:ml-auto text-red-600 hover:bg-red-50 border border-transparent hover:border-red-200 disabled:opacity-60 px-4 py-2 rounded text-xs font-bold transition"
+          >
+            {isDraftRequest ? 'Discard' : 'Cancel'}
           </button>
         </div>
       </div>
@@ -1351,6 +1780,43 @@ export default function SendForSignatures() {
       >
         <MessageSquare size={18} />
       </button>
+
+      {/* ========================================================
+          MODAL: DISCARD DRAFT CONFIRMATION
+      ======================================================== */}
+      {showDiscardModal && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-sm w-full p-6 space-y-4" role="dialog" aria-modal="true">
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 rounded-full bg-red-50 border border-red-100 flex items-center justify-center text-red-600 shrink-0">
+                <Trash2 size={16} />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">Discard this request?</h3>
+                <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                  The documents, recipients and fields added to this draft will be deleted. To finish it later, choose Save & close instead.
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowDiscardModal(false)}
+                className="px-4 py-1.5 border border-slate-300 rounded text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Keep editing
+              </button>
+              <button
+                type="button"
+                onClick={handleDiscardConfirmed}
+                className="px-4 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded text-xs font-bold"
+              >
+                Discard
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ========================================================
           MODAL: CUSTOMIZE RECIPIENT
@@ -1447,7 +1913,7 @@ export default function SendForSignatures() {
                   key={provider.name}
                   type="button"
                   onClick={() => {
-                    setDocumentName(`${provider.name} Agreement 2026.pdf`);
+                    handleAddNewDoc(`${provider.name} Agreement 2026.pdf`);
                     setShowCloudModal(false);
                     showPopupAlert(`Document loaded from ${provider.name}.`, { title: 'Cloud Import', type: 'success' });
                   }}
@@ -1487,7 +1953,7 @@ export default function SendForSignatures() {
                 <div
                   key={tName}
                   onClick={() => {
-                    setDocumentName(tName);
+                    handleAddNewDoc(tName);
                     setShowTemplateModal(false);
                     showPopupAlert(`Template "${tName}" selected.`, { title: 'Template Selected', type: 'success' });
                   }}
@@ -1525,15 +1991,7 @@ export default function SendForSignatures() {
                 <input
                   type="file"
                   accept=".csv"
-                  onChange={() => {
-                    setShowBulkModal(false);
-                    showPopupAlert('3 recipients imported from CSV successfully.', { title: 'Bulk Import', type: 'success' });
-                    setRecipients([
-                      ...recipients,
-                      { id: Date.now() + 1, email: 'john@bexcodeservices.com', name: 'John Doe', role: 'Needs to sign', deliveryMode: 'Email', auth: 'Email OTP', passcode: '', privateNote: '' },
-                      { id: Date.now() + 2, email: 'sarah@bexcodeservices.com', name: 'Sarah Smith', role: 'Needs to sign', deliveryMode: 'Email', auth: 'Email OTP', passcode: '', privateNote: '' }
-                    ]);
-                  }}
+                  onChange={handleBulkCsv}
                   className="hidden"
                 />
               </label>

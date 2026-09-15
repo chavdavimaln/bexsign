@@ -25,7 +25,7 @@
 
 ## 2. Database Schema & Tables
 
-The BexSign backend uses MySQL (`db_bex_signature`). The core tables include:
+The BexSign backend uses MySQL (`db_bex_sign`). The core tables include:
 
 ### 2.1 `employee_signatures` Table
 Stores registered employee signatures for the dedicated `/signatures` directory and auto-fetch pipeline.

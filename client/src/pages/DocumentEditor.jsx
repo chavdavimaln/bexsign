@@ -82,6 +82,7 @@ export default function DocumentEditor() {
   const [showActionsMenu, setShowActionsMenu] = useState(false);
   const [showSendMenu, setShowSendMenu] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(100);
+  const zoomScale = zoomLevel / 100 || 1;
   const [activePage, setActivePage] = useState(1);
 
   // Multi-Document State (Pages 4 & 5)
@@ -173,7 +174,7 @@ export default function DocumentEditor() {
       let newIdx = 0;
       for (let i = 0; i < documentsList.length; i++) {
         if (i !== indexToRemove) {
-          if (prev[i]) nextByDoc[newIdx] = prev[i];
+          if (prev[i]) nextByDoc[newIdx] = prev[i].map((f) => ({ ...f, docIndex: newIdx }));
           newIdx++;
         }
       }
@@ -381,7 +382,12 @@ export default function DocumentEditor() {
       if (sel && sel.rangeCount > 0) {
         let node = sel.anchorNode;
         if (node && node.nodeType === 3) node = node.parentNode;
-        if (node && node.closest) {
+        if (
+          node &&
+          node !== wordEditorRef.current &&
+          wordEditorRef.current &&
+          wordEditorRef.current.contains(node)
+        ) {
           const computed = window.getComputedStyle(node);
           if (computed && computed.fontSize) {
             const rawPx = Math.round(parseFloat(computed.fontSize));
@@ -421,74 +427,81 @@ export default function DocumentEditor() {
     saveSelection();
   };
 
-  // Font size application (px specific - works strictly for selected text, words, and letters)
+  // Font size application (px specific - works for selected text, current block, or typed input)
   const applyFontSize = (sizeInput) => {
     const rawNum = parseInt(String(sizeInput).replace(/[^0-9]/g, ''), 10);
     if (!rawNum || isNaN(rawNum)) return;
-    // Strict clamp: must be between 8px and 96px!
+    // Strict clamp: between 8px and 96px
     const numericSize = Math.max(8, Math.min(96, rawNum));
     const pxSize = `${numericSize}px`;
 
     setWordFontSize(String(numericSize));
     setWordFontSizeInput(String(numericSize));
 
-    restoreSelection();
+    // Ensure editor has focus, then restore previous selection
     if (wordEditorRef.current) wordEditorRef.current.focus();
+    restoreSelection();
 
-    const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0) return;
-
-    const range = sel.getRangeAt(0);
-
-    // If nothing is selected (cursor merely clicked/collapsed), do NOT modify existing text
-    if (range.collapsed) {
-      return;
+    let sel = window.getSelection();
+    let range = null;
+    if (sel && sel.rangeCount > 0) {
+      range = sel.getRangeAt(0);
     }
-      // Text selection active (one or more words/letters selected)
+
+    // Verify range is within wordEditorRef.current
+    const isInsideEditor = range && wordEditorRef.current && wordEditorRef.current.contains(range.commonAncestorContainer);
+
+    if (isInsideEditor && !range.collapsed) {
+      // CASE 1: Text is selected - style the selection
       document.execCommand('styleWithCSS', false, false);
       document.execCommand('fontSize', false, '7');
 
-      let replaced = false;
+      const createdSpans = [];
       if (wordEditorRef.current) {
-        // 1. Standard replacement for <font size="7">
-        const fontTags = Array.from(wordEditorRef.current.querySelectorAll('font[size="7"]'));
-        if (fontTags.length > 0) {
-          replaced = true;
-          fontTags.forEach((f) => {
+        const query = 'font[size="7"], font[size="+7"], span[style*="-webkit-xxx-large"], span[style*="xxx-large"]';
+        const matched = Array.from(wordEditorRef.current.querySelectorAll(query));
+
+        if (matched.length > 0) {
+          matched.forEach((el) => {
             const span = document.createElement('span');
             span.style.fontSize = pxSize;
-            span.querySelectorAll('font, span[style*="font-size"]').forEach((child) => {
-              child.style.fontSize = '';
+            // Clear inner font-size overrides
+            span.querySelectorAll('*').forEach((child) => {
+              if (child.style && child.style.fontSize) child.style.fontSize = '';
               if (child.tagName === 'FONT') child.removeAttribute('size');
             });
-            while (f.firstChild) {
-              span.appendChild(f.firstChild);
+            while (el.firstChild) {
+              span.appendChild(el.firstChild);
             }
-            f.parentNode.replaceChild(span, f);
-          });
-        }
-
-        // 2. Replacement for CSS-based large spans
-        const styledSpans = Array.from(
-          wordEditorRef.current.querySelectorAll(
-            'span[style*="-webkit-xxx-large"], span[style*="xxx-large"], font[size="7"]'
-          )
-        );
-        if (styledSpans.length > 0) {
-          replaced = true;
-          styledSpans.forEach((s) => {
-            s.style.fontSize = pxSize;
+            el.parentNode.replaceChild(span, el);
+            createdSpans.push(span);
           });
         }
       }
 
-      // 3. Fallback if execCommand did not wrap the selection (e.g. across complex DOM nodes or within lists)
-      if (!replaced) {
+      // Re-establish selection over modified elements so subsequent +/- or inputs continue to work seamlessly
+      if (createdSpans.length > 0) {
         try {
-          const contents = range.extractContents();
+          const newRange = document.createRange();
+          newRange.setStartBefore(createdSpans[0]);
+          newRange.setEndAfter(createdSpans[createdSpans.length - 1]);
+          sel.removeAllRanges();
+          sel.addRange(newRange);
+          savedSelectionRef.current = newRange.cloneRange();
+        } catch (e) {
+          saveSelection();
+        }
+      } else {
+        // Fallback for complex selections (e.g. cross-elements or lists)
+        try {
+          const fragment = range.extractContents();
           const span = document.createElement('span');
           span.style.fontSize = pxSize;
-          span.appendChild(contents);
+          fragment.querySelectorAll?.('*').forEach((child) => {
+            if (child.style && child.style.fontSize) child.style.fontSize = '';
+            if (child.tagName === 'FONT') child.removeAttribute('size');
+          });
+          span.appendChild(fragment);
           range.insertNode(span);
 
           const newRange = document.createRange();
@@ -497,13 +510,39 @@ export default function DocumentEditor() {
           sel.addRange(newRange);
           savedSelectionRef.current = newRange.cloneRange();
         } catch (e) {
-          console.warn('Font size extractContents fallback:', e);
+          saveSelection();
         }
-      } else {
-        saveSelection();
+      }
+    } else if (isInsideEditor && range.collapsed) {
+      // CASE 2: Cursor is placed at a position (no highlighted text)
+      let container = range.startContainer;
+      if (container && container.nodeType === 3) {
+        container = container.parentNode;
       }
 
-    updateActiveFormatting();
+      // Update the active block element (p, h1-h6, li, td, th) if present
+      const block = container ? container.closest('p, h1, h2, h3, h4, h5, h6, li, td, th') : null;
+      if (block && block !== wordEditorRef.current) {
+        block.style.fontSize = pxSize;
+        // Also clear inner spans that had old hardcoded sizes
+        block.querySelectorAll('span, font').forEach((child) => {
+          if (child.style && child.style.fontSize) child.style.fontSize = '';
+          if (child.tagName === 'FONT') child.removeAttribute('size');
+        });
+      } else if (container && container !== wordEditorRef.current) {
+        container.style.fontSize = pxSize;
+      } else if (wordEditorRef.current) {
+        wordEditorRef.current.style.fontSize = pxSize;
+      }
+
+      saveSelection();
+    } else {
+      // CASE 3: No active selection inside editor - apply to base editor container
+      if (wordEditorRef.current) {
+        wordEditorRef.current.style.fontSize = pxSize;
+      }
+    }
+
     syncEditorContent();
   };
 
@@ -852,28 +891,66 @@ export default function DocumentEditor() {
     { color: '#10b981', bg: 'bg-teal-50', border: 'border-teal-500', text: 'text-teal-700' }
   ];
 
-  // Dynamic Recipients State: ONLY displays added recipient email IDs (PDF 1 p.1-2)
+  // Dynamic Recipients State: every recipient added in step 1 with role label and colour (PDF 1 p.1-2)
+  const toEditorRecipient = (r, idx) => {
+    const rawRole = r.role_label || r.role || 'Needs to sign';
+    const low = String(rawRole).toLowerCase();
+    const role = low.includes('approv')
+      ? 'Approver'
+      : (low.includes('in-person') ? 'In-person signer' : ((low.includes('copy') || low.includes('view') || low === 'cc') ? 'Receives a copy' : 'Needs to sign'));
+    return {
+      id: r.id || idx + 1,
+      name: r.name || (r.email ? r.email.split('@')[0] : `Signer ${idx + 1}`),
+      email: r.email || '',
+      role,
+      status: r.status || 'pending',
+      ...RECIPIENT_PALETTE[idx % RECIPIENT_PALETTE.length]
+    };
+  };
+
+  const recipientsSourceRef = useRef(
+    location.state?.recipients?.length ? 'state' : (localStorage.getItem(`bexsign_doc_${id}_recipients`) ? 'storage' : 'default')
+  );
+
   const [recipientList, setRecipientList] = useState(() => {
+    // 1. Navigation state recipients (from SendForSignatures)
+    if (location.state?.recipients && Array.isArray(location.state.recipients) && location.state.recipients.length > 0) {
+      return location.state.recipients.map(toEditorRecipient);
+    }
+    // 2. Saved envelope recipients in localStorage
     try {
       const saved = localStorage.getItem(`bexsign_doc_${id}_recipients`);
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map((r, idx) => ({
-            id: r.id || idx + 1,
-            name: r.name || r.email || `Signer ${idx + 1}`,
-            email: r.email || '',
-            ...RECIPIENT_PALETTE[idx % RECIPIENT_PALETTE.length]
-          }));
+          return parsed.map(toEditorRecipient);
         }
       }
     } catch (e) {}
-    return [
-      { id: 1, name: 'Vimal Chavda', email: 'vimal@bexcodeservices.com', ...RECIPIENT_PALETTE[0] }
-    ];
+    return [toEditorRecipient({ id: 1, name: 'Vimal Chavda', email: 'vimal@bexcodeservices.com', role: 'Needs to sign' }, 0)];
   });
 
-  const [selectedRecipient, setSelectedRecipient] = useState(() => recipientList[0]);
+  // "Receives a copy" recipients never get fields (Zoho Sign rule)
+  const canReceiveFields = (rec) => Boolean(rec) && rec.role !== 'Receives a copy';
+  const fieldBelongsTo = (field, rec) => {
+    if (!field || !rec) return false;
+    if (field.assigneeEmail) return Boolean(rec.email) && field.assigneeEmail.toLowerCase() === rec.email.toLowerCase();
+    return field.assigneeId !== undefined && field.assigneeId !== null && String(field.assigneeId) === String(rec.id);
+  };
+  const recipientForField = (field) => recipientList.find((r) => fieldBelongsTo(field, r)) || recipientList[0];
+
+  const [selectedRecipient, setSelectedRecipient] = useState(() => recipientList.find(canReceiveFields) || recipientList[0]);
+  const [requestStatus, setRequestStatus] = useState('Draft');
+  const [bexsignDocId, setBexsignDocId] = useState('');
+  const [initialLoadDone, setInitialLoadDone] = useState(!id);
+  const [showDiscardModal, setShowDiscardModal] = useState(false);
+  const [isSending, setIsSending] = useState(false);
+  const [showDocsPanel, setShowDocsPanel] = useState(false);
+  const [showFieldsPanel, setShowFieldsPanel] = useState(false);
+  const discardedRef = useRef(false);
+  const displayDocId = bexsignDocId
+    ? `${bexsignDocId}${documentsList.length > 1 ? `-${activeDocIndex + 1}` : ''}`
+    : `BEX-DOC-2026-${String(id || 1).padStart(4, '0')}-${activeDocIndex + 1}`;
 
   // Multi-document partitioned fields (Canvas Fields per active document)
   const [fieldsByDoc, setFieldsByDoc] = useState(() => {
@@ -912,6 +989,14 @@ export default function DocumentEditor() {
 
     return Math.max(1, maxFieldPage, textNeedsExtraPage ? 2 : 1, manualPages);
   }, [fieldsOnDoc, currentDocument, extraPagesCount]);
+
+  const pagesForDoc = (idx) => {
+    if (idx === activeDocIndex) return totalPages;
+    const doc = documentsList[idx] || {};
+    const maxFieldPage = (fieldsByDoc[idx] || []).reduce((max, f) => Math.max(max, f.page || 1), 1);
+    const textLength = (doc.documentText || '').replace(/<[^>]+>/g, ' ').length;
+    return Math.max(1, maxFieldPage, textLength > 2800 ? 2 : 1);
+  };
 
   // Keep activePage valid when totalPages decreases
   useEffect(() => {
@@ -1012,25 +1097,26 @@ export default function DocumentEditor() {
       const data = await res.json();
       if (data.success && data.document) {
         const doc = data.document;
+        if (doc.status) setRequestStatus(doc.status);
+        if (doc.bexsign_doc_id) setBexsignDocId(doc.bexsign_doc_id);
+
+        // Documents: server rows carry the file ids that keep fields attached to the right document
         if (doc.files && Array.isArray(doc.files) && doc.files.length > 0) {
           setDocumentsList((prev) => {
-            const saved = id ? localStorage.getItem(`bexsign_doc_${id}_documents`) : null;
-            if (saved) {
-              try {
-                const parsed = JSON.parse(saved);
-                if (Array.isArray(parsed) && parsed.length > 0) {
-                  return parsed;
-                }
-              } catch (e) {}
-            }
-            const fromServer = doc.files.map((f, i) => ({
-              id: f.id || i + 1,
-              name: f.file_name || `Document ${i + 1}.pdf`,
-              pages: 1,
-              status: 'Ready',
-              documentText: f.document_text || getDefaultDocContent(f.file_name, doc.custom_message),
-              customMessage: doc.custom_message || 'check the document for signature'
-            }));
+            const fromServer = doc.files.map((f, i) => {
+              const local = prev.find((d) => String(d.fileId || d.id) === String(f.id)) || prev[i] || {};
+              return {
+                ...local,
+                id: f.id,
+                fileId: f.id,
+                name: f.file_name || local.name || `Document ${i + 1}.pdf`,
+                pages: local.pages || 1,
+                status: local.status || 'Ready',
+                filePath: f.file_path || local.filePath || null,
+                documentText: f.document_text || local.documentText || getDefaultDocContent(f.file_name, doc.custom_message),
+                customMessage: local.customMessage || doc.custom_message || 'check the document for signature'
+              };
+            });
             localStorage.setItem(`bexsign_doc_${id}_documents`, JSON.stringify(fromServer));
             return fromServer;
           });
@@ -1040,51 +1126,41 @@ export default function DocumentEditor() {
           setRecipientEmail(doc.recipient_email);
         }
 
-        // Dynamically load document recipients from database if present
-        if (data.document.recipients) {
-          try {
-            const parsed = typeof data.document.recipients === 'string'
-              ? JSON.parse(data.document.recipients)
-              : data.document.recipients;
-            if (Array.isArray(parsed) && parsed.length > 0) {
-              const formatted = parsed.map((r, idx) => ({
-                id: r.id || idx + 1,
-                name: r.name || r.email || `Signer ${idx + 1}`,
-                email: r.email || '',
-                ...RECIPIENT_PALETTE[idx % RECIPIENT_PALETTE.length]
-              }));
-              setRecipientList(formatted);
-              setSelectedRecipient(formatted[0]);
-              localStorage.setItem(`bexsign_doc_${id}_recipients`, JSON.stringify(formatted));
-            }
-          } catch (e) {}
-        } else if (data.document.recipient_email) {
-          const single = [{
-            id: 1,
-            name: data.document.signer_name || 'Signer',
-            email: data.document.recipient_email,
-            ...RECIPIENT_PALETTE[0]
-          }];
+        // Recipients: real database rows; a legacy single-recipient fallback never replaces step 1 recipients
+        const realRecipients = (doc.recipients || []).filter((r) => !r.isFallback);
+        if (realRecipients.length > 0) {
+          const formatted = realRecipients.map(toEditorRecipient);
+          recipientsSourceRef.current = 'server';
+          setRecipientList(formatted);
+          setSelectedRecipient((prev) =>
+            formatted.find((f) => prev?.email && f.email.toLowerCase() === prev.email.toLowerCase() && canReceiveFields(f))
+            || formatted.find(canReceiveFields)
+            || formatted[0]
+          );
+          localStorage.setItem(`bexsign_doc_${id}_recipients`, JSON.stringify(formatted));
+        } else if (recipientsSourceRef.current === 'default' && doc.recipients?.length) {
+          const single = doc.recipients.map(toEditorRecipient);
           setRecipientList(single);
           setSelectedRecipient(single[0]);
         }
 
-        // Dynamically load saved fields from database if present
-        const isNewDoc = localStorage.getItem(`bexsign_doc_${id}_is_new`) === 'true' || location.state?.fromCreate;
-        if (!isNewDoc && data.document.fields) {
-          try {
-            const parsedFields = typeof data.document.fields === 'string'
-              ? JSON.parse(data.document.fields)
-              : data.document.fields;
-            if (Array.isArray(parsedFields) && parsedFields.length > 0) {
-              setFieldsOnDoc(parsedFields);
-              localStorage.setItem(`bexsign_doc_${id}_fields`, JSON.stringify(parsedFields));
-            }
-          } catch (e) {}
+        // Fields: grouped per document by the server
+        if (doc.fieldsByDoc && Object.keys(doc.fieldsByDoc).length > 0) {
+          const normalized = {};
+          Object.entries(doc.fieldsByDoc).forEach(([idx, list]) => {
+            const docIdx = parseInt(idx, 10) || 0;
+            normalized[docIdx] = (list || []).map((f) => ({ ...f, docIndex: docIdx }));
+          });
+          setFieldsByDoc(normalized);
+          localStorage.setItem(`bexsign_doc_${id}_fields_by_doc`, JSON.stringify(normalized));
+          localStorage.setItem(`bexsign_doc_${id}_fields`, JSON.stringify(Object.values(normalized).flat()));
+          localStorage.removeItem(`bexsign_doc_${id}_is_new`);
         }
       }
     } catch (e) {
       console.warn('Doc fetch fallback:', e);
+    } finally {
+      setInitialLoadDone(true);
     }
   };
 
@@ -1103,8 +1179,8 @@ export default function DocumentEditor() {
     if (pageElem) {
       const rect = pageElem.getBoundingClientRect();
       setDragOffset({
-        x: e.clientX - rect.left - field.x,
-        y: e.clientY - rect.top - field.y
+        x: (e.clientX - rect.left) / zoomScale - field.x,
+        y: (e.clientY - rect.top) / zoomScale - field.y
       });
     }
   };
@@ -1139,8 +1215,8 @@ export default function DocumentEditor() {
     if (!activePageElem) return;
 
     const rect = activePageElem.getBoundingClientRect();
-    let newX = e.clientX - rect.left - dragOffset.x;
-    let newY = e.clientY - rect.top - dragOffset.y;
+    let newX = (e.clientX - rect.left) / zoomScale - dragOffset.x;
+    let newY = (e.clientY - rect.top) / zoomScale - dragOffset.y;
 
     // Get current field element to calculate accurate boundary clamping
     const fieldElem = document.getElementById(`doc-field-${draggingFieldId}`);
@@ -1148,8 +1224,8 @@ export default function DocumentEditor() {
     const fieldH = fieldElem ? fieldElem.offsetHeight : 45;
 
     // Allow field to be placed anywhere across page boundaries, including freely overlapping text, tables, headers
-    const maxX = Math.max(10, rect.width - fieldW - 8);
-    const maxY = Math.max(10, rect.height - fieldH - 8);
+    const maxX = Math.max(10, rect.width / zoomScale - fieldW - 8);
+    const maxY = Math.max(10, rect.height / zoomScale - fieldH - 8);
 
     newX = Math.max(8, Math.min(maxX, newX));
     newY = Math.max(8, Math.min(maxY, newY));
@@ -1296,42 +1372,209 @@ export default function DocumentEditor() {
     }
   };
 
-  const handleSaveDraft = async () => {
-    try {
-      const allFlat = Object.entries(fieldsByDoc).flatMap(([docIdx, fList]) => 
-        (fList || []).map(f => ({
-          ...f,
-          docIndex: f.docIndex !== undefined ? f.docIndex : parseInt(docIdx) || 0,
-          page: f.page || (parseInt(docIdx) || 0) + 1
-        }))
-      );
-      if (id) {
-        localStorage.setItem(`bexsign_doc_${id}_documents`, JSON.stringify(documentsList));
-        localStorage.setItem(`bexsign_doc_${id}_fields_by_doc`, JSON.stringify(fieldsByDoc));
-        localStorage.setItem(`bexsign_doc_${id}_fields`, JSON.stringify(allFlat));
+  const computeEditorKey = (fieldsMap, docs) => JSON.stringify({
+    f: fieldsMap,
+    d: docs.map((d) => [d.name, d.documentText])
+  });
+
+  const buildFieldsPayload = () => {
+    const normalized = {};
+    Object.entries(fieldsByDoc).forEach(([docIdx, fList]) => {
+      const idx = parseInt(docIdx, 10) || 0;
+      if (idx < documentsList.length) {
+        normalized[idx] = (fList || []).map((f) => ({ ...f, docIndex: idx, page: f.page || 1 }));
       }
-      await fetch(`http://localhost:5000/api/documents/${id || 1}/save`, {
+    });
+    return normalized;
+  };
+
+  const buildDocumentsPayload = () => documentsList.map((d, i) => ({
+    fileId: d.fileId || null,
+    id: d.fileId || d.id,
+    name: (d.name || `Document ${i + 1}.pdf`).trim(),
+    documentText: d.documentText || getDefaultDocContent(d.name, d.customMessage),
+    filePath: d.filePath || d.file_path || null
+  }));
+
+  const buildRecipientsPayload = () => (
+    recipientsSourceRef.current === 'default'
+      ? {}
+      : { recipients: recipientList.map((r) => ({ email: r.email, name: r.name, role: r.role })) }
+  );
+
+  const lastEditorSaveKeyRef = useRef(null);
+  const latestEditorKeyRef = useRef(null);
+  const requestStatusRef = useRef(requestStatus);
+  const saveDraftRef = useRef(null);
+  const canvasScrollRef = useRef(null);
+  const editorSaveKey = computeEditorKey(fieldsByDoc, documentsList);
+  latestEditorKeyRef.current = editorSaveKey;
+  requestStatusRef.current = requestStatus;
+
+  const handleSaveDraft = async ({ silent = false } = {}) => {
+    if (discardedRef.current || !id) return null;
+    const keyAtSave = editorSaveKey;
+    const fieldsPayload = buildFieldsPayload();
+    localStorage.setItem(`bexsign_doc_${id}_documents`, JSON.stringify(documentsList));
+    localStorage.setItem(`bexsign_doc_${id}_fields_by_doc`, JSON.stringify(fieldsPayload));
+    localStorage.setItem(`bexsign_doc_${id}_fields`, JSON.stringify(Object.values(fieldsPayload).flat()));
+
+    try {
+      const res = await fetch(`http://localhost:5000/api/documents/${id}/save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          documentTitle,
-          fieldsOnDoc,
-          fields: allFlat,
-          fieldsByDoc,
-          documents: documentsList,
-          documentText: currentDocument.documentText,
+          documentTitle: documentsList[0]?.name || documentTitle,
+          fieldsByDoc: fieldsPayload,
+          documents: buildDocumentsPayload(),
+          ...buildRecipientsPayload(),
           status: 'Draft'
         })
       });
-    } catch (e) {}
-
-    setStatusMsg('Draft saved successfully!');
-    setTimeout(() => setStatusMsg(''), 3000);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      if (Array.isArray(data.files) && data.files.length === documentsList.length) {
+        setDocumentsList((prev) => prev.map((d, i) => (
+          data.files[i] && String(d.fileId) !== String(data.files[i].id)
+            ? { ...d, fileId: data.files[i].id, filePath: data.files[i].file_path }
+            : d
+        )));
+      }
+      lastEditorSaveKeyRef.current = keyAtSave;
+      setStatusMsg(silent ? 'Draft saved' : 'Draft saved successfully!');
+      setTimeout(() => setStatusMsg(''), 3000);
+      return data;
+    } catch (e) {
+      setStatusMsg('Draft not saved - check the server connection');
+      setTimeout(() => setStatusMsg(''), 4000);
+      if (!silent) throw e;
+      return null;
+    }
   };
+  saveDraftRef.current = handleSaveDraft;
+
+  // Auto-save the draft (fields per document) shortly after every change
+  useEffect(() => {
+    if (!id || !initialLoadDone || draggingFieldId) return;
+    if (lastEditorSaveKeyRef.current === null) {
+      lastEditorSaveKeyRef.current = editorSaveKey;
+      return;
+    }
+    if (discardedRef.current || editorSaveKey === lastEditorSaveKeyRef.current || requestStatus !== 'Draft') return;
+    const timer = setTimeout(() => saveDraftRef.current?.({ silent: true }), 2000);
+    return () => clearTimeout(timer);
+  }, [editorSaveKey, initialLoadDone, draggingFieldId, requestStatus]);
+
+  // Leaving the editor without discarding keeps the latest fields in the draft
+  useEffect(() => () => {
+    if (
+      !discardedRef.current
+      && lastEditorSaveKeyRef.current !== null
+      && latestEditorKeyRef.current !== lastEditorSaveKeyRef.current
+      && requestStatusRef.current === 'Draft'
+    ) {
+      saveDraftRef.current?.({ silent: true });
+    }
+  }, []);
+
+  // Narrow canvas (phones, tablets, small laptops): zoom the A4 page out so it fits the available width
+  useEffect(() => {
+    const fitToWidth = () => {
+      if (!canvasScrollRef.current) return;
+      const available = canvasScrollRef.current.clientWidth - 24;
+      if (available >= 794) return;
+      setZoomLevel(Math.max(30, Math.floor((available / 794) * 100)));
+    };
+    fitToWidth();
+    window.addEventListener('resize', fitToWidth);
+    return () => window.removeEventListener('resize', fitToWidth);
+  }, []);
 
   const handleContinueToSend = async () => {
-    await handleSaveDraft();
+    await handleSaveDraft({ silent: true });
     navigate(`/documents/${id || 1}/send`);
+  };
+
+  const getSignersWithoutFields = () => {
+    const allFields = Object.values(fieldsByDoc).flat();
+    return recipientList.filter((rec) => ['Needs to sign', 'In-person signer'].includes(rec.role) && !allFields.some((f) => fieldBelongsTo(f, rec)));
+  };
+
+  const openSendConfirm = () => {
+    const missing = getSignersWithoutFields();
+    if (missing.length > 0) {
+      setSelectedRecipient(missing[0]);
+      setActiveField(null);
+      setShowFieldsPanel(true);
+      showPopupAlert(
+        `Add at least one field for ${missing.map((r) => r.name || r.email).join(', ')} before sending. Select the recipient in the Recipients panel and place their fields.`,
+        { title: 'Fields required', type: 'warning' }
+      );
+      return;
+    }
+    setShowConfirmModal(true);
+  };
+
+  const handleConfirmSend = async () => {
+    if (!id) return;
+    setIsSending(true);
+    const fieldsPayload = buildFieldsPayload();
+    localStorage.setItem(`bexsign_doc_${id}_documents`, JSON.stringify(documentsList));
+    localStorage.setItem(`bexsign_doc_${id}_fields_by_doc`, JSON.stringify(fieldsPayload));
+    localStorage.setItem(`bexsign_doc_${id}_fields`, JSON.stringify(Object.values(fieldsPayload).flat()));
+    localStorage.setItem(`bexsign_doc_${id}_recipients`, JSON.stringify(recipientList));
+
+    try {
+      const res = await fetch(`http://localhost:5000/api/documents/send/${id}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          documentName: documentsList[0]?.name || documentTitle,
+          documents: buildDocumentsPayload(),
+          fieldsByDoc: fieldsPayload,
+          ...buildRecipientsPayload()
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || `The document could not be sent (HTTP ${res.status}).`);
+      }
+
+      discardedRef.current = true; // the request is no longer a draft: stop editor autosave
+      setShowConfirmModal(false);
+      const sentTo = (data.dispatchedEmails || []).join(', ');
+      const failed = (data.failedEmails || []).map((f) => f.email).join(', ');
+      const signingCount = recipientList.filter((r) => r.role !== 'Receives a copy').length;
+      const laterNote = (data.dispatchedEmails || []).length < signingCount
+        ? ' The remaining recipients will receive it in signing order.'
+        : '';
+      showPopupAlert(
+        failed
+          ? `The document was sent, but the email could not be delivered to: ${failed}.${laterNote}`
+          : `Signature request emailed to: ${sentTo}.${laterNote}`,
+        { title: failed ? 'Sent with email errors' : 'Document sent', type: failed ? 'warning' : 'success' }
+      );
+      navigate('/documents');
+    } catch (err) {
+      showPopupAlert(err.message, { title: 'Send failed', type: 'error' });
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  const handleDiscardDraft = async () => {
+    setShowDiscardModal(false);
+    if (requestStatus !== 'Draft' || !id) return;
+    discardedRef.current = true;
+    try {
+      await fetch(`http://localhost:5000/api/documents/${id}?permanent=true`, { method: 'DELETE' });
+    } catch (e) {}
+    ['documents', 'recipients', 'fields_by_doc', 'fields', 'is_new', 'settings', 'extra_pages'].forEach((key) => {
+      localStorage.removeItem(`bexsign_doc_${id}_${key}`);
+    });
+    navigate('/documents');
   };
 
   const standardFields = [
@@ -1381,6 +1624,13 @@ export default function DocumentEditor() {
   };
 
   const addFieldToCanvas = (type) => {
+    if (!canReceiveFields(selectedRecipient)) {
+      showPopupAlert(`${selectedRecipient?.name || 'This recipient'} receives a copy and cannot be assigned fields. Select a recipient who signs.`, {
+        title: 'Select a signer',
+        type: 'warning'
+      });
+      return;
+    }
     if (type === 'Stamp') {
       setStampImageSrc('');
       setStampZoom(100);
@@ -1406,6 +1656,7 @@ export default function DocumentEditor() {
       required: true,
       assigneeId: selectedRecipient.id,
       assignee: `${selectedRecipient.name}`,
+      assigneeEmail: selectedRecipient.email || '',
       font: 'Roboto',
       fontSize: '11',
       isBold: false,
@@ -1419,6 +1670,7 @@ export default function DocumentEditor() {
     setFieldsOnDoc([...fieldsOnDoc, newField]);
     setActiveField(newField);
     setActivePage(targetPage);
+    setShowFieldsPanel(false);
     setTimeout(() => {
       const el = document.getElementById(`doc-field-${newField.id}`);
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -1458,6 +1710,8 @@ export default function DocumentEditor() {
       required: customFieldRequired,
       assigneeId: selectedRecipient.id,
       assignee: selectedRecipient.name,
+      assigneeEmail: selectedRecipient.email || '',
+      textColor: selectedRecipient.color,
       isCustom: true,
       font: 'Roboto',
       fontSize: '11'
@@ -1501,6 +1755,7 @@ export default function DocumentEditor() {
         required: true,
         assigneeId: selectedRecipient.id,
         assignee: selectedRecipient.name,
+        assigneeEmail: selectedRecipient.email || '',
         stampShape,
         stampZoom,
         stampRotation,
@@ -1553,12 +1808,24 @@ export default function DocumentEditor() {
   ];
 
   return (
-    <div className="-m-6 h-[calc(100vh-4rem)] flex flex-col bg-slate-900 text-slate-100 overflow-hidden font-sans select-none">
+    <div className="-m-4 sm:-m-6 h-[calc(100vh-4rem)] flex flex-col bg-slate-900 text-slate-100 overflow-hidden font-sans select-none">
       {/* Editor Header Bar (Matching Page 5) */}
-      <header className="h-14 bg-slate-950 border-b border-slate-800 px-6 flex items-center justify-between shrink-0">
+      <header className="h-14 bg-slate-950 border-b border-slate-800 px-2 sm:px-6 flex items-center justify-between gap-2 shrink-0">
         {/* Left: Document Name Dropdown */}
-        <div className="flex items-center gap-3">
-          <div className="bg-[#007355] text-white p-1.5 rounded font-black text-xs">
+        <div className="flex items-center gap-1.5 sm:gap-3 min-w-0">
+          <button
+            type="button"
+            onClick={() => {
+              setShowDocsPanel((v) => !v);
+              setShowFieldsPanel(false);
+            }}
+            className="lg:hidden p-1.5 rounded border border-slate-700 text-slate-300 hover:bg-slate-800 shrink-0"
+            title="Documents"
+            aria-label="Show documents"
+          >
+            <Layers size={16} />
+          </button>
+          <div className="hidden sm:block bg-[#007355] text-white p-1.5 rounded font-black text-xs">
             <FileText size={16} />
           </div>
           <div className="relative">
@@ -1572,7 +1839,7 @@ export default function DocumentEditor() {
                 value={documentTitle}
                 onChange={(e) => setDocumentTitle(e.target.value)}
                 onClick={(e) => e.stopPropagation()}
-                className="bg-transparent border-b border-transparent hover:border-slate-700 text-slate-100 font-bold text-sm px-1 py-0.5 focus:outline-none focus:border-[#007355] max-w-xs"
+                className="bg-transparent border-b border-transparent hover:border-slate-700 text-slate-100 font-bold text-sm px-1 py-0.5 focus:outline-none focus:border-[#007355] w-24 sm:w-56 min-w-0 max-w-xs"
               />
               <ChevronDown size={14} className="text-slate-400" />
             </div>
@@ -1612,8 +1879,8 @@ export default function DocumentEditor() {
             )}
           </div>
           {statusMsg && (
-            <span className="text-xs text-emerald-400 font-bold flex items-center gap-1">
-              <CheckCircle2 size={14} /> {statusMsg}
+            <span className={`hidden sm:flex text-xs font-bold items-center gap-1 ${statusMsg.startsWith('Draft not saved') ? 'text-red-400' : 'text-emerald-400'}`}>
+              {statusMsg.startsWith('Draft not saved') ? <AlertCircle size={14} /> : <CheckCircle2 size={14} />} {statusMsg}
             </span>
           )}
         </div>
@@ -1661,14 +1928,16 @@ export default function DocumentEditor() {
         </div>
 
         {/* Right: Actions, Back, and Dark Green Send ▾ (Page 5) */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
           <div className="relative">
             <button
               onClick={() => setShowActionsMenu(!showActionsMenu)}
-              className="px-3 py-1.5 border border-slate-700 text-slate-300 rounded text-xs font-semibold hover:bg-slate-800 flex items-center gap-1.5 transition"
+              className="px-2 sm:px-3 py-1.5 border border-slate-700 text-slate-300 rounded text-xs font-semibold hover:bg-slate-800 flex items-center gap-1.5 transition"
+              aria-label="Actions"
             >
-              <span>Actions</span>
-              <ChevronDown size={14} />
+              <Sliders size={14} className="sm:hidden" />
+              <span className="hidden sm:inline">Actions</span>
+              <ChevronDown size={14} className="hidden sm:block" />
             </button>
             {showActionsMenu && (
               <div className="absolute right-0 mt-1.5 w-44 bg-slate-900 border border-slate-800 rounded shadow-xl py-1 z-30 text-xs">
@@ -1691,11 +1960,35 @@ export default function DocumentEditor() {
                 </button>
                 <div className="border-t border-slate-800 my-1" />
                 <button
-                  onClick={() => { setShowActionsMenu(false); handleSaveDraft(); }}
+                  onClick={() => { setShowActionsMenu(false); handleSaveDraft().catch(() => {}); }}
                   className="w-full text-left px-3 py-1.5 hover:bg-slate-800 text-slate-300"
                 >
                   Save Draft
                 </button>
+                <button
+                  onClick={async () => {
+                    setShowActionsMenu(false);
+                    await handleSaveDraft({ silent: true });
+                    navigate(requestStatus === 'Draft' ? '/documents/sent/draft' : '/documents');
+                  }}
+                  className="w-full text-left px-3 py-1.5 hover:bg-slate-800 text-slate-300"
+                >
+                  Save and close
+                </button>
+                <button
+                  onClick={() => { setShowActionsMenu(false); handleContinueToSend(); }}
+                  className="sm:hidden w-full text-left px-3 py-1.5 hover:bg-slate-800 text-slate-300"
+                >
+                  Back to recipients
+                </button>
+                {requestStatus === 'Draft' && (
+                  <button
+                    onClick={() => { setShowActionsMenu(false); setShowDiscardModal(true); }}
+                    className="w-full text-left px-3 py-1.5 hover:bg-slate-800 text-red-400"
+                  >
+                    Discard draft
+                  </button>
+                )}
                 <button
                   onClick={() => { setShowActionsMenu(false); setFieldsOnDoc([]); }}
                   className="w-full text-left px-3 py-1.5 hover:bg-slate-800 text-red-400"
@@ -1707,16 +2000,16 @@ export default function DocumentEditor() {
           </div>
 
           <button
-            onClick={() => navigate(`/documents/${id || 1}/send`)}
-            className="px-3.5 py-1.5 border border-slate-700 text-slate-300 rounded text-xs font-semibold hover:bg-slate-800 flex items-center gap-1 transition"
+            onClick={handleContinueToSend}
+            className="hidden sm:flex px-3.5 py-1.5 border border-slate-700 text-slate-300 rounded text-xs font-semibold hover:bg-slate-800 items-center gap-1 transition"
           >
             <span>Back</span>
           </button>
 
           <div className="relative flex items-center">
             <button
-              onClick={() => setShowConfirmModal(true)}
-              className="bg-[#007355] hover:bg-[#005c44] text-white px-4 py-1.5 rounded-l text-xs font-extrabold flex items-center gap-1.5 shadow-md transition cursor-pointer"
+              onClick={openSendConfirm}
+              className="bg-[#007355] hover:bg-[#005c44] text-white px-3 sm:px-4 py-1.5 rounded-l text-xs font-extrabold flex items-center gap-1.5 shadow-md transition cursor-pointer"
             >
               <span>Send</span>
             </button>
@@ -1731,7 +2024,7 @@ export default function DocumentEditor() {
             {showSendMenu && (
               <div className="absolute right-0 top-full mt-1.5 w-44 bg-slate-900 border border-slate-800 rounded shadow-xl py-1 z-30 text-xs">
                 <button
-                  onClick={() => { setShowSendMenu(false); setShowConfirmModal(true); }}
+                  onClick={() => { setShowSendMenu(false); openSendConfirm(); }}
                   className="w-full text-left px-3 py-2 hover:bg-slate-800 text-slate-200"
                 >
                   Send now
@@ -1745,13 +2038,34 @@ export default function DocumentEditor() {
               </div>
             )}
           </div>
+          <button
+            type="button"
+            onClick={() => {
+              setShowFieldsPanel((v) => !v);
+              setShowDocsPanel(false);
+            }}
+            className="lg:hidden p-1.5 rounded border border-slate-700 text-slate-300 hover:bg-slate-800"
+            title="Recipients and fields"
+            aria-label="Show recipients and fields"
+          >
+            <ListFilter size={16} />
+          </button>
         </div>
       </header>
 
       {/* Editor Main Content: Left Thumbnails + Center Canvas + Right Fields (Page 5) */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex overflow-hidden relative">
+        {(showDocsPanel || showFieldsPanel) && (
+          <div
+            className="lg:hidden absolute inset-0 bg-black/50 z-30"
+            onClick={() => {
+              setShowDocsPanel(false);
+              setShowFieldsPanel(false);
+            }}
+          />
+        )}
         {/* Left Sidebar: Documents (Listing all attached documents) */}
-        <aside className="w-52 bg-slate-950 border-r border-slate-800 p-4 flex flex-col gap-3 shrink-0 font-sans text-xs overflow-y-auto">
+        <aside className={`${showDocsPanel ? 'absolute inset-y-0 left-0 z-40 flex shadow-2xl' : 'hidden'} lg:static lg:flex lg:shadow-none w-64 lg:w-52 bg-slate-950 border-r border-slate-800 p-4 flex-col gap-3 shrink-0 font-sans text-xs overflow-y-auto`}>
           <div className="flex items-center justify-between">
             <h2 className="text-xs font-bold text-slate-300 uppercase tracking-wider">Documents</h2>
             <div className="flex items-center gap-1.5">
@@ -1771,6 +2085,7 @@ export default function DocumentEditor() {
             {documentsList.map((doc, idx) => {
               const isSelected = activeDocIndex === idx;
               const docFields = fieldsByDoc[idx] || [];
+              const docPages = pagesForDoc(idx);
 
               return (
                 <div
@@ -1778,6 +2093,7 @@ export default function DocumentEditor() {
                   onClick={() => {
                     setActiveDocIndex(idx);
                     setActiveField(null);
+                    setShowDocsPanel(false);
                   }}
                   className={`w-full rounded-lg p-2.5 shadow-sm space-y-2 cursor-pointer transition ${
                     isSelected
@@ -1808,7 +2124,7 @@ export default function DocumentEditor() {
                     </div>
                   </div>
                   <div className="flex items-center justify-between text-[10px] text-slate-400">
-                    <span>{totalPages} page{totalPages > 1 ? 's' : ''}</span>
+                    <span>{docPages} page{docPages > 1 ? 's' : ''}</span>
                     {docFields.length > 0 && (
                       <span className="text-emerald-400 font-semibold font-mono">
                         {docFields.length} field{docFields.length > 1 ? 's' : ''}
@@ -1818,7 +2134,7 @@ export default function DocumentEditor() {
 
                     {/* Miniature Page Thumbnail Preview(s) */}
                   <div className="space-y-2 mt-1">
-                    {Array.from({ length: totalPages }).map((_, pIdx) => {
+                    {Array.from({ length: docPages }).map((_, pIdx) => {
                       const pNum = pIdx + 1;
                       const pFields = docFields.filter(f => (f.page || 1) === pNum);
                       return (
@@ -1826,12 +2142,14 @@ export default function DocumentEditor() {
                           key={pNum}
                           onClick={(e) => {
                             e.stopPropagation();
+                            setActiveDocIndex(idx);
+                            setActiveField(null);
                             setActivePage(pNum);
                             const el = document.getElementById(`doc-page-${pNum}`);
                             if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
                           }}
                           className={`w-full h-28 bg-white rounded border p-2 text-[7px] text-slate-400 select-none overflow-hidden relative shadow-inner cursor-pointer transition hover:border-[#00a884] ${
-                            activePage === pNum ? 'ring-2 ring-[#00a884] border-[#00a884]' : 'border-slate-700'
+                            isSelected && activePage === pNum ? 'ring-2 ring-[#00a884] border-[#00a884]' : 'border-slate-700'
                           }`}
                         >
                           <div className="flex justify-between items-center border-b border-slate-200 pb-1 mb-1">
@@ -1894,16 +2212,17 @@ export default function DocumentEditor() {
 
         {/* Multi-Page PDF Canvas Preview with Mouse Drag-and-Drop & Direct Inline Editing */}
         <main
-          className="flex-1 bg-slate-900 p-8 overflow-auto flex flex-col items-center gap-8 cursor-default"
-          onMouseMove={handleMouseMoveOnCanvas}
-          onMouseUp={handleMouseUpCanvas}
+          ref={canvasScrollRef}
+          className="flex-1 min-w-0 bg-slate-900 p-3 sm:p-8 overflow-auto flex flex-col items-center gap-8 cursor-default"
+          onPointerMove={handleMouseMoveOnCanvas}
+          onPointerUp={handleMouseUpCanvas}
         >
           {Array.from({ length: totalPages }).map((_, pIdx) => {
             const pageNum = pIdx + 1;
             const fieldsForThisPage = fieldsOnDoc.filter(f => (f.page || 1) === pageNum);
 
             return (
-              <div key={pageNum} className="flex flex-col items-center w-full">
+              <div key={pageNum} className="flex flex-col items-center w-fit max-w-none mx-auto">
                 {/* Visual Page Break Indicator between pages */}
                 {pageNum > 1 && (
                   <div className="flex items-center gap-3 text-slate-400 text-xs font-mono select-none my-4">
@@ -1919,11 +2238,7 @@ export default function DocumentEditor() {
                 {/* MS Word Top Horizontal Ruler above Page 1 (Standard A4: 210mm / 794px) */}
                 {pageNum === 1 && (
                   <div
-                    style={{
-                      transform: `scale(${zoomLevel / 100})`,
-                      transformOrigin: 'top center',
-                      transition: 'transform 0.15s ease'
-                    }}
+                    style={{ zoom: zoomScale }}
                     className="w-[794px] mb-2 bg-slate-800 border border-slate-700 rounded-t-xs shadow-2xs select-none text-[9px] text-slate-400 font-mono flex items-center justify-between px-1 h-5 relative overflow-hidden print:hidden"
                   >
                     {/* Left Margin Shading */}
@@ -1945,11 +2260,7 @@ export default function DocumentEditor() {
                 <div
                   id={`doc-page-${pageNum}`}
                   ref={pageNum === 1 ? canvasRef : undefined}
-                  style={{
-                    transform: `scale(${zoomLevel / 100})`,
-                    transformOrigin: 'top center',
-                    transition: 'transform 0.15s ease'
-                  }}
+                  style={{ zoom: zoomScale }}
                   className="relative w-[794px] min-h-[1123px] max-w-[794px] bg-white text-slate-900 p-12 sm:p-14 shadow-[0_4px_30px_rgba(0,0,0,0.25)] rounded-xs border border-slate-300 flex flex-col justify-between select-text"
                 >
                   {/* Page Top Content */}
@@ -1963,7 +2274,7 @@ export default function DocumentEditor() {
                               {documentTitle}
                             </h1>
                             <p className="text-[11px] text-slate-500 font-mono mt-0.5">
-                              BexSign Document ID: BEX-DOC-2026-0024-{id || 1}-{activeDocIndex + 1}
+                              BexSign Document ID: {displayDocId}
                             </p>
                           </div>
                           <button
@@ -2041,7 +2352,7 @@ export default function DocumentEditor() {
 
                   {/* Render Movable & Direct Inline Editable Canvas Fields for THIS Page */}
                   {fieldsForThisPage.map((field) => {
-                    const rec = recipientList.find(r => r.id === field.assigneeId) || recipientList[0];
+                    const rec = recipientForField(field);
                     const isSelected = activeField?.id === field.id;
                     const isDragging = draggingFieldId === field.id;
                     const fieldZIndex = isDragging ? 50 : (isSelected ? 40 : 25);
@@ -2055,11 +2366,12 @@ export default function DocumentEditor() {
                         <div
                           id={`doc-field-${field.id}`}
                           key={field.id}
-                          onMouseDown={(e) => handleMouseDownOnField(e, field)}
+                          onPointerDown={(e) => handleMouseDownOnField(e, field)}
                           style={{
                             top: `${field.y}px`,
                             left: `${field.x}px`,
-                            zIndex: fieldZIndex
+                            zIndex: fieldZIndex,
+                          touchAction: 'none'
                           }}
                           className={`absolute cursor-move p-1.5 bg-white border-2 rounded-lg shadow-md transition ${
                             isSelected ? 'border-sky-600 ring-2 ring-sky-400 shadow-xl' : 'border-sky-500 border-dashed hover:border-solid hover:shadow-lg'
@@ -2089,11 +2401,12 @@ export default function DocumentEditor() {
                         <div
                           id={`doc-field-${field.id}`}
                           key={field.id}
-                          onMouseDown={(e) => handleMouseDownOnField(e, field)}
+                          onPointerDown={(e) => handleMouseDownOnField(e, field)}
                           style={{
                             top: `${field.y}px`,
                             left: `${field.x}px`,
-                            zIndex: fieldZIndex
+                            zIndex: fieldZIndex,
+                          touchAction: 'none'
                           }}
                           className={`absolute cursor-move p-1.5 bg-white border-2 rounded-lg shadow-md transition ${
                             isSelected ? 'border-emerald-600 ring-2 ring-emerald-400 shadow-xl' : 'border-slate-400 hover:border-slate-700 hover:shadow-lg'
@@ -2116,11 +2429,12 @@ export default function DocumentEditor() {
                         <div
                           id={`doc-field-${field.id}`}
                           key={field.id}
-                          onMouseDown={(e) => handleMouseDownOnField(e, field)}
+                          onPointerDown={(e) => handleMouseDownOnField(e, field)}
                           style={{
                             top: `${field.y}px`,
                             left: `${field.x}px`,
-                            zIndex: fieldZIndex
+                            zIndex: fieldZIndex,
+                          touchAction: 'none'
                           }}
                           className={`absolute p-2 border-2 bg-white shadow-md cursor-move transition flex flex-col items-center justify-center font-bold text-emerald-800 text-xs overflow-hidden ${
                             field.stampShape === 'oval' ? 'rounded-full h-20 w-20' : 'rounded-lg h-20 w-28'
@@ -2150,13 +2464,14 @@ export default function DocumentEditor() {
                       <div
                         id={`doc-field-${field.id}`}
                         key={field.id}
-                        onMouseDown={(e) => handleMouseDownOnField(e, field)}
+                        onPointerDown={(e) => handleMouseDownOnField(e, field)}
                         style={{
                           top: `${field.y}px`,
                           left: `${field.x}px`,
                           borderColor: rec.color,
                           backgroundColor: '#ffffff',
-                          zIndex: fieldZIndex
+                          zIndex: fieldZIndex,
+                          touchAction: 'none'
                         }}
                         className={`absolute p-2 border-2 rounded-lg shadow-md cursor-move transition flex items-center gap-2 min-w-[150px] max-w-[260px] bg-white ${
                           isSelected ? 'ring-2 ring-offset-1 scale-105 border-solid shadow-xl' : 'border-dashed hover:border-solid hover:shadow-lg'
@@ -2192,7 +2507,7 @@ export default function DocumentEditor() {
         </main>
 
         {/* Right Sidebar: Field Palette OR Dedicated Field Property Configuration Sidebar Panel */}
-        <aside className="w-80 bg-slate-950 border-l border-slate-800 p-4 flex flex-col gap-6 overflow-y-auto shrink-0 font-sans text-xs">
+        <aside className={`${showFieldsPanel ? 'absolute inset-y-0 right-0 z-40 flex shadow-2xl' : 'hidden'} lg:static lg:flex lg:shadow-none w-[85vw] max-w-sm lg:w-80 bg-slate-950 border-l border-slate-800 p-4 flex-col gap-6 overflow-y-auto shrink-0 font-sans text-xs`}>
           {activeField ? (
             /* Dedicated Property Panel for Active Field (Pages 9 to 19 PDF) */
             <div className="space-y-5">
@@ -2201,6 +2516,39 @@ export default function DocumentEditor() {
                 <button onClick={() => setActiveField(null)} className="text-slate-400 hover:text-slate-200">
                   <X size={18} />
                 </button>
+              </div>
+
+              {/* Assigned recipient: every field belongs to exactly one recipient */}
+              <div className="space-y-1.5">
+                <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-400">Assigned to</label>
+                <div className="flex items-center gap-2">
+                  <span className="h-3 w-3 rounded-full shrink-0" style={{ backgroundColor: recipientForField(activeField)?.color }} />
+                  <select
+                    value={recipientForField(activeField)?.email || ''}
+                    onChange={(e) => {
+                      const rec = recipientList.find((r) => r.email === e.target.value);
+                      if (!rec) return;
+                      const updated = {
+                        ...activeField,
+                        assigneeId: rec.id,
+                        assignee: rec.name,
+                        assigneeEmail: rec.email,
+                        textColor: rec.color,
+                        ...(activeField.type === 'Full name' ? { value: rec.name } : {}),
+                        ...(activeField.type === 'Email' ? { value: rec.email } : {})
+                      };
+                      setActiveField(updated);
+                      setFieldsOnDoc((prev) => prev.map((f) => (f.id === activeField.id ? updated : f)));
+                    }}
+                    className="flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-2 text-xs text-slate-100 focus:outline-none focus:border-[#00a884]"
+                  >
+                    {recipientList.filter(canReceiveFields).map((rec) => (
+                      <option key={rec.email || rec.id} value={rec.email}>
+                        {rec.name} ({rec.email})
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
               {/* Position Coordinate & Live Value Editor */}
@@ -2519,27 +2867,51 @@ export default function DocumentEditor() {
           ) : (
             /* Field Palette Sidebar (Default View) */
             <>
-              {/* Recipient Dropdown Selector */}
+              {/* Recipients (Zoho Sign: select a recipient, then place that recipient's fields) */}
               <div className="bg-slate-900 border border-slate-800 p-3 rounded-xl space-y-2">
-                <label className="block text-[11px] font-extrabold uppercase tracking-wider text-slate-400">Recipients</label>
-                <div className="space-y-1.5">
-                  {recipientList.map((rec) => (
-                    <div
-                      key={rec.id}
-                      onClick={() => setSelectedRecipient(rec)}
-                      className={`p-2.5 rounded-lg border text-xs font-bold cursor-pointer transition flex items-center justify-between ${
-                        selectedRecipient.id === rec.id
-                          ? `${rec.border} ${rec.bg} ${rec.text}`
-                          : 'border-slate-800 bg-slate-950 text-slate-300 hover:bg-slate-800'
-                      }`}
-                    >
-                      <div className="truncate">
-                        <p className="font-bold leading-none">{rec.name}</p>
-                        <p className="text-[10px] font-normal text-slate-400 truncate mt-0.5">{rec.email}</p>
-                      </div>
-                      <span className="h-3 w-3 rounded-full shrink-0" style={{ backgroundColor: rec.color }} />
-                    </div>
-                  ))}
+                <div className="flex items-center justify-between">
+                  <label className="block text-[11px] font-extrabold uppercase tracking-wider text-slate-400">Recipients</label>
+                  <span className="text-[10px] font-bold text-slate-500">{recipientList.length} added</span>
+                </div>
+                <p className="text-[10px] text-slate-500 leading-snug">
+                  Select a recipient, then add their fields{documentsList.length > 1 ? ' on each document' : ''}.
+                </p>
+                <div className="space-y-1.5 max-h-72 overflow-y-auto pr-0.5">
+                  {recipientList.map((rec, idx) => {
+                    const allowed = canReceiveFields(rec);
+                    const isActive = selectedRecipient?.id === rec.id;
+                    const totalCount = Object.values(fieldsByDoc).flat().filter((f) => fieldBelongsTo(f, rec)).length;
+                    const docCount = fieldsOnDoc.filter((f) => fieldBelongsTo(f, rec)).length;
+                    return (
+                      <button
+                        key={rec.id || rec.email}
+                        type="button"
+                        onClick={() => allowed && setSelectedRecipient(rec)}
+                        disabled={!allowed}
+                        title={allowed ? `${docCount} field(s) on this document, ${totalCount} in total` : 'Receives a copy of the completed document - no fields needed'}
+                        className={`w-full text-left p-2.5 rounded-lg border text-xs transition flex items-center gap-2.5 ${
+                          isActive ? `${rec.border} ${rec.bg} ${rec.text}` : 'border-slate-800 bg-slate-950 text-slate-300 hover:bg-slate-800'
+                        } ${allowed ? 'cursor-pointer' : 'opacity-60 cursor-not-allowed'}`}
+                      >
+                        <span
+                          className="h-6 w-6 rounded-full shrink-0 flex items-center justify-center text-[10px] font-black text-white"
+                          style={{ backgroundColor: rec.color }}
+                        >
+                          {idx + 1}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block font-bold leading-tight truncate">{rec.name}</span>
+                          <span className={`block text-[10px] font-normal truncate mt-0.5 ${isActive ? 'text-slate-600' : 'text-slate-400'}`}>{rec.email}</span>
+                          <span className="block text-[10px] font-semibold mt-0.5 text-slate-500">{rec.role}</span>
+                        </span>
+                        {allowed && (
+                          <span className={`shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded ${isActive ? 'bg-white/80 text-slate-700' : 'bg-slate-800 text-slate-300'}`}>
+                            {totalCount} field{totalCount === 1 ? '' : 's'}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -2626,6 +2998,10 @@ export default function DocumentEditor() {
                                 required: true,
                                 assigneeId: selectedRecipient.id,
                                 assignee: selectedRecipient.name,
+                                assigneeEmail: selectedRecipient.email || '',
+                                textColor: selectedRecipient.color,
+                                docIndex: activeDocIndex,
+                                page: activePage,
                                 isCustom: true,
                                 font: cf.font || 'Roboto',
                                 fontSize: '11'
@@ -3003,8 +3379,8 @@ export default function DocumentEditor() {
                   }
                   // Append standard template fields
                   const templateFields = [
-                    { id: Date.now() + 1, type: 'Signature', label: 'Signature', value: 'Vimal Chavda', x: 200, y: 350, required: true, assigneeId: 2, assignee: 'Vimal Chavda' },
-                    { id: Date.now() + 2, type: 'Sign date', label: 'Sign date', value: 'Sep 02 2026', x: 420, y: 350, required: true, assigneeId: 2, assignee: 'Vimal Chavda', dateFormat: 'MMM dd yyyy' }
+                    { id: Date.now() + 1, type: 'Signature', label: 'Signature', value: selectedRecipient.name, x: 200, y: 350, page: 1, docIndex: activeDocIndex, required: true, assigneeId: selectedRecipient.id, assignee: selectedRecipient.name, assigneeEmail: selectedRecipient.email || '', textColor: selectedRecipient.color },
+                    { id: Date.now() + 2, type: 'Sign date', label: 'Sign date', value: 'Sep 02 2026', x: 420, y: 350, page: 1, docIndex: activeDocIndex, required: true, assigneeId: selectedRecipient.id, assignee: selectedRecipient.name, assigneeEmail: selectedRecipient.email || '', textColor: selectedRecipient.color, dateFormat: 'MMM dd yyyy' }
                   ];
                   setFieldsOnDoc(prev => [...prev, ...templateFields]);
                   setShowFieldTemplateModal(false);
@@ -3044,7 +3420,7 @@ export default function DocumentEditor() {
                   </span>
                 </div>
                 <div className="flex items-center gap-2 text-[10px] text-slate-400 font-mono px-2 truncate">
-                  <span>BexSign Document ID: BEX-DOC-2026-0024-{id || 1}-{activeDocIndex + 1}</span>
+                  <span>BexSign Document ID: {displayDocId}</span>
                   <span>•</span>
                   <span>{documentsList.length > 1 ? `Document ${activeDocIndex + 1} of ${documentsList.length}` : 'Primary Document'}</span>
                 </div>
@@ -3198,9 +3574,12 @@ export default function DocumentEditor() {
               {/* Stepper Minus */}
               <button
                 type="button"
-                onMouseDown={(e) => e.preventDefault()}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  saveSelection();
+                }}
                 onClick={() => {
-                  const curr = parseInt(wordFontSize || '14', 10);
+                  const curr = parseInt(wordFontSizeInput || wordFontSize || '14', 10);
                   const next = Math.max(8, curr - 1);
                   applyFontSize(next);
                 }}
@@ -3216,6 +3595,9 @@ export default function DocumentEditor() {
                   type="text"
                   value={wordFontSizeInput}
                   onChange={(e) => setWordFontSizeInput(e.target.value)}
+                  onMouseDown={() => {
+                    saveSelection();
+                  }}
                   onFocus={() => {
                     saveSelection();
                     setShowFontSizeMenu(false);
@@ -3224,12 +3606,28 @@ export default function DocumentEditor() {
                     if (e.key === 'Enter') {
                       e.preventDefault();
                       applyFontSize(wordFontSizeInput);
+                      e.target.blur();
+                    } else if (e.key === 'ArrowUp') {
+                      e.preventDefault();
+                      const curr = parseInt(wordFontSizeInput || wordFontSize || '14', 10);
+                      const next = Math.min(96, curr + 1);
+                      applyFontSize(next);
+                    } else if (e.key === 'ArrowDown') {
+                      e.preventDefault();
+                      const curr = parseInt(wordFontSizeInput || wordFontSize || '14', 10);
+                      const next = Math.max(8, curr - 1);
+                      applyFontSize(next);
                     }
                   }}
                   onBlur={() => {
-                    setWordFontSizeInput(wordFontSize);
+                    const rawNum = parseInt(String(wordFontSizeInput).replace(/[^0-9]/g, ''), 10);
+                    if (rawNum && !isNaN(rawNum)) {
+                      applyFontSize(rawNum);
+                    } else {
+                      setWordFontSizeInput(wordFontSize);
+                    }
                   }}
-                  className="w-8 text-center text-xs font-bold text-slate-800 outline-none py-0.5"
+                  className="w-9 text-center text-xs font-bold text-slate-800 outline-none py-0.5"
                   title="Type any font size in px and press Enter"
                   placeholder="14"
                 />
@@ -3238,7 +3636,10 @@ export default function DocumentEditor() {
                 {/* Dropdown toggle arrow */}
                 <button
                   type="button"
-                  onMouseDown={(e) => e.preventDefault()}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    saveSelection();
+                  }}
                   onClick={() => {
                     saveSelection();
                     setShowFontSizeMenu(!showFontSizeMenu);
@@ -3265,7 +3666,10 @@ export default function DocumentEditor() {
                       <button
                         key={sz}
                         type="button"
-                        onMouseDown={(e) => e.preventDefault()}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          saveSelection();
+                        }}
                         onClick={() => {
                           applyFontSize(sz);
                           setShowFontSizeMenu(false);
@@ -3285,9 +3689,12 @@ export default function DocumentEditor() {
               {/* Stepper Plus */}
               <button
                 type="button"
-                onMouseDown={(e) => e.preventDefault()}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  saveSelection();
+                }}
                 onClick={() => {
-                  const curr = parseInt(wordFontSize || '14', 10);
+                  const curr = parseInt(wordFontSizeInput || wordFontSize || '14', 10);
                   const next = Math.min(96, curr + 1);
                   applyFontSize(next);
                 }}
@@ -4185,7 +4592,7 @@ export default function DocumentEditor() {
                     A4 (210 × 297 mm)
                   </span>
                 </div>
-                <span>BEX-DOC-2026-0024-{id || 1}-{activeDocIndex + 1}</span>
+                <span>{displayDocId}</span>
               </div>
 
               {/* Main Content Area */}
@@ -4242,7 +4649,7 @@ export default function DocumentEditor() {
                   }}
                   style={{
                     fontFamily: wordFontFamily,
-                    fontSize: '14px',
+                    fontSize: `${wordFontSize}px`,
                     textAlign: wordTextAlign,
                     lineHeight: wordLineHeight,
                     minHeight: '820px',
@@ -4510,6 +4917,41 @@ export default function DocumentEditor() {
         </div>
       )}
 
+      {/* Discard Draft Confirmation */}
+      {showDiscardModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-50 p-4 font-sans text-slate-900">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-slate-200 space-y-4" role="dialog" aria-modal="true">
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 rounded-full bg-red-50 border border-red-100 flex items-center justify-center text-red-600 shrink-0">
+                <Trash2 size={16} />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">Discard this draft?</h3>
+                <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                  The documents, recipients and fields of this request will be deleted. To keep working later, choose Save and close instead.
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowDiscardModal(false)}
+                className="px-4 py-1.5 border border-slate-300 rounded-lg text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Keep editing
+              </button>
+              <button
+                type="button"
+                onClick={handleDiscardDraft}
+                className="px-4 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-bold"
+              >
+                Discard
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Confirm Details Popup Modal (PDF 1 p.6) with SMTP Email Trigger */}
       {showConfirmModal && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-50 p-4 font-sans text-slate-900">
@@ -4540,18 +4982,26 @@ export default function DocumentEditor() {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {recipientList.map((rec) => {
-                    const allFlat = Object.values(fieldsByDoc).flat();
-                    const count = allFlat.filter(f => f.assigneeId === rec.id || !f.assigneeId).length;
+                    const recFields = Object.values(fieldsByDoc).flat().filter((f) => fieldBelongsTo(f, rec));
+                    const docsWithFields = Object.values(fieldsByDoc).filter((list) => (list || []).some((f) => fieldBelongsTo(f, rec))).length;
+                    const isCopy = rec.role === 'Receives a copy';
+                    const needsFields = ['Needs to sign', 'In-person signer'].includes(rec.role);
                     return (
-                      <tr key={rec.id} className="hover:bg-slate-50">
-                        <td className="py-2.5 px-4 font-semibold text-slate-800">
-                          {rec.email || 'vimal@bexcodeservices.com'}
+                      <tr key={rec.id || rec.email} className="hover:bg-slate-50">
+                        <td className="py-2.5 px-4">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: rec.color }} />
+                            <div className="min-w-0">
+                              <p className="font-semibold text-slate-800 truncate">{rec.name}</p>
+                              <p className="text-[10px] text-slate-500 truncate">{rec.email} - {rec.role}</p>
+                            </div>
+                          </div>
                         </td>
                         <td className="py-2.5 px-4 text-center font-bold text-slate-600">
-                          {documentsList.length}
+                          {isCopy ? '-' : `${docsWithFields}/${documentsList.length}`}
                         </td>
-                        <td className="py-2.5 px-4 text-right font-bold text-[#007355]">
-                          {count}
+                        <td className={`py-2.5 px-4 text-right font-bold ${needsFields && recFields.length === 0 ? 'text-red-600' : 'text-[#007355]'}`}>
+                          {isCopy ? '-' : recFields.length}
                         </td>
                       </tr>
                     );
@@ -4570,49 +5020,11 @@ export default function DocumentEditor() {
               </button>
               <button
                 type="button"
-                onClick={async () => {
-                  setShowConfirmModal(false);
-                  const targetEmail = recipientList[0]?.email || recipientEmail || 'vimal@bexcodeservices.com';
-                  const allFlat = Object.entries(fieldsByDoc).flatMap(([docIdx, fList]) => 
-                    (fList || []).map(f => ({
-                      ...f,
-                      docIndex: f.docIndex !== undefined ? f.docIndex : parseInt(docIdx) || 0,
-                      page: f.page || (parseInt(docIdx) || 0) + 1
-                    }))
-                  );
-
-                  // Persist to localStorage for envelope
-                  if (id) {
-                    localStorage.setItem(`bexsign_doc_${id}_documents`, JSON.stringify(documentsList));
-                    localStorage.setItem(`bexsign_doc_${id}_fields_by_doc`, JSON.stringify(fieldsByDoc));
-                    localStorage.setItem(`bexsign_doc_${id}_fields`, JSON.stringify(allFlat));
-                  }
-
-                  try {
-                    await fetch(`http://localhost:5000/api/documents/send/${id || 1}`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({
-                        recipientEmail: targetEmail,
-                        recipientName: recipientList[0]?.name || 'Signer',
-                        documentName: documentTitle,
-                        documents: documentsList,
-                        documentText: currentDocument.documentText,
-                        fieldsByDoc: fieldsByDoc,
-                        fields: allFlat,
-                        recipients: recipientList
-                      })
-                    });
-                  } catch (e) {}
-
-                  showPopupAlert(`Document package sent for signature! Digital Signature Request email dispatched via SMTP to ${targetEmail}.`, {
-                    title: 'Envelope Dispatched',
-                    type: 'success'
-                  });
-                  navigate('/documents');
-                }}
-                className="px-5 py-2 bg-[#007355] hover:bg-[#005c44] text-white rounded-lg text-xs font-bold transition shadow cursor-pointer"
+                onClick={handleConfirmSend}
+                disabled={isSending}
+                className="px-5 py-2 bg-[#007355] hover:bg-[#005c44] disabled:opacity-60 text-white rounded-lg text-xs font-bold transition shadow cursor-pointer flex items-center gap-1.5"
               >
+                {isSending && <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />}
                 Confirm and send
               </button>
             </div>

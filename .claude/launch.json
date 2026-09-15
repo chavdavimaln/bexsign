@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "bex_sign-client",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "client", "run", "dev"],
+      "port": 3003
+    },
+    {
+      "name": "bex_sign-server",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "server", "start"],
+      "port": 5000
+    }
+  ]
+}

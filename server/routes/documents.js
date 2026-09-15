@@ -4,9 +4,9 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const db = require('../db');
-const { 
-  getOrCreateDocumentIdentifier, 
-  markDocumentSigned, 
+const {
+  getOrCreateDocumentIdentifier,
+  markDocumentSigned,
   getOrCreateEmployeeSignature,
   getEmployeeSignatureByEmail,
   upsertEmployeeSignature,
@@ -20,6 +20,7 @@ const {
   sendDocumentCompletedEmail,
   sendDocumentCopyEmail
 } = require('../utils/emailService');
+const requestHelpers = require('../utils/requestHelpers');
 
 // Ensure uploads directory exists inside server/
 const uploadDir = path.join(__dirname, '../uploads');
@@ -37,14 +38,50 @@ const storage = multer.diskStorage({
     }
 });
 
-const upload = multer({ storage: storage });
+// Zoho Sign limits: 25 MB per document, 40 documents per request
+const upload = multer({ storage: storage, limits: { fileSize: 25 * 1024 * 1024, files: 40 } });
 
-// Ensure document_text column exists in document_files
-(async () => {
-  try {
-    await db.query('ALTER TABLE document_files ADD COLUMN document_text LONGTEXT NULL');
-  } catch (e) {}
-})();
+const uploadRequestFiles = (req, res, next) => {
+    upload.any()(req, res, (err) => {
+        if (err) {
+            const message = err.code === 'LIMIT_FILE_SIZE'
+                ? 'Each document must be 25 MB or smaller.'
+                : (err.code === 'LIMIT_FILE_COUNT' ? 'A request can contain at most 40 documents.' : err.message);
+            return res.status(400).json({ success: false, error: message });
+        }
+        next();
+    });
+};
+
+// Ensure request columns (recipient roles, document text, signed files, settings) exist
+requestHelpers.ensureRequestSchema();
+
+const TRUE_VALUES = ['1', 'true', 1, true];
+
+// Map "More settings" from the Send for signatures screen to documents columns (only keys that were sent)
+function buildRequestSettings(body = {}) {
+    const settings = {};
+    if (body.noteToAll !== undefined) settings.custom_message = body.noteToAll || null;
+    if (body.daysToComplete !== undefined && body.daysToComplete !== '') settings.expiration_days = parseInt(body.daysToComplete) || 15;
+    if (body.reminderDays !== undefined && body.reminderDays !== '') settings.reminder_days = parseInt(body.reminderDays) || 5;
+    if (body.signingOrder) settings.signing_order = body.signingOrder === 'sequential' ? 'sequential' : 'parallel';
+    if (body.documentType !== undefined) settings.document_type = body.documentType || null;
+    if (body.description !== undefined) settings.description = body.description || null;
+    if (body.agreementValidUntil !== undefined) settings.validity = body.agreementValidUntil || null;
+    if (body.autoReminders !== undefined) settings.auto_reminders = TRUE_VALUES.includes(body.autoReminders) ? 1 : 0;
+    if (body.allowComments !== undefined) settings.allow_comments = TRUE_VALUES.includes(body.allowComments) ? 1 : 0;
+    return settings;
+}
+
+async function applyRequestSettings(documentId, settings) {
+    const keys = Object.keys(settings);
+    if (keys.length === 0) return;
+    await requestHelpers.ensureRequestSchema();
+    await db.query(
+        `UPDATE documents SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`,
+        [...keys.map((k) => settings[k]), documentId]
+    );
+}
 
 // @route   GET /api/documents
 // @desc    Get all documents from database with generated BexSign document IDs
@@ -94,244 +131,110 @@ router.get('/', async (req, res) => {
 });
 
 // @route   POST /api/documents/upload or /api/documents/create
-router.post('/upload', upload.any(), async (req, res) => {
-    const { 
+// @desc    Create or update a signing request draft: documents (multiple files), recipients and settings
+router.post('/upload', uploadRequestFiles, async (req, res) => {
+    const {
         documentId, document_id, id,
-        userId, user_id, documentName, document_name, folderName, folder_name, 
-        recipientEmail, recipient_email, recipientName, recipient_name, 
-        templateUsed, template_used, status,
-        signingOrder, daysToComplete, reminderDays, noteToAll, recipients 
+        userId, user_id, documentName, document_name, folderName, folder_name,
+        recipientEmail, recipient_email, recipientName, recipient_name,
+        templateUsed, template_used, status, recipients
     } = req.body;
     const existingDocId = parseInt(documentId || document_id || id) || 0;
-    const docName = documentName || document_name || 'New Document';
-    const recipEmail = recipientEmail || recipient_email || 'vimal@bexcodeservices.com';
-    const recipName = recipientName || recipient_name || 'Vimal Chavda';
+    const docName = String(documentName || document_name || 'New Document').trim() || 'New Document';
+    const recipientList = requestHelpers.parseJsonInput(recipients, null);
+    const firstRecipient = Array.isArray(recipientList) ? recipientList.find((r) => r && r.email && String(r.email).trim()) : null;
+    const recipEmail = recipientEmail || recipient_email || (firstRecipient ? String(firstRecipient.email).trim() : null);
+    const recipName = recipientName || recipient_name || firstRecipient?.name || undefined;
     const folder = folderName || folder_name || 'General';
     const template = templateUsed || template_used || null;
-    const uId = userId || user_id || 1;
+    const uId = parseInt(userId || user_id) || 1;
     const docStatus = status || 'Draft';
+    const metaDocs = requestHelpers.parseJsonInput(req.body.documentsMeta, null);
 
     const uploadedFiles = req.files || [];
     const primaryUploaded = uploadedFiles.find(f => f.fieldname === 'documentFile') || uploadedFiles[0];
     const filePath = primaryUploaded ? `/uploads/${primaryUploaded.filename}` : (req.body.file_path || '/uploads/sample.pdf');
 
     try {
-        // If editing or continuing an existing document draft: UPDATE it instead of creating duplicate drafts!
+        await requestHelpers.ensureRequestSchema();
+
+        // Continue an existing draft (UPDATE) instead of creating duplicates; unknown ids create a new draft
+        let targetId = 0;
         if (existingDocId > 0) {
-            let updateSql = `UPDATE documents 
-                             SET document_name = ?, 
-                                 folder_name = ?, 
-                                 status = ?, 
-                                 recipient_email = ?,
-                                 custom_message = COALESCE(?, custom_message),
-                                 expiration_days = COALESCE(?, expiration_days),
-                                 reminder_days = COALESCE(?, reminder_days),
-                                 signing_order = COALESCE(?, signing_order)`;
-            let updateParams = [
-                docName, folder, docStatus, recipEmail,
-                noteToAll || null, parseInt(daysToComplete) || null, parseInt(reminderDays) || null, signingOrder || null
-            ];
-            if (primaryUploaded) {
-                updateSql += `, file_path = ?`;
-                updateParams.push(`/uploads/${primaryUploaded.filename}`);
-            }
-            updateSql += ` WHERE id = ?`;
-            updateParams.push(existingDocId);
+            const [found] = await db.query('SELECT id FROM documents WHERE id = ?', [existingDocId]);
+            if (found.length > 0) targetId = existingDocId;
+        }
+        const isNew = targetId === 0;
 
+        if (!isNew) {
+            let updateSql = 'UPDATE documents SET document_name = ?, folder_name = ?, status = ?';
+            const updateParams = [docName, folder, docStatus];
+            if (recipEmail) {
+                updateSql += ', recipient_email = ?';
+                updateParams.push(recipEmail);
+            }
+            if (primaryUploaded && !Array.isArray(metaDocs)) {
+                updateSql += ', file_path = ?';
+                updateParams.push(filePath);
+            }
+            updateSql += ' WHERE id = ?';
+            updateParams.push(targetId);
             await db.query(updateSql, updateParams);
-
-            // Update recipients
-            if (recipients) {
-                try {
-                    await db.query('DELETE FROM document_recipients WHERE document_id = ?', [existingDocId]);
-                    const recipientList = typeof recipients === 'string' ? JSON.parse(recipients) : recipients;
-                    for (let i = 0; i < recipientList.length; i++) {
-                        const r = recipientList[i];
-                        if (r.email) {
-                            await db.query(
-                                `INSERT INTO document_recipients (document_id, name, email, role, signing_order_index, status)
-                                 VALUES (?, ?, ?, ?, ?, 'pending')`,
-                                [existingDocId, r.name || 'Signer', r.email, r.role || 'signer', i + 1]
-                            );
-                        }
-                    }
-                } catch (errRec) {
-                    console.warn('Recipients update warning:', errRec.message);
-                }
-            }
-
-            // Persist multiple attached documents to document_files
-            if (req.body.documentsMeta) {
-                try {
-                    const metaDocs = typeof req.body.documentsMeta === 'string'
-                        ? JSON.parse(req.body.documentsMeta)
-                        : req.body.documentsMeta;
-                    if (Array.isArray(metaDocs) && metaDocs.length > 0) {
-                        await db.query('DELETE FROM document_files WHERE document_id = ?', [existingDocId]);
-                        for (let i = 0; i < metaDocs.length; i++) {
-                            const d = metaDocs[i];
-                            let matched = null;
-                            if (uploadedFiles.length > 0) {
-                                matched = uploadedFiles.find(f => f.originalname === d.file_name || f.originalname === d.name);
-                                if (!matched && uploadedFiles[i]) {
-                                    matched = uploadedFiles[i];
-                                }
-                            }
-                            const docFilePath = matched ? `/uploads/${matched.filename}` : (d.file_path || '/uploads/sample.pdf');
-                            const docFileSize = matched ? Math.round(matched.size / 1024) : 1024;
-                            try {
-                                await db.query(
-                                    `INSERT INTO document_files (document_id, file_name, file_path, file_size, file_type, document_text)
-                                     VALUES (?, ?, ?, ?, ?, ?)`,
-                                    [existingDocId, d.name || 'Document.pdf', docFilePath, docFileSize, 'pdf', d.documentText || d.customMessage || null]
-                                );
-                            } catch (eInsert) {
-                                await db.query(
-                                    `INSERT INTO document_files (document_id, file_name, file_path, file_size, file_type)
-                                     VALUES (?, ?, ?, ?, ?)`,
-                                    [existingDocId, d.name || 'Document.pdf', docFilePath, docFileSize, 'pdf']
-                                );
-                            }
-                        }
-                    }
-                } catch (errMeta) {
-                    console.warn('Document files persistence warning:', errMeta.message);
-                }
-            }
-
-            const idRecord = await getOrCreateDocumentIdentifier(existingDocId, {
-                signerEmail: recipEmail,
-                signerName: recipName,
-                status: docStatus
-            });
-
-            const [existingDoc] = await db.query('SELECT * FROM documents WHERE id = ?', [existingDocId]);
-
-            return res.status(200).json({
-                success: true,
-                message: 'Document draft updated successfully!',
-                documentId: existingDocId,
-                bexsignDocId: idRecord.bexsign_doc_id,
-                document: { 
-                    ...(existingDoc[0] || { id: existingDocId, document_name: docName, status: docStatus }),
-                    bexsign_doc_id: idRecord.bexsign_doc_id
-                },
-                filePath: req.file ? `/uploads/${req.file.filename}` : (existingDoc[0]?.file_path || filePath)
-            });
+        } else {
+            const [result] = await db.query(
+                `INSERT INTO documents (user_id, document_name, file_path, folder_name, status, recipient_email, template_used)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                [uId, docName, filePath, folder, docStatus, recipEmail, template]
+            );
+            targetId = result.insertId;
         }
 
-        // Otherwise, insert new document
-        const query = `INSERT INTO documents (user_id, document_name, file_path, folder_name, status, recipient_email, template_used) 
-                       VALUES (?, ?, ?, ?, ?, ?, ?)`;
+        await applyRequestSettings(targetId, buildRequestSettings(req.body));
 
-        const [result] = await db.query(query, [uId, docName, filePath, folder, docStatus, recipEmail, template]);
-        const documentId = result.insertId;
+        const savedRecipients = Array.isArray(recipientList)
+            ? await requestHelpers.saveRecipients(targetId, recipientList)
+            : await requestHelpers.getRecipients(targetId);
 
-        // Save detailed recipients if provided
-        if (recipients) {
-            try {
-                const recipientList = typeof recipients === 'string' ? JSON.parse(recipients) : recipients;
-                for (let i = 0; i < recipientList.length; i++) {
-                    const r = recipientList[i];
-                    if (r.email) {
-                        await db.query(
-                            `INSERT INTO document_recipients (document_id, name, email, role, signing_order_index, status)
-                             VALUES (?, ?, ?, ?, ?, 'pending')`,
-                            [documentId, r.name || 'Signer', r.email, r.role || 'signer', i + 1]
-                        );
-                    }
-                }
-            } catch (errRec) {
-                console.warn('Recipients insert warning:', errRec.message);
-            }
-        }
+        const savedFiles = Array.isArray(metaDocs)
+            ? await requestHelpers.syncDocumentFiles(targetId, metaDocs, uploadedFiles)
+            : await requestHelpers.getDocumentFiles(targetId);
 
-        // Persist multiple attached documents to document_files for new document
-        if (req.body.documentsMeta) {
-            try {
-                const metaDocs = typeof req.body.documentsMeta === 'string'
-                    ? JSON.parse(req.body.documentsMeta)
-                    : req.body.documentsMeta;
-                if (Array.isArray(metaDocs) && metaDocs.length > 0) {
-                    for (let i = 0; i < metaDocs.length; i++) {
-                        const d = metaDocs[i];
-                        let matched = null;
-                        if (uploadedFiles.length > 0) {
-                            matched = uploadedFiles.find(f => f.originalname === d.file_name || f.originalname === d.name);
-                            if (!matched && uploadedFiles[i]) {
-                                matched = uploadedFiles[i];
-                            }
-                        }
-                        const docFilePath = matched ? `/uploads/${matched.filename}` : (d.file_path || '/uploads/sample.pdf');
-                        const docFileSize = matched ? Math.round(matched.size / 1024) : 1024;
-                        try {
-                            await db.query(
-                                `INSERT INTO document_files (document_id, file_name, file_path, file_size, file_type, document_text)
-                                 VALUES (?, ?, ?, ?, ?, ?)`,
-                                [documentId, d.name || 'Document.pdf', docFilePath, docFileSize, 'pdf', d.documentText || d.customMessage || null]
-                            );
-                        } catch (eIns) {
-                            await db.query(
-                                `INSERT INTO document_files (document_id, file_name, file_path, file_size, file_type)
-                                 VALUES (?, ?, ?, ?, ?)`,
-                                [documentId, d.name || 'Document.pdf', docFilePath, docFileSize, 'pdf']
-                            );
-                        }
-                    }
-                }
-            } catch (errMeta) {
-                console.warn('Document files persistence warning:', errMeta.message);
-            }
-        }
-
-        // Update settings
-        if (noteToAll || daysToComplete || reminderDays || signingOrder) {
-            try {
-                await db.query(
-                    `UPDATE documents 
-                     SET custom_message = COALESCE(?, custom_message),
-                         expiration_days = COALESCE(?, expiration_days),
-                         reminder_days = COALESCE(?, reminder_days),
-                         signing_order = COALESCE(?, signing_order)
-                     WHERE id = ?`,
-                    [noteToAll || null, parseInt(daysToComplete) || null, parseInt(reminderDays) || null, signingOrder || null, documentId]
-                );
-            } catch (eUp) {}
+        if (savedFiles[0]?.file_path) {
+            await db.query(`UPDATE documents SET file_path = ? WHERE id = ? AND status <> 'Completed'`, [savedFiles[0].file_path, targetId]);
         }
 
         // Automatically create record in separate document_identifiers table
-        const idRecord = await getOrCreateDocumentIdentifier(documentId, {
-            signerEmail: recipEmail,
+        const idRecord = await getOrCreateDocumentIdentifier(targetId, {
+            signerEmail: recipEmail || undefined,
             signerName: recipName,
             status: docStatus
         });
 
-        try {
-            await db.query(
-                `INSERT INTO activity_history (document_id, activity_description, ip_address)
-                 VALUES (?, ?, ?)`,
-                [documentId, `Document "${docName}" created with ID: ${idRecord.bexsign_doc_id}`, req.ip || '127.0.0.1']
-            );
-        } catch (e) {
-            console.warn('Activity log warning:', e.message);
+        if (isNew) {
+            await requestHelpers.logRequestEvent(targetId, {
+                description: `Document "${docName}" created as ${docStatus.toLowerCase()} with ID: ${idRecord.bexsign_doc_id}`,
+                req
+            });
         }
 
-        const [newDoc] = await db.query('SELECT * FROM documents WHERE id = ?', [documentId]);
+        const [rows] = await db.query('SELECT * FROM documents WHERE id = ?', [targetId]);
 
-        res.status(201).json({
+        res.status(isNew ? 201 : 200).json({
             success: true,
-            message: 'Document and BexSign ID saved successfully!',
-            documentId,
+            message: isNew ? 'Document and BexSign ID saved successfully!' : 'Document draft updated successfully!',
+            documentId: targetId,
             bexsignDocId: idRecord.bexsign_doc_id,
-            document: { 
-                ...(newDoc[0] || { id: documentId, document_name: docName, status: docStatus, file_path: filePath }),
+            document: {
+                ...(rows[0] || { id: targetId, document_name: docName, status: docStatus, file_path: filePath }),
                 bexsign_doc_id: idRecord.bexsign_doc_id
             },
-            filePath
+            recipients: savedRecipients,
+            files: savedFiles,
+            filePath: rows[0]?.file_path || filePath
         });
     } catch (err) {
         console.error('Save Document Error:', err);
-        res.status(500).json({ error: 'Database error while saving document' });
+        res.status(500).json({ success: false, error: 'Database error while saving document' });
     }
 });
 
@@ -491,20 +394,23 @@ router.get('/:id/identifier', async (req, res) => {
 
 // @route   GET /api/documents/:id
 // @desc    Get document details by ID joined with document_identifiers table
+//          (?email=<recipient> masks other recipients' field values while the request is in progress)
 router.get('/:id', async (req, res) => {
     const { id } = req.params;
+    const viewerEmail = String(req.query.email || '').trim().toLowerCase();
     try {
+        await requestHelpers.ensureRequestSchema();
         const [results] = await db.query(`
-            SELECT d.*, 
-                   di.bexsign_doc_id, 
-                   di.signer_name, 
-                   di.signer_email, 
-                   di.signature_status, 
+            SELECT d.*,
+                   di.bexsign_doc_id,
+                   di.signer_name,
+                   di.signer_email,
+                   di.signature_status,
                    di.signature_image,
                    di.signature_style,
-                   di.signed_at 
-            FROM documents d 
-            LEFT JOIN document_identifiers di ON d.id = di.document_id 
+                   di.signed_at
+            FROM documents d
+            LEFT JOIN document_identifiers di ON d.id = di.document_id
             WHERE d.id = ?
         `, [id]);
 
@@ -524,13 +430,14 @@ router.get('/:id', async (req, res) => {
         }
 
         let doc = results[0];
+        const isCompleted = String(doc.status || '').toLowerCase() === 'completed';
         if (!doc.bexsign_doc_id) {
             const idRecord = await getOrCreateDocumentIdentifier(id);
             doc.bexsign_doc_id = idRecord.bexsign_doc_id;
         }
 
         try {
-            const [files] = await db.query('SELECT * FROM document_files WHERE document_id = ? ORDER BY id ASC', [id]);
+            const files = await requestHelpers.getDocumentFiles(id);
             if (files && files.length > 0) {
                 doc.files = files;
             }
@@ -540,41 +447,49 @@ router.get('/:id', async (req, res) => {
 
         try {
             const [fieldRows] = await db.query('SELECT * FROM document_fields WHERE document_id = ? ORDER BY id ASC', [id]);
-            if (fieldRows && fieldRows.length > 0) {
-                doc.fields = fieldRows.map(r => {
-                    let parsedOpts = {};
-                    try {
-                        if (r.options) parsedOpts = JSON.parse(r.options);
-                    } catch (e) {}
-                    return {
-                        id: r.id,
-                        type: r.field_type,
-                        label: r.label || r.field_type,
-                        x: r.pos_x,
-                        y: r.pos_y,
-                        width: r.width || 150,
-                        height: r.height || 40,
-                        page: r.page_number || 1,
-                        docIndex: parsedOpts.docIndex !== undefined ? parsedOpts.docIndex : ((r.page_number || 1) - 1),
-                        value: parsedOpts.value !== undefined ? parsedOpts.value : (r.field_type === 'Sign date' ? new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : ''),
-                        required: Boolean(r.is_required),
-                        ...parsedOpts
-                    };
-                });
-
-                doc.fieldsByDoc = {};
-                doc.fields.forEach(f => {
-                    const dIdx = f.docIndex !== undefined ? f.docIndex : 0;
-                    if (!doc.fieldsByDoc[dIdx]) doc.fieldsByDoc[dIdx] = [];
-                    doc.fieldsByDoc[dIdx].push(f);
-                });
-            } else {
-                doc.fields = [];
-                doc.fieldsByDoc = {};
-            }
+            doc.fields = fieldRows.map(requestHelpers.parseFieldRow).map((f) => {
+                if (isCompleted) return f;
+                const { signatureImage, ...withoutImage } = f;
+                const ownerEmail = String(f.assigneeEmail || '').toLowerCase();
+                if (viewerEmail && ownerEmail && ownerEmail !== viewerEmail) {
+                    // Zoho Sign privacy: other recipients' values stay hidden until completion
+                    return { ...withoutImage, isAssignedToOther: true, value: '', gridValue: null };
+                }
+                return viewerEmail ? f : withoutImage;
+            });
+            doc.fieldsByDoc = requestHelpers.groupFieldsByDoc(doc.fields);
         } catch (eFldGet) {
             console.warn('Document fields query warning:', eFldGet.message);
         }
+
+        try {
+            const recRows = await requestHelpers.getRecipients(id);
+            if (recRows && recRows.length > 0) {
+                doc.recipients = recRows.map(({ signature_image, ...r }) => r);
+            } else if (doc.recipient_email) {
+                // Legacy single-recipient document: flagged so editors never prefer it over real recipients
+                doc.recipients = [{
+                    id: 1,
+                    name: doc.signer_name || 'Signer',
+                    email: doc.recipient_email,
+                    role: 'signer',
+                    role_label: 'Needs to sign',
+                    signing_order_index: 1,
+                    status: 'pending',
+                    isFallback: true
+                }];
+            } else {
+                doc.recipients = [];
+            }
+        } catch (eRecGet) {
+            console.warn('Document recipients query warning:', eRecGet.message);
+            doc.recipients = [];
+        }
+
+        try {
+            doc.sender = await requestHelpers.getRequestSender(doc);
+            doc.expires_on = requestHelpers.getRequestExpiry(doc);
+        } catch (eSender) {}
 
         res.json({ success: true, document: doc });
     } catch (err) {
@@ -594,280 +509,159 @@ router.get('/:id', async (req, res) => {
 });
 
 // @route   POST /api/documents/:id/save
-// @desc    Update document fields, title, and status
+// @desc    Save draft: request name, status, documents, recipients and placed fields (per document)
 router.post('/:id/save', async (req, res) => {
     const { id } = req.params;
-    const { documentTitle, document_name, status, documents, documentText, fields, fieldsOnDoc, fieldsByDoc } = req.body;
+    const { documentTitle, document_name, status, documents, fields, fieldsOnDoc, fieldsByDoc } = req.body;
     const titleToSave = documentTitle || document_name;
 
     try {
+        await requestHelpers.ensureRequestSchema();
+        const [found] = await db.query('SELECT id, status FROM documents WHERE id = ?', [id]);
+        if (found.length === 0) {
+            return res.status(404).json({ success: false, error: 'Document not found' });
+        }
+
         if (titleToSave) {
             await db.query('UPDATE documents SET document_name = ? WHERE id = ?', [titleToSave, id]);
         }
-        if (status) {
+        // A sent/completed request is never downgraded back to Draft by an editor autosave
+        const currentStatus = String(found[0].status || '').toLowerCase();
+        const keepsStatus = status === 'Draft' && ['in progress', 'completed'].includes(currentStatus);
+        if (status && !keepsStatus) {
             await db.query('UPDATE documents SET status = ? WHERE id = ?', [status, id]);
         }
-        if (documentText) {
-            await db.query('UPDATE documents SET custom_message = ? WHERE id = ?', [documentText, id]);
-        }
+        await applyRequestSettings(id, buildRequestSettings(req.body));
 
-        // Persist placed fields to document_fields table
-        const fieldsToSave = fields || fieldsOnDoc || (fieldsByDoc ? Object.values(fieldsByDoc).flat() : null);
-        if (fieldsToSave && Array.isArray(fieldsToSave)) {
-            try {
-                await db.query('DELETE FROM document_fields WHERE document_id = ?', [id]);
-                for (const f of fieldsToSave) {
-                    const opts = JSON.stringify({
-                        value: f.value !== undefined ? f.value : '',
-                        docIndex: f.docIndex !== undefined ? f.docIndex : ((f.page || 1) - 1),
-                        assigneeId: f.assigneeId,
-                        assignee: f.assignee,
-                        font: f.font,
-                        fontSize: f.fontSize,
-                        textColor: f.textColor,
-                        dateFormat: f.dateFormat,
-                        charCount: f.charCount,
-                        charSpace: f.charSpace,
-                        gridValue: f.gridValue,
-                        checked: f.checked,
-                        isCustom: f.isCustom,
-                        isBold: f.isBold,
-                        isItalic: f.isItalic
-                    });
-                    await db.query(
-                        `INSERT INTO document_fields (document_id, field_type, label, is_required, pos_x, pos_y, page_number, width, height, options)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                        [
-                            id,
-                            f.type || 'Signature',
-                            f.label || f.type || 'Field',
-                            f.required !== false ? 1 : 0,
-                            f.x || 60,
-                            f.y || 420,
-                            f.page || 1,
-                            f.width || 150,
-                            f.height || 40,
-                            opts
-                        ]
-                    );
-                }
-            } catch (eFld) {
-                console.warn('Document fields save warning:', eFld.message);
-            }
-        }
+        const recListSave = req.body.recipients || req.body.recipientList;
+        const recipients = Array.isArray(recListSave)
+            ? await requestHelpers.saveRecipients(id, recListSave)
+            : await requestHelpers.getRecipients(id);
 
-        if (documents && Array.isArray(documents) && documents.length > 0) {
-            try {
-                await db.query('DELETE FROM document_files WHERE document_id = ?', [id]);
-                for (const d of documents) {
-                    try {
-                        await db.query(
-                            `INSERT INTO document_files (document_id, file_name, file_path, file_size, file_type, document_text)
-                             VALUES (?, ?, ?, ?, ?, ?)`,
-                            [id, d.name || 'Document.pdf', d.file_path || '/uploads/sample.pdf', 1024, 'pdf', d.documentText || d.customMessage || null]
-                        );
-                    } catch (eIns) {
-                        await db.query(
-                            `INSERT INTO document_files (document_id, file_name, file_path, file_size, file_type)
-                             VALUES (?, ?, ?, ?, ?)`,
-                            [id, d.name || 'Document.pdf', d.file_path || '/uploads/sample.pdf', 1024, 'pdf']
-                        );
-                    }
-                }
-            } catch (eFiles) {
-                console.warn('Save document files warning:', eFiles.message);
-            }
-        }
-        res.json({ success: true, message: 'Document updated successfully' });
+        const files = Array.isArray(documents) && documents.length > 0
+            ? await requestHelpers.syncDocumentFiles(id, documents)
+            : await requestHelpers.getDocumentFiles(id);
+
+        const fieldCount = await requestHelpers.saveDocumentFields(id, { fieldsByDoc, fields: fields || fieldsOnDoc }, recipients);
+
+        res.json({ success: true, message: 'Document updated successfully', recipients, files, fieldCount });
     } catch (err) {
-        res.json({ success: true, message: 'Document saved successfully' });
+        console.error('Save document error:', err);
+        res.status(500).json({ success: false, error: 'Database error while saving document' });
     }
 });
 
 // @route   POST /api/documents/send/:id
-// @desc    Dispatch document and update status to 'In Progress', sending signature request email via SMTP
+// @desc    Save the request and send it: first signing group (sequential) or all signers (parallel) are emailed
 router.post('/send/:id', async (req, res) => {
     const { id } = req.params;
-    const { fields, recipientEmail, recipientName, documentName, noteToAll } = req.body;
+    const { documentName, documents, fieldsByDoc, fields, recipientEmail, recipientName } = req.body;
 
     try {
-        await db.query(
-            "UPDATE documents SET status = 'In Progress' WHERE id = ?",
-            [id]
-        );
-
-        // Synchronize recipients to document_recipients table on send
-        const recList = req.body.recipients || req.body.recipientList;
-        if (recList && Array.isArray(recList) && recList.length > 0) {
-            try {
-                await db.query('DELETE FROM document_recipients WHERE document_id = ?', [id]);
-                for (let i = 0; i < recList.length; i++) {
-                    const r = recList[i];
-                    if (r.email) {
-                        await db.query(
-                            `INSERT INTO document_recipients (document_id, name, email, role, signing_order_index, status)
-                             VALUES (?, ?, ?, ?, ?, 'pending')`,
-                            [id, r.name || 'Signer', r.email, r.role || 'signer', i + 1]
-                        );
-                    }
-                }
-            } catch (eRecSave) {
-                console.warn('Recipients save warning on send:', eRecSave.message);
-            }
-        } else if (recipientEmail) {
-            try {
-                await db.query('DELETE FROM document_recipients WHERE document_id = ?', [id]);
-                await db.query(
-                    `INSERT INTO document_recipients (document_id, name, email, role, signing_order_index, status)
-                     VALUES (?, ?, ?, 'signer', 1, 'pending')`,
-                    [id, recipientName || 'Signer', recipientEmail]
-                );
-            } catch (eRecSingle) {}
+        await requestHelpers.ensureRequestSchema();
+        const [found] = await db.query('SELECT * FROM documents WHERE id = ?', [id]);
+        if (found.length === 0) {
+            return res.status(404).json({ success: false, error: 'Document not found' });
         }
 
-        // Synchronize multiple documents to document_files on dispatch
-        if (req.body.documents && Array.isArray(req.body.documents)) {
-            try {
-                await db.query('DELETE FROM document_files WHERE document_id = ?', [id]);
-                for (const d of req.body.documents) {
-                    try {
-                        await db.query(
-                            `INSERT INTO document_files (document_id, file_name, file_path, file_size, file_type, document_text)
-                             VALUES (?, ?, ?, ?, ?, ?)`,
-                            [id, d.name || 'Document.pdf', d.file_path || '/uploads/sample.pdf', 1024, 'pdf', d.documentText || d.customMessage || null]
-                        );
-                    } catch (eSendIns) {
-                        await db.query(
-                            `INSERT INTO document_files (document_id, file_name, file_path, file_size, file_type)
-                             VALUES (?, ?, ?, ?, ?)`,
-                            [id, d.name || 'Document.pdf', d.file_path || '/uploads/sample.pdf', 1024, 'pdf']
-                        );
-                    }
-                }
-            } catch (eDocFiles) {
-                console.warn('Doc files update warning on send:', eDocFiles.message);
+        if (documentName) {
+            await db.query('UPDATE documents SET document_name = ? WHERE id = ?', [documentName, id]);
+        }
+        await applyRequestSettings(id, buildRequestSettings(req.body));
+
+        let recipientList = req.body.recipients || req.body.recipientList;
+        if (!Array.isArray(recipientList) || recipientList.length === 0) {
+            const legacyEmail = recipientEmail || found[0].recipient_email;
+            recipientList = legacyEmail ? [{ email: legacyEmail, name: recipientName, role: 'Needs to sign' }] : [];
+        }
+        const existingRecipients = await requestHelpers.getRecipients(id);
+        const recipients = existingRecipients.length > 0 && !(req.body.recipients || req.body.recipientList)
+            ? existingRecipients
+            : await requestHelpers.saveRecipients(id, recipientList);
+
+        if (Array.isArray(documents) && documents.length > 0) {
+            await requestHelpers.syncDocumentFiles(id, documents);
+        }
+        await requestHelpers.saveDocumentFields(id, { fieldsByDoc, fields }, recipients);
+
+        const signingRecipients = recipients.filter((r) => requestHelpers.isSigningRole(r.role));
+        if (signingRecipients.length === 0) {
+            return res.status(400).json({ success: false, error: 'Add at least one recipient who needs to sign or approve before sending.' });
+        }
+
+        // Zoho Sign rule: every signer must have at least one field (checked when fields are used)
+        const [fieldRows] = await db.query('SELECT * FROM document_fields WHERE document_id = ?', [id]);
+        const placedFields = fieldRows.map(requestHelpers.parseFieldRow);
+        if (placedFields.length > 0) {
+            const missing = signingRecipients.filter((r) => r.role === 'signer'
+                && !placedFields.some((f) => requestHelpers.fieldBelongsToRecipient(f, r, signingRecipients)));
+            if (missing.length > 0) {
+                return res.status(400).json({
+                    success: false,
+                    error: `Add at least one field for ${missing.map((r) => r.name || r.email).join(', ')} before sending.`,
+                    missingRecipients: missing.map((r) => r.email)
+                });
             }
         }
 
-        const firstDocText = (req.body.documents && req.body.documents[0]?.documentText) || req.body.documentText;
-        if (firstDocText) {
-            try {
-                await db.query('UPDATE documents SET custom_message = ? WHERE id = ?', [firstDocText, id]);
-            } catch (eText) {}
-        }
-
-        // Persist placed fields to document_fields on send
-        const fieldsToSave = fields || (req.body.fieldsByDoc ? Object.values(req.body.fieldsByDoc).flat() : null);
-        if (fieldsToSave && Array.isArray(fieldsToSave)) {
-            try {
-                await db.query('DELETE FROM document_fields WHERE document_id = ?', [id]);
-                for (const f of fieldsToSave) {
-                    const opts = JSON.stringify({
-                        value: f.value !== undefined ? f.value : '',
-                        docIndex: f.docIndex !== undefined ? f.docIndex : ((f.page || 1) - 1),
-                        assigneeId: f.assigneeId,
-                        assignee: f.assignee,
-                        font: f.font,
-                        fontSize: f.fontSize,
-                        textColor: f.textColor,
-                        dateFormat: f.dateFormat,
-                        charCount: f.charCount,
-                        charSpace: f.charSpace,
-                        gridValue: f.gridValue,
-                        checked: f.checked,
-                        isCustom: f.isCustom,
-                        isBold: f.isBold,
-                        isItalic: f.isItalic
-                    });
-                    await db.query(
-                        `INSERT INTO document_fields (document_id, field_type, label, is_required, pos_x, pos_y, page_number, width, height, options)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                        [
-                            id,
-                            f.type || 'Signature',
-                            f.label || f.type || 'Field',
-                            f.required !== false ? 1 : 0,
-                            f.x || 60,
-                            f.y || 420,
-                            f.page || 1,
-                            f.width || 150,
-                            f.height || 40,
-                            opts
-                        ]
-                    );
-                }
-            } catch (eFldSend) {
-                console.warn('Doc fields update warning on send:', eFldSend.message);
-            }
-        }
-
-        // Fetch document info for email dispatch
+        await db.query("UPDATE documents SET status = 'In Progress', sent_at = COALESCE(sent_at, NOW()) WHERE id = ?", [id]);
         const [docs] = await db.query('SELECT * FROM documents WHERE id = ?', [id]);
-        const doc = docs[0] || {};
-        const targetEmail = recipientEmail || doc.recipient_email || 'vimal@bexcodeservices.com';
-        const docTitle = documentName || doc.document_name || 'Document';
+        const doc = docs[0];
+        await getOrCreateDocumentIdentifier(id, { status: 'In Progress' });
 
-        // Dispatch BexSign digital signature request email
-        const signingUrl = `http://localhost:3000/documents/sign/${id}`;
-        await sendSignatureRequestEmail({
-            to: targetEmail,
-            recipientName: recipientName || 'Valued Signer',
-            documentName: docTitle,
-            senderName: 'Manu Yadav',
-            senderEmail: 'manu.yadav@oladigital.health',
-            orgName: 'Dcode Health',
-            expiresOn: 'Sep 16, 2026',
-            message: noteToAll || doc.custom_message || '-',
-            signingUrl
+        const isSequential = doc.signing_order === 'sequential';
+        const group = requestHelpers.getActiveSigningGroup(recipients, isSequential);
+        const results = await requestHelpers.sendSigningInvitations(doc, group, { req });
+        const dispatchedEmails = results.filter((r) => r.success).map((r) => r.email);
+        const failedEmails = results.filter((r) => !r.success);
+
+        await requestHelpers.logRequestEvent(id, {
+            description: `Document "${doc.document_name}" sent for signature (${isSequential ? 'in order' : 'parallel'}) to: ${group.map((r) => r.email).join(', ')}`,
+            req
         });
 
-        try {
-            await db.query(
-                `INSERT INTO activity_history (document_id, activity_description, ip_address)
-                 VALUES (?, ?, ?)`,
-                [id, `Document "${docTitle}" dispatched for signature to ${targetEmail}`, req.ip || '127.0.0.1']
-            );
-        } catch (e) {
-            console.warn('Activity log warning:', e.message);
-        }
-
-        res.json({ success: true, message: `Document dispatched to ${targetEmail}` });
+        res.json({
+            success: true,
+            message: failedEmails.length
+                ? `Document sent. Email could not be delivered to: ${failedEmails.map((f) => f.email).join(', ')}`
+                : `Document dispatched to: ${dispatchedEmails.join(', ')}`,
+            dispatchedEmails,
+            failedEmails,
+            recipients: await requestHelpers.getRecipients(id)
+        });
     } catch (err) {
         console.error('Send Error:', err);
-        res.status(500).json({ error: 'Database error while sending document' });
+        res.status(500).json({ success: false, error: 'Database error while sending document' });
     }
 });
 
 // @route   POST /api/documents/:id/remind
-// @desc    Send reminder for document via SMTP
-router.post('/:id/remind', async (req, res) => {
+// @desc    Send reminder via SMTP to the recipients whose turn it is
+router.post(['/:id/remind', '/remind/:id'], async (req, res) => {
     const { id } = req.params;
     try {
         const [docs] = await db.query('SELECT * FROM documents WHERE id = ?', [id]);
-        const doc = docs[0] || {};
-        const targetEmail = doc.recipient_email || 'vimal@bexcodeservices.com';
-        const docTitle = doc.document_name || 'Document';
-        const signingUrl = `http://localhost:3000/documents/sign/${id}`;
+        const doc = docs[0];
+        if (!doc) {
+            return res.status(404).json({ success: false, error: 'Document not found' });
+        }
 
-        await sendReminderEmail({
-            to: targetEmail,
-            documentName: docTitle,
-            senderName: 'Manu Yadav',
-            senderEmail: 'manu.yadav@oladigital.health',
-            orgName: 'Dcode Health',
-            expiresOn: 'Sep 17, 2026',
-            signingUrl
+        const recipients = await requestHelpers.getRecipients(id);
+        let group = requestHelpers.getActiveSigningGroup(recipients, doc.signing_order === 'sequential');
+        if (recipients.length === 0 && doc.recipient_email) {
+            group = [{ id: null, email: doc.recipient_email, name: doc.recipient_email.split('@')[0] }];
+        }
+        if (group.length === 0) {
+            return res.json({ success: true, message: 'All recipients have already completed this document.' });
+        }
+
+        const results = await requestHelpers.sendSigningInvitations(doc, group, { req, isReminder: true });
+        const sent = results.filter((r) => r.success).map((r) => r.email);
+        res.json({
+            success: sent.length > 0,
+            message: sent.length > 0 ? `Reminder email sent to ${sent.join(', ')}` : 'Reminder email could not be sent.',
+            results
         });
-
-        try {
-            await db.query(
-                `INSERT INTO activity_history (document_id, activity_description, ip_address)
-                 VALUES (?, ?, ?)`,
-                [id, `Reminder email dispatched to ${targetEmail} for document "${docTitle}"`, req.ip || '127.0.0.1']
-            );
-        } catch (e) {}
-
-        res.json({ success: true, message: 'Reminder email sent to recipient successfully!' });
     } catch (err) {
         console.error('Remind error:', err);
         res.status(500).json({ error: err.message });
@@ -875,8 +669,8 @@ router.post('/:id/remind', async (req, res) => {
 });
 
 // @route   POST /api/documents/:id/recall
-// @desc    Recall a sent document with reason and dispatch recalled email
-router.post('/:id/recall', async (req, res) => {
+// @desc    Recall a sent document with reason and dispatch recalled email to notified recipients
+router.post(['/:id/recall', '/recall/:id'], async (req, res) => {
     const { id } = req.params;
     const { reason } = req.body;
     const recallReason = reason || 'first recall';
@@ -886,23 +680,25 @@ router.post('/:id/recall', async (req, res) => {
 
         const [docs] = await db.query('SELECT * FROM documents WHERE id = ?', [id]);
         const doc = docs[0] || {};
-        const targetEmail = doc.recipient_email || 'vimal@bexcodeservices.com';
         const docTitle = doc.document_name || 'Document';
+        const sender = await requestHelpers.getRequestSender(doc);
+        const recipients = await requestHelpers.getRecipients(id);
 
-        await sendDocumentRecalledEmail({
-            to: targetEmail,
-            documentName: docTitle,
-            senderEmail: 'manu.yadav@oladigital.health',
-            reason: recallReason
-        });
+        let targets = recipients
+            .filter((r) => r.sent_at || ['sent', 'viewed', 'signed'].includes(r.status))
+            .map((r) => r.email);
+        if (targets.length === 0 && doc.recipient_email) targets = [doc.recipient_email];
 
-        try {
-            await db.query(
-                `INSERT INTO activity_history (document_id, activity_description, ip_address)
-                 VALUES (?, ?, ?)`,
-                [id, `Document recalled. Reason: "${recallReason}"`, req.ip || '127.0.0.1']
-            );
-        } catch (e) {}
+        for (const to of [...new Set(targets)]) {
+            await sendDocumentRecalledEmail({
+                to,
+                documentName: docTitle,
+                senderEmail: sender.email,
+                reason: recallReason
+            });
+        }
+
+        await requestHelpers.logRequestEvent(id, { description: `Document recalled. Reason: "${recallReason}"`, req });
 
         res.json({ success: true, message: 'Document recalled successfully.' });
     } catch (err) {
@@ -944,7 +740,7 @@ router.post('/:id/correct', async (req, res) => {
 
 // @route   POST /api/documents/:id/extend
 // @desc    Extend expiry date for document (PDF 2 p.3)
-router.post('/:id/extend', async (req, res) => {
+router.post(['/:id/extend', '/extend/:id'], async (req, res) => {
     const { id } = req.params;
     const { newExpiryDate } = req.body;
     try {
@@ -964,12 +760,17 @@ router.post('/:id/extend', async (req, res) => {
 
 // @route   POST /api/documents/:id/reminder-settings
 // @desc    Update automatic reminder frequency (PDF 2 p.5)
-router.post('/:id/reminder-settings', async (req, res) => {
+router.post(['/:id/reminder-settings', '/reminder-settings/:id'], async (req, res) => {
     const { id } = req.params;
-    const { reminderDays, autoReminders } = req.body;
+    const reminderDays = req.body.reminderDays ?? req.body.reminderFrequencyDays;
+    const autoReminders = req.body.autoReminders ?? req.body.autoReminder;
     try {
+        await requestHelpers.ensureRequestSchema();
         if (reminderDays) {
             await db.query('UPDATE documents SET reminder_days = ? WHERE id = ?', [parseInt(reminderDays) || 5, id]);
+        }
+        if (autoReminders !== undefined) {
+            await db.query('UPDATE documents SET auto_reminders = ? WHERE id = ?', [autoReminders ? 1 : 0, id]);
         }
         res.json({ success: true, message: 'Reminder settings updated successfully.' });
     } catch (err) {
@@ -979,7 +780,7 @@ router.post('/:id/reminder-settings', async (req, res) => {
 
 // @route   POST /api/documents/:id/upload-signed
 // @desc    Upload physically signed document copy & mark completed (PDF 2 p.7)
-router.post('/:id/upload-signed', upload.single('signedDocument'), async (req, res) => {
+router.post(['/:id/upload-signed', '/upload-signed/:id'], upload.single('signedDocument'), async (req, res) => {
     const { id } = req.params;
     const { signerEmail } = req.body;
     const filePath = req.file ? `/uploads/${req.file.filename}` : null;
@@ -1027,44 +828,66 @@ router.post('/:id/upload-signed', upload.single('signedDocument'), async (req, r
 });
 
 // @route   POST /api/documents/:id/email-copy
-// @desc    Email signed document copy to up to three recipients (PDF 3 p.7)
+// @desc    Email a copy of the document to up to three addresses (PDF 3 p.7).
+//          Completed requests attach every signed PDF and the certificate of completion.
 router.post('/:id/email-copy', async (req, res) => {
     const { id } = req.params;
     const { emails } = req.body;
 
-    if (!emails || (Array.isArray(emails) && emails.length === 0)) {
-        return res.status(400).json({ error: 'Please provide at least one recipient email.' });
+    const emailList = (Array.isArray(emails) ? emails : [emails])
+        .map((e) => String(e || '').trim())
+        .filter(Boolean)
+        .slice(0, 3);
+    if (emailList.length === 0) {
+        return res.status(400).json({ success: false, error: 'Please provide at least one recipient email.' });
     }
-
-    const emailList = Array.isArray(emails) ? emails.slice(0, 3) : [emails];
 
     try {
         const [docs] = await db.query('SELECT * FROM documents WHERE id = ?', [id]);
         const doc = docs[0] || {};
         const docTitle = doc.document_name || 'Document';
+        const sender = await requestHelpers.getRequestSender(doc);
+        const files = await requestHelpers.getDocumentFiles(id);
 
-        for (const recipient of emailList) {
-            if (recipient && recipient.trim()) {
-                await sendDocumentCopyEmail({
-                    to: recipient.trim(),
-                    documentName: docTitle,
-                    senderEmail: 'manu.yadav@oladigital.health'
-                });
-            }
+        const attachments = files
+            .filter((f) => f.signed_file_path)
+            .map((f) => ({ filename: f.file_name, path: path.join(__dirname, '..', f.signed_file_path) }))
+            .filter((a) => fs.existsSync(a.path));
+        const certificatePath = path.join(__dirname, '..', 'uploads', 'completed', String(id), 'certificate-of-completion.pdf');
+        if (attachments.length > 0 && fs.existsSync(certificatePath)) {
+            attachments.push({ filename: 'Certificate of Completion.pdf', path: certificatePath });
         }
 
-        try {
-            await db.query(
-                `INSERT INTO activity_history (document_id, activity_description, ip_address)
-                 VALUES (?, ?, ?)`,
-                [id, `Copy of document dispatched to ${emailList.join(', ')}`, req.ip || '127.0.0.1']
-            );
-        } catch (e) {}
+        const results = [];
+        for (const recipient of emailList) {
+            const result = await sendDocumentCopyEmail({
+                to: recipient,
+                documentName: docTitle,
+                senderEmail: sender.email,
+                attachments,
+                signingUrl: attachments.length > 0 ? '' : requestHelpers.buildSigningUrl(id, recipient)
+            });
+            results.push({ email: recipient, ...result });
+        }
 
-        res.json({ success: true, message: `Document copy sent successfully to ${emailList.length} recipient(s)!` });
+        const sent = results.filter((r) => r.success).map((r) => r.email);
+        if (sent.length > 0) {
+            await requestHelpers.logRequestEvent(id, {
+                description: `Copy of document dispatched to ${sent.join(', ')}${attachments.length ? ` with ${attachments.length} PDF attachment(s)` : ''}`,
+                req
+            });
+        }
+
+        res.json({
+            success: sent.length > 0,
+            message: sent.length > 0
+                ? `A copy of "${docTitle}" was emailed to ${sent.join(', ')}${attachments.length ? ` with ${attachments.length} PDF attachment(s)` : ''}.`
+                : 'The email could not be sent.',
+            results
+        });
     } catch (err) {
         console.error('Email copy error:', err);
-        res.status(500).json({ error: err.message });
+        res.status(500).json({ success: false, error: err.message });
     }
 });
 

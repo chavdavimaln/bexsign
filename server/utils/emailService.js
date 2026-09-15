@@ -1,25 +1,89 @@
 const nodemailer = require('nodemailer');
+const path = require('path');
+const fs = require('fs');
 
-// SMTP Configuration
+const smtpPort = parseInt(process.env.SMTP_PORT) || 465;
+
+// SMTP Configuration (.env: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD or SMTP_PASS, SMTP_SECURE)
 const SMTP_CONFIG = {
   host: process.env.SMTP_HOST || 'smtp.gmail.com',
-  port: parseInt(process.env.SMTP_PORT) || 465,
-  secure: true, // SSL on 465
+  port: smtpPort,
+  secure: process.env.SMTP_SECURE ? process.env.SMTP_SECURE === 'true' : smtpPort === 465, // SSL on 465, STARTTLS otherwise
   auth: {
     user: process.env.SMTP_USER || 'info@bexcodeservices.com',
-    pass: process.env.SMTP_PASSWORD || 'tbwffkmwugtbaiuw'
+    pass: process.env.SMTP_PASSWORD || process.env.SMTP_PASS || 'tbwffkmwugtbaiuw'
   },
   tls: {
     rejectUnauthorized: false
   }
 };
 
+// EMAIL_DRY_RUN=true writes every email (with attachments) as .eml into server/email_outbox instead of sending
+const DRY_RUN = process.env.EMAIL_DRY_RUN === 'true';
+const OUTBOX_DIR = path.join(__dirname, '..', 'email_outbox');
+
 let transporter = null;
 function getTransporter() {
   if (!transporter) {
-    transporter = nodemailer.createTransport(SMTP_CONFIG);
+    transporter = DRY_RUN
+      ? nodemailer.createTransport({ streamTransport: true, buffer: true, newline: 'windows' })
+      : nodemailer.createTransport(SMTP_CONFIG);
   }
   return transporter;
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+async function deliverMail(mailOptions, label) {
+  try {
+    const info = await getTransporter().sendMail({
+      from: `"BexSign" <${SMTP_CONFIG.auth.user}>`,
+      ...mailOptions
+    });
+    const attachmentCount = (mailOptions.attachments || []).length;
+    if (DRY_RUN && info.message) {
+      fs.mkdirSync(OUTBOX_DIR, { recursive: true });
+      const safeTo = String(mailOptions.to).replace(/[^a-z0-9@._-]/gi, '_');
+      const file = path.join(OUTBOX_DIR, `${Date.now()}-${label.replace(/\s+/g, '-')}-${safeTo}.eml`);
+      fs.writeFileSync(file, info.message);
+      console.log(`[SMTP dry-run] ${label} for ${mailOptions.to} (${attachmentCount} attachments) saved to ${file}`);
+    } else {
+      console.log(`[SMTP] ${label} dispatched:`, info.messageId, 'to:', mailOptions.to, attachmentCount ? `with ${attachmentCount} attachments` : '');
+    }
+    return { success: true, messageId: info.messageId };
+  } catch (err) {
+    console.error(`[SMTP Error] Failed to send ${label}:`, err.message);
+    return { success: false, error: err.message };
+  }
+}
+
+async function verifySmtpConnection() {
+  if (DRY_RUN) return { success: true, dryRun: true };
+  try {
+    await getTransporter().verify();
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+function documentListHtml(documentNames = []) {
+  if (!Array.isArray(documentNames) || documentNames.length < 2) return '';
+  return `
+    <div style="margin: 4px 0 18px 0; font-size: 13px; color: #333;">
+      This request contains ${documentNames.length} documents:
+      <ol style="margin: 8px 0 0 18px; padding: 0;">
+        ${documentNames.map((n) => `<li style="padding: 2px 0;">${escapeHtml(n)}</li>`).join('')}
+      </ol>
+    </div>
+  `;
 }
 
 /**
@@ -29,6 +93,7 @@ function getBexSignHtmlTemplate({
   headerTitle = 'Digital Signature Request',
   headerColor = '#00a884', // BexSign emerald
   mainMessage = '',
+  extraHtml = '',
   details = [],
   ctaText = '',
   ctaLink = '',
@@ -50,6 +115,7 @@ function getBexSignHtmlTemplate({
     <html>
     <head>
       <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
       <style>
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 0; background-color: #f4f7f6; color: #333; }
         .container { max-width: 580px; margin: 25px auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 14px rgba(0,0,0,0.06); border: 1px solid #e8edea; }
@@ -62,6 +128,7 @@ function getBexSignHtmlTemplate({
         .btn-cta { display: inline-block; background-color: #00a884; color: #ffffff !important; padding: 12px 28px; border-radius: 4px; font-size: 14px; font-weight: bold; text-decoration: none; box-shadow: 0 2px 4px rgba(0,168,132,0.3); }
         .footer { padding: 18px 28px; background-color: #fafbfc; border-top: 1px solid #eee; font-size: 11px; line-height: 1.5; color: #888; }
         .footer a { color: #00a884; text-decoration: none; }
+        @media (max-width: 600px) { .container { margin: 0; border-radius: 0; } .content, .banner, .logo-bar, .footer { padding-left: 18px; padding-right: 18px; } }
       </style>
     </head>
     <body>
@@ -88,6 +155,8 @@ function getBexSignHtmlTemplate({
         <!-- Main Body Content -->
         <div class="content">
           ${mainMessage ? `<div class="message">${mainMessage}</div>` : ''}
+
+          ${extraHtml}
 
           ${details.length > 0 ? `<table class="details-table">${detailsRows}</table>` : ''}
 
@@ -116,44 +185,37 @@ async function sendSignatureRequestEmail({
   to,
   recipientName = 'Signer',
   documentName = 'Document',
+  documentNames = [],
   senderName = 'Manu Yadav',
   senderEmail = 'manu.yadav@oladigital.health',
   orgName = 'Dcode Health',
   expiresOn = 'Sep 16, 2026',
   message = '-',
-  signingUrl = 'http://localhost:3000'
+  privateMessage = '-',
+  signingUrl = (process.env.CLIENT_URL || 'http://localhost:3003')
 }) {
   const mailHtml = getBexSignHtmlTemplate({
     headerTitle: 'Digital Signature Request',
     headerColor: '#00a884',
-    mainMessage: `<strong>${senderName}</strong> has requested you to review and sign <strong>${documentName}</strong>`,
+    mainMessage: `Hello ${escapeHtml(recipientName)},<br/><br/><strong>${escapeHtml(senderName)}</strong> has requested you to review and sign <strong>${escapeHtml(documentName)}</strong>`,
+    extraHtml: documentListHtml(documentNames),
     details: [
-      { label: 'Sender', value: `${senderEmail}` },
-      { label: 'Organization Name', value: orgName },
-      { label: 'Expires on', value: expiresOn },
-      { label: 'Message to all', value: message },
-      { label: 'Private Message', value: '-' }
+      { label: 'Sender', value: escapeHtml(senderEmail) },
+      { label: 'Organization Name', value: escapeHtml(orgName) },
+      { label: 'Expires on', value: escapeHtml(expiresOn) },
+      { label: 'Message to all', value: escapeHtml(message || '-') },
+      { label: 'Private Message', value: escapeHtml(privateMessage || '-') }
     ],
     ctaText: 'Start Signing',
     ctaLink: signingUrl
   });
 
-  const mailOptions = {
-    from: `"BexSign" <${SMTP_CONFIG.auth.user}>`,
+  return deliverMail({
     replyTo: senderEmail,
     to: to,
     subject: `${senderName} from ${orgName} requests you to sign ${documentName}`,
     html: mailHtml
-  };
-
-  try {
-    const info = await getTransporter().sendMail(mailOptions);
-    console.log('[SMTP] Signature request email dispatched:', info.messageId, 'to:', to);
-    return { success: true, messageId: info.messageId };
-  } catch (err) {
-    console.error('[SMTP Error] Failed to send signature request email:', err.message);
-    return { success: false, error: err.message };
-  }
+  }, 'Signature request email');
 }
 
 /**
@@ -163,43 +225,37 @@ async function sendReminderEmail({
   to,
   recipientName = 'Signer',
   documentName = 'Document',
+  documentNames = [],
   senderName = 'Manu Yadav',
   senderEmail = 'manu.yadav@oladigital.health',
   orgName = 'Dcode Health',
   expiresOn = 'Sep 17, 2026',
-  signingUrl = 'http://localhost:3000'
+  message = '-',
+  privateMessage = '-',
+  signingUrl = (process.env.CLIENT_URL || 'http://localhost:3003')
 }) {
   const mailHtml = getBexSignHtmlTemplate({
     headerTitle: 'Digital Signature Request',
     headerColor: '#00a884',
-    mainMessage: `<strong>${senderName}</strong> has requested you to review and sign <strong>${documentName}</strong>`,
+    mainMessage: `Hello ${escapeHtml(recipientName)},<br/><br/><strong>${escapeHtml(senderName)}</strong> has requested you to review and sign <strong>${escapeHtml(documentName)}</strong>`,
+    extraHtml: documentListHtml(documentNames),
     details: [
-      { label: 'Sender', value: `${senderEmail}` },
-      { label: 'Organization Name', value: orgName },
-      { label: 'Expires on', value: expiresOn },
-      { label: 'Message to all', value: '-' },
-      { label: 'Private Message', value: '-' }
+      { label: 'Sender', value: escapeHtml(senderEmail) },
+      { label: 'Organization Name', value: escapeHtml(orgName) },
+      { label: 'Expires on', value: escapeHtml(expiresOn) },
+      { label: 'Message to all', value: escapeHtml(message || '-') },
+      { label: 'Private Message', value: escapeHtml(privateMessage || '-') }
     ],
     ctaText: 'Start Signing',
     ctaLink: signingUrl
   });
 
-  const mailOptions = {
-    from: `"BexSign" <${SMTP_CONFIG.auth.user}>`,
+  return deliverMail({
     replyTo: senderEmail,
     to: to,
     subject: `${senderName} from ${orgName} has sent you a reminder to sign ${documentName}`,
     html: mailHtml
-  };
-
-  try {
-    const info = await getTransporter().sendMail(mailOptions);
-    console.log('[SMTP] Reminder email sent:', info.messageId, 'to:', to);
-    return { success: true, messageId: info.messageId };
-  } catch (err) {
-    console.error('[SMTP Error] Failed to send reminder email:', err.message);
-    return { success: false, error: err.message };
-  }
+  }, 'Reminder email');
 }
 
 /**
@@ -214,60 +270,92 @@ async function sendDocumentRecalledEmail({
   const mailHtml = getBexSignHtmlTemplate({
     headerTitle: 'Document recalled',
     headerColor: '#00a884',
-    mainMessage: `<strong>${senderEmail}</strong> has recalled <strong>${documentName}</strong>`,
+    mainMessage: `<strong>${escapeHtml(senderEmail)}</strong> has recalled <strong>${escapeHtml(documentName)}</strong>`,
     details: [
-      { label: 'Reason', value: reason }
+      { label: 'Reason', value: escapeHtml(reason) }
     ]
   });
 
-  const mailOptions = {
-    from: `"BexSign" <${SMTP_CONFIG.auth.user}>`,
+  return deliverMail({
     to: to,
     subject: `Document ${documentName} has been recalled`,
     html: mailHtml
-  };
+  }, 'Recalled email');
+}
 
-  try {
-    const info = await getTransporter().sendMail(mailOptions);
-    console.log('[SMTP] Recalled email sent:', info.messageId, 'to:', to);
-    return { success: true, messageId: info.messageId };
-  } catch (err) {
-    console.error('[SMTP Error] Failed to send recalled email:', err.message);
-    return { success: false, error: err.message };
+function normalizeAttachments(attachments, documentName) {
+  const emailAttachments = [];
+  for (const att of attachments) {
+    if (typeof att === 'string') {
+      const fullPath = path.isAbsolute(att) ? att : path.join(__dirname, '..', att);
+      if (fs.existsSync(fullPath)) {
+        emailAttachments.push({ filename: path.basename(fullPath), path: fullPath, contentType: 'application/pdf' });
+      }
+    } else if (att && typeof att === 'object') {
+      const cleanName = att.filename ? (att.filename.endsWith('.pdf') ? att.filename : `${att.filename}.pdf`) : `${documentName}.pdf`;
+      if (att.content) {
+        emailAttachments.push({ filename: cleanName, content: att.content, contentType: att.contentType || 'application/pdf' });
+      } else if (att.path) {
+        const fullPath = path.isAbsolute(att.path) ? att.path : path.join(__dirname, '..', att.path);
+        if (fs.existsSync(fullPath)) {
+          emailAttachments.push({ filename: cleanName, path: fullPath, contentType: att.contentType || 'application/pdf' });
+        }
+      }
+    }
   }
+  return emailAttachments;
 }
 
 /**
  * 4. Send Document Completed Email (PDF 2 p.7, PDF 3 p.11)
+ * Attaches the signed copy of every document and the certificate of completion.
  */
 async function sendDocumentCompletedEmail({
   to,
+  recipientName = '',
   documentName = 'Document',
+  documentNames = [],
+  senderName = '',
   senderEmail = 'manu.yadav@oladigital.health',
-  attachmentPath = null
+  orgName = '',
+  isSender = false,
+  attachmentPath = null,
+  attachments = []
 }) {
+  let emailAttachments = [];
+  if (Array.isArray(attachments) && attachments.length > 0) {
+    emailAttachments = normalizeAttachments(attachments, documentName);
+  } else if (attachmentPath) {
+    emailAttachments = normalizeAttachments([{ filename: `${documentName.replace(/\.pdf$/i, '')}.pdf`, path: attachmentPath }], documentName);
+  }
+
+  const docCount = Math.max(documentNames.length, 1);
+  const hasCertificate = emailAttachments.some((a) => /certificate/i.test(a.filename));
+  const greeting = recipientName ? `Hello ${escapeHtml(recipientName)},<br/><br/>` : '';
+  const whoCompleted = isSender ? 'All recipients have completed' : 'All parties have completed';
+  const attachedText = emailAttachments.length > 0
+    ? ` The signed ${docCount > 1 ? `copies of the ${docCount} documents are` : 'document is'} attached${hasCertificate ? ' along with the certificate of completion' : ''}.`
+    : '';
+
   const mailHtml = getBexSignHtmlTemplate({
     headerTitle: 'Document completed',
     headerColor: '#00a884',
-    mainMessage: `The document <strong>${documentName}</strong> is completed. Here is a copy of the completed document.`
+    mainMessage: `${greeting}${whoCompleted} <strong>${escapeHtml(documentName)}</strong>.${attachedText}`,
+    extraHtml: documentListHtml(documentNames),
+    details: [
+      ...(senderName ? [{ label: 'Sender', value: `${escapeHtml(senderName)} (${escapeHtml(senderEmail)})` }] : []),
+      ...(orgName ? [{ label: 'Organization Name', value: escapeHtml(orgName) }] : []),
+      { label: 'Attachments', value: emailAttachments.length ? emailAttachments.map((a) => escapeHtml(a.filename)).join('<br/>') : '-' }
+    ]
   });
 
-  const mailOptions = {
-    from: `"BexSign" <${SMTP_CONFIG.auth.user}>`,
+  return deliverMail({
     to: to,
-    subject: `Document ${documentName} has been completed`,
+    replyTo: senderEmail,
+    subject: `Document ${documentName} has been completed${emailAttachments.length > 1 ? ` (${emailAttachments.length} files attached)` : ''}`,
     html: mailHtml,
-    attachments: attachmentPath ? [{ filename: `${documentName}.pdf`, path: attachmentPath }] : []
-  };
-
-  try {
-    const info = await getTransporter().sendMail(mailOptions);
-    console.log('[SMTP] Completed email sent:', info.messageId, 'to:', to);
-    return { success: true, messageId: info.messageId };
-  } catch (err) {
-    console.error('[SMTP Error] Failed to send completed email:', err.message);
-    return { success: false, error: err.message };
-  }
+    attachments: emailAttachments
+  }, 'Completed email');
 }
 
 /**
@@ -277,30 +365,59 @@ async function sendDocumentCopyEmail({
   to,
   documentName = 'Document',
   senderEmail = 'manu.yadav@oladigital.health',
-  attachmentPath = null
+  attachmentPath = null,
+  attachments = [],
+  signingUrl = ''
 }) {
+  const emailAttachments = Array.isArray(attachments) && attachments.length > 0
+    ? normalizeAttachments(attachments, documentName)
+    : (attachmentPath ? normalizeAttachments([{ filename: `${documentName}.pdf`, path: attachmentPath }], documentName) : []);
+
   const mailHtml = getBexSignHtmlTemplate({
     headerTitle: 'Document copy',
     headerColor: '#00a884',
-    mainMessage: `A copy of the document <strong>${documentName}</strong> is attached to this email. Kindly download the document from the attachment.`
+    mainMessage: emailAttachments.length > 0
+      ? `A copy of the document <strong>${escapeHtml(documentName)}</strong> is attached to this email. Kindly download the document from the attachment.`
+      : `<strong>${escapeHtml(senderEmail)}</strong> has shared a copy of the document <strong>${escapeHtml(documentName)}</strong> with you.`,
+    ctaText: signingUrl ? 'View Document' : '',
+    ctaLink: signingUrl
   });
 
-  const mailOptions = {
-    from: `"BexSign" <${SMTP_CONFIG.auth.user}>`,
+  return deliverMail({
     to: to,
+    replyTo: senderEmail,
     subject: `Copy of the document ${documentName}`,
     html: mailHtml,
-    attachments: attachmentPath ? [{ filename: `${documentName}.pdf`, path: attachmentPath }] : []
-  };
+    attachments: emailAttachments
+  }, 'Document copy email');
+}
 
-  try {
-    const info = await getTransporter().sendMail(mailOptions);
-    console.log('[SMTP] Document copy email sent:', info.messageId, 'to:', to);
-    return { success: true, messageId: info.messageId };
-  } catch (err) {
-    console.error('[SMTP Error] Failed to send document copy email:', err.message);
-    return { success: false, error: err.message };
-  }
+/**
+ * 6. Notify the sender that a recipient has signed
+ */
+async function sendRecipientSignedEmail({
+  to,
+  senderName = '',
+  signerName = 'Recipient',
+  signerEmail = '',
+  documentName = 'Document',
+  remainingCount = 0,
+  nextRecipients = []
+}) {
+  const nextText = nextRecipients.length > 0
+    ? `The request has been sent to ${nextRecipients.map((r) => `<strong>${escapeHtml(r.name || r.email)}</strong>`).join(', ')}.`
+    : '';
+  const mailHtml = getBexSignHtmlTemplate({
+    headerTitle: 'Document signed',
+    headerColor: '#00a884',
+    mainMessage: `${senderName ? `Hello ${escapeHtml(senderName)},<br/><br/>` : ''}<strong>${escapeHtml(signerName)}</strong> (${escapeHtml(signerEmail)}) has signed <strong>${escapeHtml(documentName)}</strong>. ${remainingCount > 0 ? `Waiting for ${remainingCount} more recipient${remainingCount === 1 ? '' : 's'}.` : ''} ${nextText}`
+  });
+
+  return deliverMail({
+    to: to,
+    subject: `${signerName} has signed ${documentName}`,
+    html: mailHtml
+  }, 'Recipient signed email');
 }
 
 module.exports = {
@@ -308,5 +425,7 @@ module.exports = {
   sendReminderEmail,
   sendDocumentRecalledEmail,
   sendDocumentCompletedEmail,
-  sendDocumentCopyEmail
+  sendDocumentCopyEmail,
+  sendRecipientSignedEmail,
+  verifySmtpConnection
 };

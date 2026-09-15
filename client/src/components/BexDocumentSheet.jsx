@@ -43,7 +43,7 @@ export default function BexDocumentSheet({
   return (
     <div
       id="printable-document-sheet"
-      className={`bg-white border border-slate-300 rounded-xs w-[794px] min-h-[1123px] max-w-[794px] p-10 sm:p-14 shadow-lg flex flex-col justify-between text-slate-800 font-sans print:border-none print:shadow-none print:p-8 print:max-w-none print:w-full print:min-h-0 print:m-0 select-text ${className}`}
+      className={`bg-white border border-slate-300 rounded-xs w-full min-h-[1123px] max-w-[794px] p-5 sm:p-14 shadow-lg flex flex-col justify-between text-slate-800 font-sans print:border-none print:shadow-none print:p-8 print:max-w-none print:w-full print:min-h-0 print:m-0 select-text ${className}`}
     >
       <div className="space-y-6">
         {/* Top Header: BexSign Document ID */}
@@ -154,13 +154,16 @@ export default function BexDocumentSheet({
                 }
 
                 if (field.type === 'Signature' || field.type === 'Initial') {
+                  // Placeholder values from the editor ("Signature"/"Initial") are not signatures
+                  const fieldSignature = field.signatureImage
+                    || (field.value && field.value !== field.type && field.value !== field.label ? field.value : '');
                   return (
                     <div key={field.id} id={`doc-field-${field.id}`} className="relative sm:col-span-2">
                       <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2 print:text-slate-600">
                         {field.label || field.type || 'Signature'}
                         {field.required && <span className="text-red-500 ml-1 font-bold">*</span>}
                       </label>
-                      {signaturePlaced || isCompleted || signatureImage || field.value ? (
+                      {signaturePlaced || isCompleted || signatureImage || fieldSignature ? (
                         <div className="relative inline-block">
                           <div
                             onClick={!isCompleted && onOpenSignatureModal ? onOpenSignatureModal : undefined}
@@ -169,8 +172,8 @@ export default function BexDocumentSheet({
                             }`}
                           >
                             <SignatureStamp
-                              signerName={signerName}
-                              signatureImage={field.value || signatureImage}
+                              signerName={field.signerName || signerName}
+                              signatureImage={fieldSignature || signatureImage}
                               signatureStyle={signatureStyle}
                               docId={displayDocId}
                             />

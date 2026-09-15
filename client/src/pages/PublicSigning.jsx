@@ -4,7 +4,7 @@ import { PenTool, CheckCircle2, ShieldCheck, AlertCircle, X, Download, ArrowLeft
 import { generateBexsignId } from '../utils/documentId';
 import SignatureStamp from '../components/SignatureStamp';
 import { showPopupAlert } from '../components/GlobalAlertModal';
-import { generateAndDownloadPdf } from '../utils/pdfGenerator';
+import { generateAndDownloadPdf, generatePdfBase64 } from '../utils/pdfGenerator';
 import { fetchSignatureForEmail } from '../utils/signatureDirectory';
 import CompletedDocumentViewer from '../components/CompletedDocumentViewer';
 import BexDocumentSheet from '../components/BexDocumentSheet';
@@ -16,6 +16,9 @@ export default function PublicSigning() {
   const docId = id || token || '1';
   const navigate = useNavigate();
   const fullBexsignId = generateBexsignId(docId);
+  // Each recipient has their own signing session (multi-recipient requests)
+  const signerEmailParam = (new URLSearchParams(window.location.search).get('email') || '').trim();
+  const sigKey = (suffix) => `bexsign_doc_${docId}_${signerEmailParam ? `${signerEmailParam.toLowerCase()}_` : ''}${suffix}`;
   const [copiedId, setCopiedId] = useState(false);
 
   const [showMoreActions, setShowMoreActions] = useState(false);
@@ -23,6 +26,7 @@ export default function PublicSigning() {
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [downloadPassword, setDownloadPassword] = useState('');
   const [zoomLevel, setZoomLevel] = useState(100);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleCopyId = () => {
     navigator.clipboard.writeText(fullBexsignId);
@@ -95,6 +99,8 @@ export default function PublicSigning() {
   const [validationError, setValidationError] = useState('');
   const [isCompleted, setIsCompleted] = useState(false);
   const [showConfirmChangeSigModal, setShowConfirmChangeSigModal] = useState(false);
+  const [signerContext, setSignerContext] = useState(null);
+  const [completionInfo, setCompletionInfo] = useState(null);
 
   const handleOpenSignatureModal = () => {
     if (signaturePlaced) {
@@ -115,10 +121,10 @@ export default function PublicSigning() {
   const fetchDocumentDetails = async () => {
     try {
       // 1. Check local saved state first for instant responsiveness
-      const localSig = localStorage.getItem(`bexsign_doc_${docId}_signature`);
-      const localSigner = localStorage.getItem(`bexsign_doc_${docId}_signer`);
-      const localType = localStorage.getItem(`bexsign_doc_${docId}_sigtype`);
-      const localStyle = localStorage.getItem(`bexsign_doc_${docId}_sigstyle`);
+      const localSig = localStorage.getItem(sigKey('signature'));
+      const localSigner = localStorage.getItem(sigKey('signer'));
+      const localType = localStorage.getItem(sigKey('sigtype'));
+      const localStyle = localStorage.getItem(sigKey('sigstyle'));
 
       if (localSig) {
         setSignatureData(localSig);
@@ -152,7 +158,7 @@ export default function PublicSigning() {
       // 2. Fetch server database state
       let doc = null;
       try {
-        const res = await fetch(`http://localhost:5000/api/documents/${docId}`);
+        const res = await fetch(`http://localhost:5000/api/documents/${docId}${signerEmailParam ? `?email=${encodeURIComponent(signerEmailParam)}` : ''}`);
         const data = await res.json();
         if (data.success && data.document) {
           doc = data.document;
@@ -163,10 +169,15 @@ export default function PublicSigning() {
       let activeUserEmail = '';
       let activeUserName = '';
       try {
+        const qParams = new URLSearchParams(window.location.search);
+        const paramEmail = qParams.get('email') || qParams.get('signerEmail');
+        if (paramEmail && paramEmail.trim()) {
+          activeUserEmail = paramEmail.trim();
+        }
         const userStr = localStorage.getItem('user');
         if (userStr) {
           const u = JSON.parse(userStr);
-          activeUserEmail = u.email;
+          if (!activeUserEmail) activeUserEmail = u.email;
           activeUserName = u.name || `${u.firstName || ''} ${u.lastName || ''}`.trim();
         }
       } catch (e) {}
@@ -190,15 +201,54 @@ export default function PublicSigning() {
       }
 
       if (doc) {
+        const currentSignerEmail = activeUserEmail || doc.recipient_email || 'vimal@bexcodeservices.com';
+        const expiresOn = doc.expires_on ? new Date(doc.expires_on) : null;
+        const daysLeft = expiresOn ? Math.max(0, Math.ceil((expiresOn.getTime() - Date.now()) / 86400000)) : 15;
         setDocumentDetails({
           title: doc.document_name || doc.title || 'Document 1.pdf',
           message: doc.custom_message || 'check the document for signature',
-          sender: doc.owner ? `${doc.owner} <manu.yadav@oladigital.health>` : 'Manu Yadav <manu.yadav@oladigital.health>',
-          org: 'Dcode Health',
-          recipient: doc.recipient_email || 'vimal@bexcodeservices.com',
+          sender: doc.sender?.email
+            ? `${doc.sender.name} <${doc.sender.email}>`
+            : (doc.owner ? `${doc.owner} <manu.yadav@oladigital.health>` : 'Manu Yadav <manu.yadav@oladigital.health>'),
+          org: doc.sender?.company || 'Dcode Health',
+          recipient: currentSignerEmail,
           status: doc.status || 'In Progress',
-          expiresIn: '15 days'
+          expiresIn: `${daysLeft} day${daysLeft === 1 ? '' : 's'}`,
+          sentOn: doc.sent_at || doc.created_at || null
         });
+
+        // Recipient context: role, signing order turn and whether this recipient already signed
+        const realRecipients = (doc.recipients || []).filter((r) => !r.isFallback);
+        const matched = realRecipients.find((r) => r.email && r.email.toLowerCase() === currentSignerEmail.toLowerCase());
+        if (matched && matched.name) {
+          setTypedName(matched.name);
+        }
+        if (matched) {
+          const signingRoles = ['signer', 'approver'];
+          const pending = realRecipients.filter((r) => signingRoles.includes(r.role || 'signer') && !['signed', 'declined'].includes(r.status));
+          let waitingFor = [];
+          if (doc.signing_order === 'sequential' && pending.length > 0 && matched.status !== 'signed') {
+            const minOrder = Math.min(...pending.map((r) => r.signing_order_index || 1));
+            if ((matched.signing_order_index || 1) > minOrder) {
+              waitingFor = pending.filter((r) => (r.signing_order_index || 1) === minOrder).map((r) => r.name || r.email);
+            }
+          }
+          setSignerContext({
+            recipientId: matched.id,
+            role: matched.role_label || matched.role,
+            isCopy: !signingRoles.includes(matched.role || 'signer'),
+            alreadySigned: matched.status === 'signed',
+            waitingFor,
+            remaining: pending.filter((r) => r.id !== matched.id).map((r) => r.name || r.email)
+          });
+          if (doc.status !== 'Completed') {
+            fetch('http://localhost:5000/api/signatures/viewed', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ documentId: docId, email: matched.email })
+            }).catch(() => {});
+          }
+        }
 
         // Populate fieldsByDoc directly from server response
         if (doc.fieldsByDoc && Object.keys(doc.fieldsByDoc).length > 0) {
@@ -221,7 +271,7 @@ export default function PublicSigning() {
           } catch (e) {}
         }
 
-        if (!loadedDocs || loadedDocs.length === 0) {
+        if ((Array.isArray(doc.files) && doc.files.length > 0) || !loadedDocs || loadedDocs.length === 0) {
           if (doc.files && Array.isArray(doc.files) && doc.files.length > 0) {
             loadedDocs = doc.files.map((f, i) => ({
               id: f.id || i + 1,
@@ -249,7 +299,7 @@ export default function PublicSigning() {
         setDocumentsList(loadedDocs);
 
         // If server database has saved signature on this document
-        if (doc.signature_image) {
+        if (doc.signature_image && (!signerEmailParam || String(doc.signer_email || '').toLowerCase() === signerEmailParam.toLowerCase())) {
           setSignatureData(doc.signature_image);
           setSignaturePlaced(true);
           setSignatureType(doc.signature_image.startsWith('data:') ? 'draw' : 'type');
@@ -259,7 +309,8 @@ export default function PublicSigning() {
           // Auto-fetch saved signature from portal directory for existing user (manager, leader, team member, anyone)
           const targetEmail = activeUserEmail || doc.recipient_email || 'vimal@bexcodeservices.com';
           const targetName = activeUserName || doc.signer_name || 'Vimal Chavda';
-          const savedSig = await fetchSignatureForEmail(targetEmail) || await fetchSignatureForEmail(doc.recipient_email) || await fetchSignatureForEmail('vimal@bexcodeservices.com');
+          const savedSig = await fetchSignatureForEmail(targetEmail)
+            || (signerEmailParam ? null : (await fetchSignatureForEmail(doc.recipient_email) || await fetchSignatureForEmail('vimal@bexcodeservices.com')));
           if (savedSig && (savedSig.signature_image || savedSig.signature_id || savedSig.employee_name)) {
             if (savedSig.employee_name) setTypedName(savedSig.employee_name);
             else if (targetName) setTypedName(targetName);
@@ -381,10 +432,10 @@ export default function PublicSigning() {
 
     // Persist immediately in local storage
     try {
-      localStorage.setItem(`bexsign_doc_${docId}_signature`, appliedSig);
-      localStorage.setItem(`bexsign_doc_${docId}_signer`, typedName);
-      localStorage.setItem(`bexsign_doc_${docId}_sigtype`, appliedType);
-      localStorage.setItem(`bexsign_doc_${docId}_sigstyle`, selectedStyle);
+      localStorage.setItem(sigKey('signature'), appliedSig);
+      localStorage.setItem(sigKey('signer'), typedName);
+      localStorage.setItem(sigKey('sigtype'), appliedType);
+      localStorage.setItem(sigKey('sigstyle'), selectedStyle);
     } catch (e) {}
   };
 
@@ -414,10 +465,10 @@ export default function PublicSigning() {
   const handleSaveDocument = async () => {
     try {
       if (signatureData) {
-        localStorage.setItem(`bexsign_doc_${docId}_signature`, signatureData);
-        localStorage.setItem(`bexsign_doc_${docId}_signer`, typedName);
-        localStorage.setItem(`bexsign_doc_${docId}_sigtype`, signatureType);
-        localStorage.setItem(`bexsign_doc_${docId}_sigstyle`, selectedStyle);
+        localStorage.setItem(sigKey('signature'), signatureData);
+        localStorage.setItem(sigKey('signer'), typedName);
+        localStorage.setItem(sigKey('sigtype'), signatureType);
+        localStorage.setItem(sigKey('sigstyle'), selectedStyle);
       }
 
       await fetch('http://localhost:5000/api/signatures/save', {
@@ -512,7 +563,72 @@ export default function PublicSigning() {
     }
   };
 
+  const isFieldMissing = (f) => {
+    if (f.required === false) return false;
+    if (f.type === 'Signature' || f.type === 'Initial') {
+      // The editor's placeholder value ("Signature"/"Initial") is not a signature
+      const hasOwnValue = f.signatureImage || (f.value && f.value !== f.type && f.value !== f.label);
+      return !signaturePlaced && !signatureData && !hasOwnValue;
+    }
+    if (f.type === 'Sign date') {
+      return !f.value || String(f.value).trim() === '';
+    }
+    if (f.type === 'Checkbox') {
+      return f.required && !f.value;
+    }
+    if (f.type === 'Stamp') {
+      return false;
+    }
+    return f.value === undefined || f.value === null || String(f.value).trim() === '' || f.value === f.type;
+  };
+
+  // Only the fields assigned to the current recipient are required from them
+  const isMyField = (f) => {
+    if (!f || f.isAssignedToOther) return false;
+    const me = (documentDetails.recipient || '').toLowerCase();
+    return !f.assigneeEmail || !me || f.assigneeEmail.toLowerCase() === me;
+  };
+  const requestHasFields = Object.values(fieldsByDoc).some((list) => (list || []).length > 0);
+
+  const getDocumentStatus = (docIdx) => {
+    const docFields = (fieldsByDoc[docIdx] || []).filter(isMyField);
+    if (docFields.length === 0 && requestHasFields) {
+      return { isComplete: true, missingFields: [], remainingCount: 0 };
+    }
+    if (docFields.length > 0) {
+      const missing = docFields.filter(isFieldMissing);
+      return {
+        isComplete: missing.length === 0,
+        missingFields: missing,
+        remainingCount: missing.length
+      };
+    } else {
+      const isComplete = Boolean(signaturePlaced || signatureData);
+      return {
+        isComplete,
+        missingFields: isComplete ? [] : [{ type: 'Signature', label: 'Signature' }],
+        remainingCount: isComplete ? 0 : 1
+      };
+    }
+  };
+
+  const allDocumentsStatus = documentsList.map((_, idx) => getDocumentStatus(idx));
+  const totalRemainingCount = allDocumentsStatus.reduce((sum, s) => sum + s.remainingCount, 0);
+  const isAllDocsComplete = totalRemainingCount === 0;
+
   const handleFinishSigning = async () => {
+    if (signerContext?.isCopy) {
+      showPopupAlert('You receive a copy of this document. No signature is needed.', { title: 'No action needed', type: 'info' });
+      return;
+    }
+    if (signerContext?.alreadySigned) {
+      showPopupAlert('You have already signed this document.', { title: 'Already signed', type: 'info' });
+      return;
+    }
+    if (signerContext?.waitingFor?.length) {
+      showPopupAlert(`Waiting for ${signerContext.waitingFor.join(', ')} to sign first. You will receive an email when it is your turn.`, { title: 'Not your turn yet', type: 'warning' });
+      return;
+    }
     if (!agreedConsent) {
       showPopupAlert(
         'Please accept the "Electronic Record and Signature Disclosure" at the top before completing the document.',
@@ -525,63 +641,80 @@ export default function PublicSigning() {
       return;
     }
 
-    // Validate all required placed fields
-    const currentFields = fieldsByDoc[activeDocIndex] || [];
-    const missingField = currentFields.find(f => {
-      if (f.required === false) return false;
-      if (f.type === 'Signature' || f.type === 'Initial') {
-        return !signaturePlaced && !signatureData && !f.value;
-      }
-      if (f.type === 'Sign date') {
-        return !f.value || String(f.value).trim() === '';
-      }
-      if (f.type === 'Checkbox' || f.type === 'Stamp') {
-        return false;
-      }
-      return f.value === undefined || f.value === null || String(f.value).trim() === '' || f.value === f.type;
-    });
+    // STRICT MULTI-DOCUMENT VALIDATION: Check every document in documentsList
+    for (let idx = 0; idx < documentsList.length; idx++) {
+      const docStatus = getDocumentStatus(idx);
+      if (!docStatus.isComplete) {
+        setActiveDocIndex(idx);
+        const missing = docStatus.missingFields[0];
+        const docName = documentsList[idx]?.name || `Document ${idx + 1}`;
+        const fieldName = missing?.label || missing?.type || 'Signature';
 
-    if (missingField) {
-      showPopupAlert(
-        `Please complete the required field "${missingField.label || missingField.type}" before finishing.`,
-        {
-          title: 'Field Required',
-          type: 'warning'
-        }
-      );
-      setValidationError(`⚠ Please complete the required "${missingField.label || missingField.type}" field.`);
-      const sigElement = document.getElementById(`doc-field-${missingField.id}`) || document.getElementById('signature-field-container');
-      if (sigElement) {
-        sigElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        showPopupAlert(
+          `Please complete the required "${fieldName}" field in "${docName}" before finishing. All documents must be filled.`,
+          {
+            title: 'Field Required',
+            type: 'warning'
+          }
+        );
+        setValidationError(`⚠ Please complete the required "${fieldName}" in "${docName}".`);
+
+        setTimeout(() => {
+          const sigElement = missing?.id
+            ? document.getElementById(`doc-field-${missing.id}`)
+            : document.getElementById('signature-field-container');
+          if (sigElement) {
+            sigElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        }, 150);
+        return;
       }
-      return;
     }
 
-    if (!signaturePlaced && currentFields.length === 0) {
-      showPopupAlert(
-        'Please click on the Signature field below to adopt and place your signature before finishing.',
-        {
-          title: 'Signature Required',
-          type: 'warning'
-        }
-      );
-      setValidationError('⚠ Please complete the required Signature field.');
-      const sigElement = document.getElementById('signature-field-container');
-      if (sigElement) {
-        sigElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-      return;
-    }
+    setIsSubmitting(true);
+    setValidationError('');
 
     try {
       if (signatureData) {
-        localStorage.setItem(`bexsign_doc_${docId}_signature`, signatureData);
-        localStorage.setItem(`bexsign_doc_${docId}_signer`, typedName);
-        localStorage.setItem(`bexsign_doc_${docId}_sigtype`, signatureType);
-        localStorage.setItem(`bexsign_doc_${docId}_sigstyle`, selectedStyle);
+        localStorage.setItem(sigKey('signature'), signatureData);
+        localStorage.setItem(sigKey('signer'), typedName);
+        localStorage.setItem(sigKey('sigtype'), signatureType);
+        localStorage.setItem(sigKey('sigstyle'), selectedStyle);
       }
 
-      await fetch('http://localhost:5000/api/signatures/submit', {
+      // Generate certified base64 PDF for EVERY document in documentsList
+      const completedPdfs = [];
+      for (let i = 0; i < documentsList.length; i++) {
+        const doc = documentsList[i];
+        const docTitle = doc.name || `Document ${i + 1}.pdf`;
+        const docMsg = doc.customMessage || documentDetails.message || 'check the document for signature';
+        const docBexId = documentsList.length > 1 ? `${fullBexsignId}-${i + 1}` : fullBexsignId;
+        const activeText = doc.documentText || getDefaultDocContent(docTitle, docMsg);
+        const currentFields = fieldsByDoc[i] || [];
+
+        try {
+          const pdfObj = await generatePdfBase64({
+            documentName: docTitle,
+            documentText: activeText,
+            docId: docBexId || docId,
+            signerName: typedName || 'Vimal Chavda',
+            signerEmail: documentDetails.recipient || 'vimal@bexcodeservices.com',
+            date: new Date().toLocaleString(),
+            status: 'Completed',
+            signatureImage: signatureData,
+            signatureType: signatureType,
+            fields: currentFields
+          });
+
+          if (pdfObj && pdfObj.base64) {
+            completedPdfs.push(pdfObj);
+          }
+        } catch (ePdf) {
+          console.warn(`PDF generation warning for document ${i}:`, ePdf);
+        }
+      }
+
+      const res = await fetch('http://localhost:5000/api/signatures/submit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -591,16 +724,23 @@ export default function PublicSigning() {
           signerName: typedName,
           signerEmail: documentDetails.recipient,
           signatureStyle: selectedStyle,
-          recipientId: 1,
-          fields: Object.values(fieldsByDoc).flat(),
-          fieldsByDoc: fieldsByDoc
+          recipientId: signerContext?.recipientId || null,
+          fields: Object.values(fieldsByDoc).flat().filter(isMyField),
+          completedPdfs: completedPdfs
         })
       });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success === false) {
+        throw new Error(data.error || 'Your signature could not be submitted. Please try again.');
+      }
+      setCompletionInfo(data);
+      setIsCompleted(true);
     } catch (e) {
-      console.warn('Signature submit fallback:', e);
+      console.warn('Signature submit error:', e);
+      showPopupAlert(e.message || 'Your signature could not be submitted. Please try again.', { title: 'Submission failed', type: 'error' });
+    } finally {
+      setIsSubmitting(false);
     }
-
-    setIsCompleted(true);
   };
 
   // If document is already Completed, display dedicated CompletedDocumentViewer (PDF 4 Page 1)
@@ -645,7 +785,7 @@ export default function PublicSigning() {
             </div>
             <div className="flex justify-between border-b border-slate-100 pb-2">
               <span className="font-bold text-slate-500">Sent on</span>
-              <span className="font-semibold text-slate-800">Sep 02, 2026 &lt;Expires in {documentDetails.expiresIn}&gt;</span>
+              <span className="font-semibold text-slate-800 text-right">{documentDetails.sentOn ? new Date(documentDetails.sentOn).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : 'Sep 02, 2026'} &lt;Expires in {documentDetails.expiresIn}&gt;</span>
             </div>
           </div>
 
@@ -675,9 +815,18 @@ export default function PublicSigning() {
     return (
       <div className="min-h-screen bg-slate-100 text-slate-900 flex flex-col items-center justify-center p-6 font-sans">
         <div className="max-w-xl w-full text-center space-y-8">
-          <h1 className="text-3xl font-bold text-slate-700 tracking-tight">
-            You have signed this document.
-          </h1>
+          <div className="space-y-3">
+            <h1 className="text-2xl sm:text-3xl font-bold text-slate-700 tracking-tight">
+              {completionInfo?.alreadySigned ? 'You have already signed this document.' : 'You have signed this document.'}
+            </h1>
+            <p className="text-sm text-slate-600 leading-relaxed">
+              {completionInfo?.completed
+                ? 'All recipients have completed the request. The signed documents and the certificate of completion have been emailed to everyone.'
+                : (completionInfo?.remainingSigners?.length
+                  ? `Waiting for ${completionInfo.remainingSigners.map((r) => r.name || r.email).join(', ')} to sign. You will receive the completed documents by email once everyone has signed.`
+                  : 'You will receive the completed documents by email once everyone has signed.')}
+            </p>
+          </div>
 
           {/* Action Buttons matching Page 11 */}
           <div className="flex flex-wrap items-center justify-center gap-4 pt-2 relative">
@@ -685,13 +834,17 @@ export default function PublicSigning() {
               onClick={async () => {
                 const targetEmail = documentDetails.recipient || 'vimal@bexcodeservices.com';
                 try {
-                  await fetch(`http://localhost:5000/api/documents/${docId}/email-copy`, {
+                  const res = await fetch(`http://localhost:5000/api/documents/${docId}/email-copy`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ emails: [targetEmail], note: 'Here is your certified signed copy.' })
                   });
-                } catch (e) {}
-                showPopupAlert(`Signed document with verified signature stamp has been emailed to ${targetEmail} via SMTP!`, { title: 'Email Dispatched', type: 'success' });
+                  const data = await res.json().catch(() => ({}));
+                  if (!res.ok || data.success === false) throw new Error(data.error || data.message || 'The email could not be sent.');
+                  showPopupAlert(data.message || `A copy of the document has been emailed to ${targetEmail}.`, { title: 'Email sent', type: 'success' });
+                } catch (e) {
+                  showPopupAlert(e.message || 'The email could not be sent.', { title: 'Email failed', type: 'error' });
+                }
               }}
               className="px-5 py-2.5 bg-white border border-slate-300 hover:bg-slate-50 rounded text-xs font-bold text-slate-800 shadow-xs flex items-center gap-2 cursor-pointer"
             >
@@ -805,7 +958,7 @@ export default function PublicSigning() {
   return (
     <div className="min-h-screen bg-slate-200 text-slate-900 flex flex-col font-sans">
       {/* Top Disclosure Consent Header Bar (Page 8 bottom) */}
-      <div className="bg-white border-b border-slate-200 px-6 py-2 flex flex-wrap items-center justify-between text-xs sticky top-0 z-30 shadow-xs gap-4">
+      <div className="bg-white border-b border-slate-200 px-3 sm:px-6 py-2 flex flex-wrap items-center justify-between text-xs sticky top-0 z-30 shadow-xs gap-2 sm:gap-4">
         <div className="flex items-center gap-3">
           <button
             type="button"
@@ -898,7 +1051,7 @@ export default function PublicSigning() {
 
       {/* Guided Navigator Toolbar (Page 9) */}
       {agreedConsent && (
-        <header className="h-12 bg-white border-b border-slate-300 px-6 flex items-center justify-between sticky top-9 z-20 shadow-xs">
+        <header className="min-h-12 bg-white border-b border-slate-300 px-3 sm:px-6 py-2 flex flex-wrap items-center justify-between gap-2 sticky top-9 z-20 shadow-xs">
           <div className="flex items-center gap-3">
             <button
               type="button"
@@ -918,30 +1071,11 @@ export default function PublicSigning() {
               <span>Back</span>
             </button>
             <span className="text-xs font-bold text-slate-800">Documents</span>
-            {(() => {
-              const currentFields = fieldsByDoc[activeDocIndex] || [];
-              const remCount = currentFields.length > 0
-                ? currentFields.filter(f => {
-                    if (f.required === false) return false;
-                    if (f.type === 'Signature' || f.type === 'Initial') {
-                      return !signaturePlaced && !signatureData && !f.value;
-                    }
-                    if (f.type === 'Sign date') {
-                      return !f.value || String(f.value).trim() === '';
-                    }
-                    if (f.type === 'Checkbox' || f.type === 'Stamp') {
-                      return false;
-                    }
-                    return f.value === undefined || f.value === null || String(f.value).trim() === '' || f.value === f.type;
-                  }).length
-                : (signaturePlaced ? 0 : 1);
-
-              return (
-                <span className="bg-emerald-100 text-emerald-800 px-3 py-0.5 rounded-full text-[11px] font-bold">
-                  Fields remaining: {remCount}
-                </span>
-              );
-            })()}
+            <span className={`px-3 py-0.5 rounded-full text-[11px] font-bold ${
+              totalRemainingCount === 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+            }`}>
+              Fields remaining: {totalRemainingCount}
+            </span>
           </div>
 
           <div className="flex items-center gap-3 text-xs">
@@ -955,9 +1089,17 @@ export default function PublicSigning() {
 
             <button
               onClick={handleFinishSigning}
-              className="bg-[#007355] hover:bg-[#005c44] text-white px-6 py-1.5 rounded font-bold text-xs shadow-xs transition cursor-pointer"
+              disabled={isSubmitting || Boolean(signerContext && (signerContext.isCopy || signerContext.alreadySigned || signerContext.waitingFor?.length))}
+              className="bg-[#007355] hover:bg-[#005c44] disabled:opacity-60 text-white px-6 py-1.5 rounded font-bold text-xs shadow-xs transition cursor-pointer flex items-center gap-1.5"
             >
-              Finish
+              {isSubmitting ? (
+                <>
+                  <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  <span>Submitting...</span>
+                </>
+              ) : (
+                'Finish'
+              )}
             </button>
           </div>
         </header>
@@ -971,7 +1113,7 @@ export default function PublicSigning() {
           </span>
           {documentsList.map((doc, idx) => {
             const isDocActive = activeDocIndex === idx;
-            const docFields = fieldsByDoc[idx] || [];
+            const docStatus = allDocumentsStatus[idx] || { isComplete: false, remainingCount: 0 };
             return (
               <button
                 key={doc.id || idx}
@@ -983,15 +1125,27 @@ export default function PublicSigning() {
                     : 'bg-white hover:bg-slate-200 text-slate-700 border border-slate-300'
                 }`}
               >
-                <FileText size={13} />
+                {docStatus.isComplete ? (
+                  <CheckCircle2 size={13} className={isDocActive ? 'text-emerald-200' : 'text-emerald-600'} />
+                ) : (
+                  <FileText size={13} />
+                )}
                 <span>{idx + 1}. {doc.name}</span>
-                {docFields.length > 0 && (
+                {docStatus.isComplete ? (
                   <span
-                    className={`text-[10px] px-1.5 py-0.2 rounded-full ${
-                      isDocActive ? 'bg-emerald-800 text-white' : 'bg-slate-100 text-slate-600'
+                    className={`text-[9px] px-1.5 py-0.2 rounded-full font-bold ${
+                      isDocActive ? 'bg-emerald-800 text-emerald-100' : 'bg-emerald-100 text-emerald-800'
                     }`}
                   >
-                    {docFields.length} field{docFields.length > 1 ? 's' : ''}
+                    Filled ✓
+                  </span>
+                ) : (
+                  <span
+                    className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                      isDocActive ? 'bg-amber-700 text-white' : 'bg-amber-100 text-amber-800'
+                    }`}
+                  >
+                    {docStatus.remainingCount} remaining
                   </span>
                 )}
               </button>
@@ -1002,33 +1156,47 @@ export default function PublicSigning() {
 
       {/* Top Banner Message when Fields Completed (Page 11) */}
       {(() => {
-        const currentFields = fieldsByDoc[activeDocIndex] || [];
-        const isAllFilled = currentFields.length > 0
-          ? currentFields.every(f => {
-              if (f.required === false) return true;
-              if (f.type === 'Signature' || f.type === 'Initial') {
-                return Boolean(signaturePlaced || signatureData || f.value);
-              }
-              if (f.type === 'Sign date') {
-                return Boolean(f.value && String(f.value).trim() !== '');
-              }
-              if (f.type === 'Checkbox' || f.type === 'Stamp') {
-                return true;
-              }
-              return Boolean(f.value !== undefined && f.value !== null && String(f.value).trim() !== '' && f.value !== f.type);
-            })
-          : signaturePlaced;
-
-        if (isAllFilled) {
+        if (isAllDocsComplete) {
           return (
             <div className="bg-emerald-50 border-b border-emerald-200 text-emerald-800 px-6 py-2 text-center text-xs font-bold flex items-center justify-center gap-2 sticky top-21 z-20">
               <CheckCircle2 size={16} className="text-[#007355]" />
-              <span>You've successfully filled all fields. Click Finish to complete.</span>
+              <span>You've successfully filled all fields{documentsList.length > 1 ? ` across all ${documentsList.length} documents` : ''}. Click Finish to complete.</span>
+            </div>
+          );
+        }
+        if (documentsList.length > 1 && allDocumentsStatus[activeDocIndex]?.isComplete) {
+          const nextUnfilledIdx = allDocumentsStatus.findIndex(s => !s.isComplete);
+          return (
+            <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-6 py-2 text-center text-xs font-semibold flex items-center justify-center gap-2 sticky top-21 z-20">
+              <AlertCircle size={15} className="text-amber-600 shrink-0" />
+              <span>
+                "{documentsList[activeDocIndex]?.name || `Document ${activeDocIndex + 1}`}" is complete. Please switch to Document {nextUnfilledIdx + 1} ({documentsList[nextUnfilledIdx]?.name}) to fill remaining fields before clicking Finish.
+              </span>
+              <button
+                type="button"
+                onClick={() => setActiveDocIndex(nextUnfilledIdx)}
+                className="ml-2 px-2 py-0.5 bg-[#007355] text-white rounded text-[11px] font-bold hover:bg-[#005c44] cursor-pointer"
+              >
+                Go to Document {nextUnfilledIdx + 1}
+              </button>
             </div>
           );
         }
         return null;
       })()}
+
+      {signerContext && (signerContext.isCopy || signerContext.alreadySigned || signerContext.waitingFor?.length > 0) && (
+        <div className="bg-sky-50 border-b border-sky-200 text-sky-900 px-4 sm:px-6 py-2 text-center text-xs font-semibold flex items-center justify-center gap-2">
+          <AlertCircle size={15} className="text-sky-600 shrink-0" />
+          <span>
+            {signerContext.isCopy
+              ? 'You receive a copy of this document. No signature is needed - the completed document will be emailed to you.'
+              : signerContext.alreadySigned
+                ? `You have already signed this document.${signerContext.remaining?.length ? ` Waiting for ${signerContext.remaining.join(', ')}.` : ''}`
+                : `Waiting for ${signerContext.waitingFor.join(', ')} to sign first. You will get an email when it is your turn.`}
+          </span>
+        </div>
+      )}
 
       {/* Validation Error Banner */}
       {validationError && (

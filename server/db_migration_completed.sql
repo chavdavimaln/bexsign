@@ -1,5 +1,5 @@
 -- Migration for BexSign Completed Document Workflow & Versioning
-USE db_bex_signature;
+USE db_bex_sign;
 
 -- Safely add helper columns to document_versions if not existing
 DROP PROCEDURE IF EXISTS AddDocumentVersionsColumns;
@@ -8,7 +8,7 @@ CREATE PROCEDURE AddDocumentVersionsColumns()
 BEGIN
   IF NOT EXISTS (
     SELECT * FROM information_schema.COLUMNS 
-    WHERE TABLE_SCHEMA = 'db_bex_signature' 
+    WHERE TABLE_SCHEMA = 'db_bex_sign' 
     AND TABLE_NAME = 'document_versions' 
     AND COLUMN_NAME = 'version_label'
   ) THEN
@@ -17,7 +17,7 @@ BEGIN
 
   IF NOT EXISTS (
     SELECT * FROM information_schema.COLUMNS 
-    WHERE TABLE_SCHEMA = 'db_bex_signature' 
+    WHERE TABLE_SCHEMA = 'db_bex_sign' 
     AND TABLE_NAME = 'document_versions' 
     AND COLUMN_NAME = 'created_by'
   ) THEN
@@ -26,7 +26,7 @@ BEGIN
 
   IF NOT EXISTS (
     SELECT * FROM information_schema.COLUMNS 
-    WHERE TABLE_SCHEMA = 'db_bex_signature' 
+    WHERE TABLE_SCHEMA = 'db_bex_sign' 
     AND TABLE_NAME = 'document_versions' 
     AND COLUMN_NAME = 'details'
   ) THEN
@@ -35,7 +35,7 @@ BEGIN
 
   IF NOT EXISTS (
     SELECT * FROM information_schema.COLUMNS 
-    WHERE TABLE_SCHEMA = 'db_bex_signature' 
+    WHERE TABLE_SCHEMA = 'db_bex_sign' 
     AND TABLE_NAME = 'document_versions' 
     AND COLUMN_NAME = 'action_type'
   ) THEN

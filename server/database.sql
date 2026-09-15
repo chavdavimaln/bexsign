@@ -1,6 +1,6 @@
 -- BexSign Complete Database Schema (MySQL 8.0+)
-CREATE DATABASE IF NOT EXISTS db_bex_signature;
-USE db_bex_signature;
+CREATE DATABASE IF NOT EXISTS db_bex_sign;
+USE db_bex_sign;
 
 -- 1. Users
 CREATE TABLE IF NOT EXISTS users (

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Link, useNavigate, Outlet, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -28,7 +28,9 @@ import {
 } from 'lucide-react';
 
 export default function Layout() {
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  // Desktop keeps the sidebar open; phones and tablets start with it closed (overlay drawer)
+  const isDesktopWidth = () => typeof window === 'undefined' || window.innerWidth >= 1024;
+  const [sidebarOpen, setSidebarOpen] = useState(isDesktopWidth);
   const [searchQuery, setSearchQuery] = useState('');
   const [openSubmenu, setOpenSubmenu] = useState({
     documents: true,
@@ -64,12 +66,16 @@ export default function Layout() {
     setOpenSubmenu(prev => ({ ...prev, [menuKey]: !prev[menuKey] }));
   };
 
+  useEffect(() => {
+    if (!isDesktopWidth()) setSidebarOpen(false);
+  }, [location.pathname]);
+
   const isActive = (path) => location.pathname === path;
 
   return (
     <div className="flex h-screen bg-slate-50 text-slate-900 overflow-hidden font-sans">
       {/* Sidebar Navigation */}
-      <aside className={`${sidebarOpen ? 'w-64' : 'w-20'} bg-white border-r border-slate-200 transition-all duration-300 flex flex-col justify-between shrink-0 z-20 shadow-sm`}>
+      <aside className={`${sidebarOpen ? 'fixed inset-y-0 left-0 w-64 lg:static' : 'hidden lg:w-20'} lg:flex bg-white border-r border-slate-200 transition-all duration-300 flex flex-col justify-between shrink-0 z-40 lg:z-20 shadow-sm`}>
         <div className="flex flex-col h-full overflow-y-auto">
           {/* Logo & Brand */}
           <div className="flex items-center justify-between p-4 border-b border-slate-100 sticky top-0 bg-white z-10">
@@ -313,12 +319,30 @@ export default function Layout() {
         </div>
       </aside>
 
+      {/* Mobile drawer backdrop */}
+      {sidebarOpen && (
+        <div
+          className="lg:hidden fixed inset-0 bg-slate-900/40 z-30"
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
       {/* Main Container */}
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
         {/* Top Navigation Header */}
         <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 sm:px-6 shadow-xs shrink-0">
-          {/* Search bar */}
-          <div className="relative w-48 sm:w-80">
+          {/* Mobile menu button + Search bar */}
+          <button
+            type="button"
+            onClick={() => setSidebarOpen(true)}
+            className="lg:hidden mr-2 p-2 rounded-md hover:bg-slate-100 text-slate-600 shrink-0"
+            title="Open menu"
+            aria-label="Open menu"
+          >
+            ☰
+          </button>
+          <div className="relative w-36 sm:w-80 mr-auto">
             <input
               type="text"
               placeholder="Search documents, recipients, templates..."
@@ -330,7 +354,7 @@ export default function Layout() {
           </div>
 
           {/* Right Header Actions */}
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 sm:gap-4">
             <button className="relative p-2 text-slate-600 hover:bg-slate-100 rounded-full transition" title="Notifications">
               <Bell size={20} />
               <span className="absolute top-1 right-1 bg-[#E71414] text-white text-[10px] rounded-full h-4 w-4 flex items-center justify-center font-bold">
@@ -338,7 +362,7 @@ export default function Layout() {
               </span>
             </button>
 
-            <div className="flex items-center gap-3 border-l pl-4 border-slate-200">
+            <div className="flex items-center gap-2 sm:gap-3 border-l pl-2 sm:pl-4 border-slate-200">
               <div className="h-9 w-9 rounded-full bg-gradient-to-tr from-purple-700 to-indigo-600 text-white flex items-center justify-center font-bold text-sm shadow-sm">
                 {(currentUser.name || 'Vimal Chavda')[0]}
               </div>

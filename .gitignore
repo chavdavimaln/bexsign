@@ -15,6 +15,9 @@ pnpm-debug.log*
 .env.*
 !.env.example
 
+# BexSign local email dry-run output (EMAIL_DRY_RUN=true)
+server/email_outbox/
+
 # ==============================
 # Build / Production
 # ==============================

@@ -4,6 +4,7 @@ const path = require('path');
 require('dotenv').config();
 
 const db = require('./db');
+const { verifySmtpConnection } = require('./utils/emailService');
 const authRoutes = require('./routes/auth');
 const documentRoutes = require('./routes/documents');
 const signingRoutes = require('./routes/signing');
@@ -19,7 +20,9 @@ const PORT = process.env.PORT || 5000;
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+// Large limit: signature images and multi-document field payloads are sent as JSON
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Serve static uploads
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -49,6 +52,11 @@ app.use('/api/users', userRoutes);
 const server = app.listen(PORT, () => {
     console.log(`Bexsign Backend Server listening on http://localhost:${PORT}`);
     console.log(`Connected to MySQL Database: ${process.env.DB_NAME || 'db_bex_sign'}`);
+    verifySmtpConnection().then((smtp) => {
+        if (smtp.dryRun) console.log('[SMTP] EMAIL_DRY_RUN=true: emails are written to server/email_outbox instead of being sent');
+        else if (smtp.success) console.log('[SMTP] Mail server connection verified');
+        else console.warn('[SMTP Warning] Mail server connection failed:', smtp.error);
+    });
 });
 
 server.on('error', (err) => {
