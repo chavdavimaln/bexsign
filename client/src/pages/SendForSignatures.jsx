@@ -64,23 +64,70 @@ function newUploadKey(seed) {
   return `${seed || 'doc'}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 }
 
+// Zoho Sign: a request has no default document. The only document created without "Add document" is one the
+// user already chose on another screen (written in the rich-text editor, or "Edit as new" of a document).
+function documentsFromNavigationState(state) {
+  const name = String(state?.docName || state?.documentName || '').trim();
+  if (!name) return [];
+  const fileName = /\.pdf$/i.test(name) ? name : `${name}.pdf`;
+  return [
+    {
+      id: Date.now(),
+      name: fileName,
+      pages: 1,
+      status: 'Ready',
+      file: null,
+      documentText: state.docContent || getDefaultDocContent(fileName),
+      customMessage: 'check the document for signature'
+    }
+  ];
+}
+
+// Built-in agreement templates offered by "Add document > Template(s)"
+const BUILT_IN_TEMPLATES = [
+  { name: 'Standard Employment Agreement 2026.pdf', description: 'Appointment, duties, compensation and confidentiality' },
+  { name: 'Mutual Non-Disclosure Agreement (NDA).pdf', description: 'Protect confidential information shared by both parties' },
+  { name: 'Vendor Service Contract.pdf', description: 'Scope of services, service levels and payment terms' },
+  { name: 'Consultancy Agreement Template.pdf', description: 'Engagement terms for independent consultants' }
+];
+
+// Signing order ("Send in order"): a recipient's step number; recipients sharing a step are emailed at the same time
+function stepOf(recipient, index) {
+  const n = parseInt(recipient?.signingOrder, 10);
+  return Number.isFinite(n) && n > 0 ? n : index + 1;
+}
+
+function nextStep(list) {
+  return (list || []).reduce((max, r, idx) => Math.max(max, stepOf(r, idx)), 0) + 1;
+}
+
+/** Sorts recipients by step (keeping their relative order) and makes the steps consecutive (1, 1, 4 -> 1, 1, 2). */
+function normalizeRecipientSteps(list) {
+  const ordered = (list || [])
+    .map((r, idx) => ({ r, idx, step: stepOf(r, idx) }))
+    .sort((a, b) => a.step - b.step || a.idx - b.idx);
+  const ranks = new Map([...new Set(ordered.map((x) => x.step))].map((step, i) => [step, i + 1]));
+  return ordered.map(({ r, step }) => ({ ...r, signingOrder: ranks.get(step) }));
+}
+
 function cleanRecipientList(list, { validOnly = false } = {}) {
   return (list || [])
-    .filter((r) => r.email && r.email.trim() && (!validOnly || EMAIL_PATTERN.test(r.email.trim())))
-    .map((r, idx) => ({
+    .map((r, idx) => ({ r, step: stepOf(r, idx) }))
+    .filter(({ r }) => r.email && r.email.trim() && (!validOnly || EMAIL_PATTERN.test(r.email.trim())))
+    .map(({ r, step }) => ({
       email: r.email.trim(),
       name: r.name && r.name.trim() ? r.name.trim() : r.email.trim().split('@')[0],
       role: r.role || 'Needs to sign',
       deliveryMode: r.deliveryMode || 'Email',
       privateNote: r.privateNote || '',
-      signingOrder: idx + 1
+      signingOrder: step
     }));
 }
 
 function buildSnapshotKey(state) {
   return JSON.stringify({
     docs: (state.documentsList || []).map((d) => [d.name, d.documentText, d.fileId || null, d.file ? d.uploadKey : null]),
-    recipients: (state.recipients || []).map((r) => [r.email, r.name, r.role, r.deliveryMode, r.privateNote]),
+    recipients: (state.recipients || []).map((r, idx) => [r.email, r.name, r.role, r.deliveryMode, r.privateNote, stepOf(r, idx)]),
     settings: [
       state.sendInOrder, state.daysToComplete, state.agreementValidUntil, state.documentType, state.folder,
       state.description, state.allowComments, state.autoReminders, state.reminderEveryDays, state.noteToAll
@@ -129,9 +176,9 @@ export default function SendForSignatures() {
   const [currentUser] = useState(getCurrentUser);
   const [currentCreatedId, setCurrentCreatedId] = useState(id ? parseInt(id) : null);
 
-  // Multi-Document State (Pages 4 & 5)
+  // Multi-Document State (Pages 4 & 5): starts empty for a new request, documents are added by the user
   const [documentsList, setDocumentsList] = useState(() => {
-    const saved = id ? localStorage.getItem(`bexsign_doc_${id}_documents`) : localStorage.getItem('bexsign_draft_documents');
+    const saved = id ? localStorage.getItem(`bexsign_doc_${id}_documents`) : null;
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
@@ -145,20 +192,12 @@ export default function SendForSignatures() {
         }
       } catch (e) {}
     }
-    const initialName = location.state?.docName || (location.state?.fromCreate ? 'My doc vimal 2.pdf' : '');
-    const docName = initialName || 'My doc vimal 2.pdf';
-    return [
-      {
-        id: 1,
-        name: docName,
-        pages: 1,
-        status: 'Ready',
-        file: null,
-        documentText: getDefaultDocContent(docName),
-        customMessage: 'check the document for signature'
-      }
-    ];
+    return documentsFromNavigationState(location.state);
   });
+  // Set once the user removes documents, so an emptied draft is saved without documents
+  const documentsRemovedRef = useRef(false);
+  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
+  const [savedTemplates, setSavedTemplates] = useState({ status: 'idle', items: [] });
   const [activeDocIndex, setActiveDocIndex] = useState(0);
   const [activeCardMenuIndex, setActiveCardMenuIndex] = useState(null);
   const [isCustomTextOpen, setIsCustomTextOpen] = useState(false);
@@ -183,7 +222,8 @@ export default function SendForSignatures() {
       deliveryMode: 'Email',
       auth: 'Email OTP',
       passcode: '',
-      privateNote: ''
+      privateNote: '',
+      signingOrder: 1
     }
   ]);
 
@@ -261,6 +301,16 @@ export default function SendForSignatures() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Saved templates listed in "Add document > Template(s)" (loaded the first time the picker opens)
+  useEffect(() => {
+    if (!showTemplateModal || savedTemplates.status !== 'idle') return;
+    setSavedTemplates({ status: 'loading', items: [] });
+    fetch(`${API_BASE}/templates`)
+      .then((res) => res.json())
+      .then((data) => setSavedTemplates({ status: 'ready', items: Array.isArray(data.templates) ? data.templates : [] }))
+      .catch(() => setSavedTemplates({ status: 'ready', items: [] }));
+  }, [showTemplateModal]);
+
   const fetchDraftData = async () => {
     try {
       const res = await fetch(`${API_BASE}/documents/${id}`);
@@ -288,19 +338,9 @@ export default function SendForSignatures() {
             const savedDocs = localStorage.getItem(`bexsign_doc_${id}_documents`);
             if (savedDocs) loadedDocs = JSON.parse(savedDocs);
           } catch (e) {}
-          if (!loadedDocs || loadedDocs.length === 0) {
-            const initialDocName = doc.document_name || doc.title || 'My doc vimal 2.pdf';
-            loadedDocs = [
-              {
-                id: 1,
-                name: initialDocName,
-                pages: 1,
-                status: 'Ready',
-                file: null,
-                documentText: getDefaultDocContent(initialDocName, doc.custom_message),
-                customMessage: doc.custom_message || 'check the document for signature'
-              }
-            ];
+          if (!Array.isArray(loadedDocs) || loadedDocs.length === 0) {
+            // No documents saved yet: nothing is invented, the user adds documents from "Add document"
+            loadedDocs = documentsFromNavigationState(location.state);
           } else {
             loadedDocs = loadedDocs.map((d) => ({
               ...d,
@@ -338,6 +378,7 @@ export default function SendForSignatures() {
             auth: 'Email OTP',
             passcode: '',
             privateNote: r.private_note || '',
+            signingOrder: r.signing_order_index || idx + 1,
             status: r.status
           }));
           setRecipients(loadedRecs);
@@ -403,6 +444,7 @@ export default function SendForSignatures() {
     formData.append('noteToAll', snapshot.noteToAll);
     formData.append('recipients', JSON.stringify(cleanRecipientList(snapshot.recipients, { validOnly: true })));
     formData.append('documentsMeta', JSON.stringify(docsMeta));
+    formData.append('documentsCleared', docsMeta.length === 0 && documentsRemovedRef.current ? '1' : '0');
     snapshot.documentsList.forEach((d) => {
       if (d.file && d.uploadKey) {
         formData.append(`file_${d.uploadKey}`, d.file, d.file.name);
@@ -567,16 +609,14 @@ export default function SendForSignatures() {
     );
 
     setDocumentsList((prev) => {
-      const isPlaceholderOnly = prev.length === 1 && !prev[0].file && !prev[0].fileId && prev[0].name === 'My doc vimal 2.pdf' && !location.state?.fromCreate;
-      const base = isPlaceholderOnly ? [] : prev;
-      const room = MAX_DOCUMENTS - base.length;
+      const room = MAX_DOCUMENTS - prev.length;
       if (newDocs.length > room) {
         showPopupAlert(`A request can contain at most ${MAX_DOCUMENTS} documents. Only the first ${Math.max(room, 0)} file(s) were added.`, {
           title: 'Document limit',
           type: 'warning'
         });
       }
-      const updated = [...base, ...newDocs.slice(0, Math.max(room, 0))];
+      const updated = [...prev, ...newDocs.slice(0, Math.max(room, 0))];
       setActiveDocIndex(Math.max(0, updated.length - 1));
       return updated;
     });
@@ -590,7 +630,28 @@ export default function SendForSignatures() {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const handleAddNewDoc = (customTitle = '') => {
+  const handleDocumentsDragOver = (e) => {
+    e.preventDefault();
+    if (!isDraggingFiles) setIsDraggingFiles(true);
+  };
+
+  const handleDocumentsDragLeave = (e) => {
+    if (!e.currentTarget.contains(e.relatedTarget)) setIsDraggingFiles(false);
+  };
+
+  const handleDocumentsDrop = (e) => {
+    e.preventDefault();
+    setIsDraggingFiles(false);
+    addFilesToDocuments(Array.from(e.dataTransfer.files || []));
+  };
+
+  const handleAddTemplateDocument = (templateName, extra = {}) => {
+    const fileName = /\.pdf$/i.test(templateName) ? templateName : `${templateName}.pdf`;
+    setShowTemplateModal(false);
+    handleAddNewDoc(fileName, extra);
+  };
+
+  const handleAddNewDoc = (customTitle = '', extra = {}) => {
     if (documentsList.length >= MAX_DOCUMENTS) {
       showPopupAlert(`A request can contain at most ${MAX_DOCUMENTS} documents.`, { title: 'Document limit', type: 'warning' });
       return;
@@ -604,7 +665,8 @@ export default function SendForSignatures() {
       status: 'Ready',
       file: null,
       documentText: getDefaultDocContent(cleanTitle),
-      customMessage: noteToAll || 'check the document for signature'
+      customMessage: noteToAll || 'check the document for signature',
+      ...extra
     };
     setDocumentsList((prev) => {
       const updated = [...prev, newDoc];
@@ -615,11 +677,8 @@ export default function SendForSignatures() {
   };
 
   const handleRemoveDoc = (indexToRemove) => {
-    if (documentsList.length <= 1) {
-      showPopupAlert('At least one document is required in the envelope.', { title: 'Required', type: 'warning' });
-      return;
-    }
     const updated = documentsList.filter((_, idx) => idx !== indexToRemove);
+    documentsRemovedRef.current = true;
     setDocumentsList(updated);
     const activeId = draftIdRef.current || id || currentCreatedId;
     if (activeId) {
@@ -667,6 +726,24 @@ export default function SendForSignatures() {
     const nextList = [...documentsList.slice(0, idx + 1), duplicated, ...documentsList.slice(idx + 1)];
     setDocumentsList(nextList);
     setActiveDocIndex(idx + 1);
+    // Documents after the copy move one position: their cached fields move with them (the copy starts without fields)
+    const activeId = draftIdRef.current || id || currentCreatedId;
+    if (activeId) {
+      try {
+        const savedFields = localStorage.getItem(`bexsign_doc_${activeId}_fields_by_doc`);
+        if (savedFields) {
+          const parsed = JSON.parse(savedFields) || {};
+          const shifted = {};
+          Object.entries(parsed).forEach(([key, list]) => {
+            const docIdx = parseInt(key, 10) || 0;
+            const target = docIdx > idx ? docIdx + 1 : docIdx;
+            shifted[target] = (list || []).map((f) => ({ ...f, docIndex: target }));
+          });
+          localStorage.setItem(`bexsign_doc_${activeId}_fields_by_doc`, JSON.stringify(shifted));
+          localStorage.setItem(`bexsign_doc_${activeId}_fields`, JSON.stringify(Object.values(shifted).flat()));
+        }
+      } catch (e) {}
+    }
     showPopupAlert(`Duplicated "${source.name}" as "${duplicated.name}".`, { title: 'Document Duplicated', type: 'info' });
   };
 
@@ -738,7 +815,7 @@ export default function SendForSignatures() {
       setRecipients(recipients.map((r, idx) => (idx === emptyIndex ? { ...r, email: currentUser.email, name: currentUser.name } : r)));
       return;
     }
-    setRecipients([...recipients, blankRecipient({ email: currentUser.email, name: currentUser.name })]);
+    setRecipients([...recipients, blankRecipient({ email: currentUser.email, name: currentUser.name, signingOrder: nextStep(recipients) })]);
   };
 
   const handleAddRecipient = () => {
@@ -746,7 +823,7 @@ export default function SendForSignatures() {
       showPopupAlert(`A request can have at most ${MAX_RECIPIENTS} recipients.`, { title: 'Recipient limit', type: 'warning' });
       return;
     }
-    setRecipients([...recipients, blankRecipient()]);
+    setRecipients([...recipients, blankRecipient({ signingOrder: nextStep(recipients) })]);
   };
 
   const handleRemoveRecipient = (index) => {
@@ -754,23 +831,45 @@ export default function SendForSignatures() {
       showPopupAlert('At least one recipient is required.', { title: 'Action Required', type: 'warning' });
       return;
     }
-    const updated = recipients.filter((_, idx) => idx !== index);
-    setRecipients(updated);
+    setRecipients(normalizeRecipientSteps(recipients.filter((_, idx) => idx !== index)));
   };
 
   const updateRecipientField = (index, field, value) => {
     setRecipients((prev) => prev.map((r, idx) => (idx === index ? { ...r, [field]: value } : r)));
   };
 
+  // Typing a step number: recipients with the same number receive the email at the same time
+  const updateRecipientStep = (index, rawValue) => {
+    const digits = String(rawValue).replace(/\D/g, '');
+    const value = digits === '' ? '' : Math.min(Math.max(parseInt(digits, 10), 1), recipients.length);
+    setRecipients((prev) => prev.map((r, idx) => (idx === index ? { ...r, signingOrder: value } : r)));
+  };
+
+  // Dragging or the arrow buttons put recipients in a strict one-by-one order
   const moveRecipient = (fromIndex, toIndex) => {
     if (toIndex < 0 || toIndex >= recipients.length || fromIndex === toIndex) return;
     setRecipients((prev) => {
       const copy = [...prev];
       const [moved] = copy.splice(fromIndex, 1);
       copy.splice(toIndex, 0, moved);
-      return copy;
+      return copy.map((r, idx) => ({ ...r, signingOrder: idx + 1 }));
     });
   };
+
+  // Who is emailed first and who follows ("Send in order"), or everyone at once
+  const signingPlan = (() => {
+    const signers = recipients
+      .map((r, idx) => ({ r, step: stepOf(r, idx) }))
+      .filter(({ r }) => (r.email || '').trim() && SIGNING_ROLE_LABELS.includes(r.role || 'Needs to sign'));
+    const steps = [];
+    [...signers].sort((a, b) => a.step - b.step).forEach(({ r, step }) => {
+      const label = (r.name || '').trim() || r.email.trim();
+      const group = steps.find((s) => s.step === step);
+      if (group) group.names.push(label);
+      else steps.push({ step, names: [label] });
+    });
+    return { steps: steps.map((s, idx) => ({ ...s, position: idx + 1 })), names: signers.map(({ r }) => (r.name || '').trim() || r.email.trim()) };
+  })();
 
   const handleRecipientDrop = (targetIndex) => {
     if (dragRecipientIndex !== null) moveRecipient(dragRecipientIndex, targetIndex);
@@ -815,7 +914,8 @@ export default function SendForSignatures() {
       showPopupAlert('No new valid recipients were found in the CSV file. Use one "Name,Email" row per recipient.', { title: 'Bulk Import', type: 'warning' });
       return;
     }
-    setRecipients([...kept, ...toAdd.map((p, i) => blankRecipient({ id: Date.now() + i, email: p.email, name: p.name }))]);
+    const firstNewStep = nextStep(kept);
+    setRecipients([...kept, ...toAdd.map((p, i) => blankRecipient({ id: Date.now() + i, email: p.email, name: p.name, signingOrder: firstNewStep + i }))]);
     showPopupAlert(
       `${toAdd.length} recipient${toAdd.length === 1 ? '' : 's'} imported from CSV.${fresh.length > toAdd.length ? ` The limit of ${MAX_RECIPIENTS} recipients was reached.` : ''}`,
       { title: 'Bulk Import', type: 'success' }
@@ -1009,6 +1109,69 @@ export default function SendForSignatures() {
     navigate('/documents');
   };
 
+  // "Add document" menu: the only way documents are added to a request (besides dropping files)
+  const addDocumentOptions = [
+    { key: 'desktop', icon: HardDrive, title: 'Desktop', description: 'Upload files from this computer', onSelect: () => fileInputRef.current?.click() },
+    { key: 'cloud', icon: Cloud, title: 'Cloud', description: 'Google Drive, Dropbox, OneDrive or Box', onSelect: () => setShowCloudModal(true) },
+    { key: 'templates', icon: FileBox, title: 'Template(s)', description: 'Start from an agreement template', onSelect: () => setShowTemplateModal(true) },
+    { key: 'mail-merge', icon: Layers, title: 'Mail merge template', description: 'Personalize one template for many recipients', onSelect: () => handleAddNewDoc('Customer Service Agreement.pdf') },
+    { key: 'create', icon: FileEdit, title: 'Create', description: 'Write a new document in the editor', badge: 'Opens editor', onSelect: () => handleCreateInEditor() }
+  ];
+
+  const renderAddDocumentMenu = () => (
+    <div
+      className="relative inline-block"
+      ref={dropdownRef}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') setIsDropdownOpen(false);
+      }}
+    >
+      <button
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={isDropdownOpen}
+        onClick={() => setIsDropdownOpen((open) => !open)}
+        className="bg-[#007355] hover:bg-[#005c44] text-white px-4 py-2 rounded-md text-xs font-semibold inline-flex items-center gap-1.5 transition shadow-xs cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300"
+      >
+        <Plus size={14} />
+        <span>Add document</span>
+        <ChevronDown size={14} className={`transition-transform ${isDropdownOpen ? 'rotate-180' : ''}`} />
+      </button>
+
+      {isDropdownOpen && (
+        <div
+          role="menu"
+          className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-72 max-w-[calc(100vw-2rem)] bg-white border border-slate-200 rounded-xl shadow-2xl p-1.5 z-30 text-left"
+        >
+          <p className="px-3 pt-1.5 pb-1 text-[10px] uppercase font-bold text-slate-400 tracking-wider">Add from</p>
+          {addDocumentOptions.map(({ key, icon: Icon, title, description, badge, onSelect }) => (
+            <button
+              key={key}
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setIsDropdownOpen(false);
+                onSelect();
+              }}
+              className="w-full flex items-start gap-3 px-3 py-2.5 rounded-lg text-left hover:bg-emerald-50 focus:bg-emerald-50 focus:outline-none transition group cursor-pointer"
+            >
+              <span className="w-8 h-8 rounded-lg bg-slate-100 text-slate-600 group-hover:bg-white group-hover:text-[#007355] group-focus:bg-white group-focus:text-[#007355] flex items-center justify-center shrink-0 transition">
+                <Icon size={16} />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center justify-between gap-2 text-xs font-bold text-slate-800">
+                  {title}
+                  {badge && <span className="text-[10px] font-bold text-[#007355] whitespace-nowrap">{badge} →</span>}
+                </span>
+                <span className="block text-[11px] text-slate-500 leading-snug mt-0.5">{description}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div className="bg-[#f8fafc] min-h-screen pb-20 text-slate-800 font-sans">
       {/* Hidden Native File Input (accepts multiple files) */}
@@ -1046,10 +1209,37 @@ export default function SendForSignatures() {
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-bold text-slate-900">Add documents</h2>
             <span className="text-xs font-semibold text-slate-500">
-              {documentsList.length} document{documentsList.length > 1 ? 's' : ''} added
+              {documentsList.length === 0
+                ? 'No documents added'
+                : `${documentsList.length} document${documentsList.length > 1 ? 's' : ''} added`}
             </span>
           </div>
 
+          {documentsList.length === 0 ? (
+            /* Empty request: the user chooses what to add (no default document) */
+            <div
+              onDragOver={handleDocumentsDragOver}
+              onDragLeave={handleDocumentsDragLeave}
+              onDrop={handleDocumentsDrop}
+              className={`relative rounded-xl border-2 border-dashed px-6 py-12 sm:py-14 text-center transition ${
+                isDraggingFiles ? 'border-[#007355] bg-emerald-50/70' : 'border-slate-300 bg-white hover:border-slate-400'
+              }`}
+            >
+              <div className="mx-auto w-14 h-14 rounded-2xl bg-emerald-50 border border-emerald-100 text-[#007355] flex items-center justify-center mb-4 shadow-2xs">
+                <Upload size={26} />
+              </div>
+              <p className="text-sm font-bold text-slate-900">
+                {isDraggingFiles ? 'Drop files to add them' : 'Add the documents you want to send'}
+              </p>
+              <p className="text-xs text-slate-500 mt-1 mb-5">
+                Drag and drop files here, or choose where to add them from.
+              </p>
+              {renderAddDocumentMenu()}
+              <p className="text-[11px] text-slate-400 mt-5">
+                PDF, Word or image files · Up to 25 MB each · Up to {MAX_DOCUMENTS} documents
+              </p>
+            </div>
+          ) : (
           <div className="flex flex-col sm:flex-row items-start gap-6 flex-wrap">
             {/* Render all attached document cards side by side */}
             {documentsList.map((docItem, idx) => {
@@ -1142,21 +1332,17 @@ export default function SendForSignatures() {
                           >
                             <Copy size={13} /> Duplicate
                           </button>
-                          {documentsList.length > 1 && (
-                            <>
-                              <div className="border-t border-slate-100 my-1" />
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setActiveCardMenuIndex(null);
-                                  handleRemoveDoc(idx);
-                                }}
-                                className="w-full text-left px-3.5 py-1.5 hover:bg-red-50 flex items-center gap-2 text-red-600 transition cursor-pointer"
-                              >
-                                <Trash2 size={13} /> Remove document
-                              </button>
-                            </>
-                          )}
+                          <div className="border-t border-slate-100 my-1" />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setActiveCardMenuIndex(null);
+                              handleRemoveDoc(idx);
+                            }}
+                            className="w-full text-left px-3.5 py-1.5 hover:bg-red-50 flex items-center gap-2 text-red-600 transition cursor-pointer"
+                          >
+                            <Trash2 size={13} /> Remove document
+                          </button>
                         </div>
                       )}
                     </div>
@@ -1183,19 +1369,18 @@ export default function SendForSignatures() {
                     >
                       {docItem.name || `Document ${idx + 1}`}
                     </span>
-                    {documentsList.length > 1 && (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleRemoveDoc(idx);
-                        }}
-                        className="text-slate-400 hover:text-red-500 p-0.5 rounded hover:bg-slate-100 transition"
-                        title="Remove document"
-                      >
-                        <X size={14} />
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleRemoveDoc(idx);
+                      }}
+                      className="text-slate-400 hover:text-red-500 p-0.5 rounded hover:bg-slate-100 transition"
+                      title="Remove document"
+                      aria-label={`Remove ${docItem.name || `document ${idx + 1}`}`}
+                    >
+                      <X size={14} />
+                    </button>
                   </div>
                 </div>
               );
@@ -1203,90 +1388,19 @@ export default function SendForSignatures() {
 
             {/* Dropzone Box */}
             <div
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={(e) => {
-                e.preventDefault();
-                addFilesToDocuments(Array.from(e.dataTransfer.files || []));
-              }}
-              className="w-60 h-60 border-2 border-dashed border-slate-300 rounded-lg flex flex-col items-center justify-center p-6 text-center bg-white hover:border-[#007355] transition relative shrink-0 shadow-2xs"
+              onDragOver={handleDocumentsDragOver}
+              onDragLeave={handleDocumentsDragLeave}
+              onDrop={handleDocumentsDrop}
+              className={`w-full sm:w-60 h-60 border-2 border-dashed rounded-lg flex flex-col items-center justify-center p-6 text-center transition relative shrink-0 shadow-2xs ${
+                isDraggingFiles ? 'border-[#007355] bg-emerald-50/70' : 'border-slate-300 bg-white hover:border-[#007355]'
+              }`}
             >
-              <div className="text-slate-300 mb-2">
+              <div className={`mb-2 ${isDraggingFiles ? 'text-[#007355]' : 'text-slate-300'}`}>
                 <FileText size={48} className="stroke-[1.2]" />
               </div>
-              <p className="text-xs font-semibold text-slate-700">Drag files here</p>
+              <p className="text-xs font-semibold text-slate-700">{isDraggingFiles ? 'Drop files to add them' : 'Drag files here'}</p>
               <span className="text-[11px] text-slate-400 my-1 font-medium">or</span>
-
-              {/* Add document dropdown button */}
-              <div className="relative" ref={dropdownRef}>
-                <button
-                  type="button"
-                  onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-                  className="bg-[#007355] hover:bg-[#005c44] text-white px-3.5 py-1.5 rounded text-xs font-semibold inline-flex items-center gap-1.5 transition shadow-xs cursor-pointer"
-                >
-                  <span>Add document</span>
-                  <ChevronDown size={14} />
-                </button>
-
-                {/* Dropdown Menu */}
-                {isDropdownOpen && (
-                  <div className="absolute top-full left-0 mt-1.5 w-48 bg-white border border-slate-200 rounded-md shadow-xl py-2 z-30 text-left">
-                    <div className="px-3 pb-1 mb-1 border-b border-slate-100">
-                      <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
-                        From
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsDropdownOpen(false);
-                        if (fileInputRef.current) fileInputRef.current.click();
-                      }}
-                      className="w-full text-left px-4 py-1.5 text-xs text-slate-800 hover:bg-slate-50 font-medium transition cursor-pointer"
-                    >
-                      Desktop
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsDropdownOpen(false);
-                        setShowCloudModal(true);
-                      }}
-                      className="w-full text-left px-4 py-1.5 text-xs text-slate-800 hover:bg-slate-50 font-medium transition cursor-pointer"
-                    >
-                      Cloud
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        handleAddNewDoc('Standard Employment Agreement.pdf');
-                      }}
-                      className="w-full text-left px-4 py-1.5 text-xs text-slate-800 hover:bg-slate-50 font-medium transition cursor-pointer"
-                    >
-                      Template(s)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        handleAddNewDoc('Customer Service Agreement.pdf');
-                      }}
-                      className="w-full text-left px-4 py-1.5 text-xs text-slate-800 hover:bg-slate-50 font-medium transition cursor-pointer"
-                    >
-                      Mail merge template
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsDropdownOpen(false);
-                        handleCreateInEditor();
-                      }}
-                      className="w-full text-left px-4 py-1.5 text-xs text-slate-800 hover:bg-slate-50 font-medium transition cursor-pointer flex items-center justify-between"
-                    >
-                      <span>Create</span>
-                      <span className="text-[10px] text-[#007355] font-bold">Opens Editor →</span>
-                    </button>
-                  </div>
-                )}
-              </div>
+              {renderAddDocumentMenu()}
             </div>
 
             {/* Document Details & Name Input Display */}
@@ -1316,7 +1430,6 @@ export default function SendForSignatures() {
                       if (activeId) {
                         localStorage.setItem(`bexsign_doc_${activeId}_documents`, JSON.stringify(copy));
                       }
-                      localStorage.setItem('bexsign_draft_documents', JSON.stringify(copy));
                       return copy;
                     });
                   }}
@@ -1369,7 +1482,6 @@ export default function SendForSignatures() {
                           if (activeId) {
                             localStorage.setItem(`bexsign_doc_${activeId}_documents`, JSON.stringify(copy));
                           }
-                          localStorage.setItem('bexsign_draft_documents', JSON.stringify(copy));
                           return copy;
                         });
                       }}
@@ -1392,7 +1504,6 @@ export default function SendForSignatures() {
                               if (activeId) {
                                 localStorage.setItem(`bexsign_doc_${activeId}_documents`, JSON.stringify(copy));
                               }
-                              localStorage.setItem('bexsign_draft_documents', JSON.stringify(copy));
                               return copy;
                             });
                           }}
@@ -1407,6 +1518,7 @@ export default function SendForSignatures() {
               </div>
             </div>
           </div>
+          )}
         </div>
 
         {/* ========================================================
@@ -1498,12 +1610,19 @@ export default function SendForSignatures() {
                     </button>
                   </span>
                   {sendInOrder && (
-                    <span
-                      className="w-6 h-6 border border-slate-300 text-xs font-bold text-slate-700 flex items-center justify-center rounded bg-slate-50 select-none"
-                      title="Signing order"
-                    >
-                      {index + 1}
-                    </span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={rec.signingOrder ?? index + 1}
+                      onChange={(e) => updateRecipientStep(index, e.target.value)}
+                      onBlur={() => setRecipients((prev) => normalizeRecipientSteps(prev))}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') e.currentTarget.blur();
+                      }}
+                      aria-label={`Signing order for ${rec.email || `recipient ${index + 1}`}`}
+                      title="Signing order. Give recipients the same number to email them at the same time."
+                      className="w-8 h-7 text-center text-xs font-bold text-slate-700 border border-slate-300 rounded bg-slate-50 hover:border-slate-400 focus:bg-white focus:border-[#007355] focus:ring-1 focus:ring-[#007355] outline-none transition"
+                    />
                   )}
                 </div>
 
@@ -1590,6 +1709,41 @@ export default function SendForSignatures() {
             <Plus size={14} />
             <span>Add recipient</span>
           </button>
+
+          {/* Email delivery plan: in order (steps) or everyone at once */}
+          {signingPlan.steps.length > 0 && (
+            <div className="rounded-lg border border-slate-200 bg-white px-3.5 py-3 shadow-2xs space-y-1.5" aria-live="polite">
+              <div className="flex items-start gap-2 text-xs text-slate-600">
+                <Mail size={14} className="text-[#007355] mt-0.5 shrink-0" />
+                {sendInOrder ? (
+                  <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1.5 min-w-0">
+                    <span className="font-semibold text-slate-800">Emails go out in order:</span>
+                    {signingPlan.steps.map((s, i) => (
+                      <React.Fragment key={s.step}>
+                        {i > 0 && <ChevronRight size={12} className="text-slate-400 shrink-0" />}
+                        <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 border border-slate-200 pl-1 pr-2 py-0.5 max-w-full">
+                          <span className="w-4 h-4 rounded-full bg-[#007355] text-white text-[10px] font-bold flex items-center justify-center shrink-0">
+                            {s.position}
+                          </span>
+                          <span className="truncate font-medium text-slate-700">{s.names.join(', ')}</span>
+                        </span>
+                      </React.Fragment>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="min-w-0">
+                    <span className="font-semibold text-slate-800">All at once:</span>{' '}
+                    {signingPlan.names.join(', ')} receive the email at the same time.
+                  </p>
+                )}
+              </div>
+              {sendInOrder && (
+                <p className="text-[11px] text-slate-400 pl-6">
+                  Drag recipients or change their number to set the order. Give recipients the same number to email them at the same time.
+                </p>
+              )}
+            </div>
+          )}
         </div>
 
         {/* ========================================================
@@ -1932,37 +2086,83 @@ export default function SendForSignatures() {
           MODAL: TEMPLATES PICKER
       ======================================================== */}
       {showTemplateModal && (
-        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 space-y-4">
-            <div className="flex items-center justify-between border-b pb-3">
-              <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
-                <FileBox size={18} className="text-[#007355]" />
-                Select Template
-              </h3>
-              <button onClick={() => setShowTemplateModal(false)} className="text-slate-400 hover:text-slate-600">
+        <div
+          className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center z-50 p-4"
+          onClick={() => setShowTemplateModal(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="template-picker-title"
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white rounded-xl shadow-2xl max-w-lg w-full p-6 space-y-4"
+          >
+            <div className="flex items-start justify-between gap-3 border-b pb-3">
+              <div>
+                <h3 id="template-picker-title" className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                  <FileBox size={18} className="text-[#007355]" />
+                  Select a template
+                </h3>
+                <p className="text-[11px] text-slate-500 mt-0.5">The template is added to this request as a new document.</p>
+              </div>
+              <button
+                type="button"
+                aria-label="Close"
+                onClick={() => setShowTemplateModal(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded hover:bg-slate-100 cursor-pointer"
+              >
                 <X size={18} />
               </button>
             </div>
-            <div className="space-y-2 py-1 max-h-64 overflow-y-auto">
+            <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-1">
               {[
-                'Standard Employment Agreement 2026.pdf',
-                'Mutual Non-Disclosure Agreement (NDA).pdf',
-                'Vendor Service Contract.pdf',
-                'Consultancy Agreement Template.pdf'
-              ].map((tName) => (
-                <div
-                  key={tName}
-                  onClick={() => {
-                    handleAddNewDoc(tName);
-                    setShowTemplateModal(false);
-                    showPopupAlert(`Template "${tName}" selected.`, { title: 'Template Selected', type: 'success' });
-                  }}
-                  className="p-3 border border-slate-200 hover:border-[#007355] rounded-lg cursor-pointer hover:bg-emerald-50/30 transition flex items-center justify-between"
-                >
-                  <span className="text-xs font-bold text-slate-800">{tName}</span>
-                  <ChevronRight size={14} className="text-slate-400" />
-                </div>
+                savedTemplates.items.length > 0 && {
+                  heading: 'Your templates',
+                  items: savedTemplates.items.map((t) => ({
+                    key: `saved-${t.id}`,
+                    name: t.title || 'Untitled template',
+                    description: t.description || 'Saved template',
+                    onSelect: () => handleAddTemplateDocument(t.title || 'Untitled template', { filePath: t.file_path || null })
+                  }))
+                },
+                {
+                  heading: 'Agreement templates',
+                  items: BUILT_IN_TEMPLATES.map((t) => ({
+                    key: t.name,
+                    name: t.name.replace(/\.pdf$/i, ''),
+                    description: t.description,
+                    onSelect: () => handleAddTemplateDocument(t.name)
+                  }))
+                }
+              ].filter(Boolean).map((group) => (
+                <section key={group.heading}>
+                  <h4 className="text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-2">{group.heading}</h4>
+                  <div className="space-y-2">
+                    {group.items.map((item) => (
+                      <button
+                        key={item.key}
+                        type="button"
+                        onClick={item.onSelect}
+                        className="w-full p-3 border border-slate-200 hover:border-[#007355] rounded-lg hover:bg-emerald-50/40 transition flex items-center gap-3 text-left group cursor-pointer"
+                      >
+                        <span className="w-9 h-9 rounded-lg bg-emerald-50 text-[#007355] flex items-center justify-center shrink-0">
+                          <FileText size={16} />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-xs font-bold text-slate-800 truncate">{item.name}</span>
+                          <span className="block text-[11px] text-slate-500 truncate">{item.description}</span>
+                        </span>
+                        <ChevronRight size={14} className="text-slate-400 group-hover:text-[#007355] shrink-0" />
+                      </button>
+                    ))}
+                  </div>
+                </section>
               ))}
+              {savedTemplates.status === 'loading' && (
+                <p className="text-[11px] text-slate-400 flex items-center gap-1.5">
+                  <Loader2 size={12} className="animate-spin" /> Loading your templates...
+                </p>
+              )}
             </div>
           </div>
         </div>

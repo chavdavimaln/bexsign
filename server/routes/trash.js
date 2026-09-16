@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const { OWNER_JOIN, OWNER_COLUMNS } = require('../utils/requestHelpers');
 
 // @route   GET /api/trash
 // @desc    Get all trashed documents
@@ -14,10 +15,12 @@ router.get('/', async (req, res) => {
                     di.signature_status, 
                     di.signature_image,
                     di.signature_style,
-                    di.signed_at 
-             FROM documents d 
-             LEFT JOIN document_identifiers di ON d.id = di.document_id 
-             WHERE LOWER(d.status) = 'trashed' 
+                    di.signed_at,
+                    ${OWNER_COLUMNS}
+             FROM documents d
+             LEFT JOIN document_identifiers di ON d.id = di.document_id
+             ${OWNER_JOIN}
+             WHERE LOWER(d.status) = 'trashed'
              ORDER BY d.updated_at DESC`
         );
         res.json({ success: true, documents: trashedDocs });

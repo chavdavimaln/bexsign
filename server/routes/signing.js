@@ -12,6 +12,7 @@ const { sendDocumentCompletedEmail, sendSignatureRequestEmail, sendRecipientSign
 const { generateServerPdfBuffer } = require('../utils/pdfGenerator');
 const requestHelpers = require('../utils/requestHelpers');
 const { finalizeCompletedRequest } = require('../utils/requestCompletion');
+const { isUsableSignature } = require('../utils/signatureValidation');
 
 // @route   GET /api/signatures/token/:token
 // @desc    Get public signing session by secure token and auto-fetch saved signature
@@ -82,8 +83,10 @@ router.get('/token/:token', async (req, res) => {
                 };
             });
 
+            // Zoho Sign privacy: other recipients' fields are not sent while the request is in progress
+            const visibleFields = isCompleted ? fieldsList : fieldsList.filter((f) => !f.isAssignedToOther);
             const fieldsByDoc = {};
-            fieldsList.forEach(f => {
+            visibleFields.forEach(f => {
                 const dIdx = f.docIndex !== undefined ? f.docIndex : 0;
                 if (!fieldsByDoc[dIdx]) fieldsByDoc[dIdx] = [];
                 fieldsByDoc[dIdx].push(f);
@@ -101,8 +104,9 @@ router.get('/token/:token', async (req, res) => {
                     custom_message: doc.custom_message || 'Please review and sign this agreement.',
                     file_path: doc.file_path || '/uploads/sample.pdf'
                 },
-                fields: fieldsList,
+                fields: visibleFields,
                 fieldsByDoc,
+                fieldCount: fieldsList.length,
                 existingSignature: existingSig
             });
         }
@@ -159,8 +163,10 @@ router.get('/token/:token', async (req, res) => {
             };
         });
 
+        // Zoho Sign privacy: other recipients' fields are not sent while the request is in progress
+        const visibleFields = isCompleted ? fieldsList : fieldsList.filter((f) => !f.isAssignedToOther);
         const fieldsByDoc = {};
-        fieldsList.forEach(f => {
+        visibleFields.forEach(f => {
             const dIdx = f.docIndex !== undefined ? f.docIndex : 0;
             if (!fieldsByDoc[dIdx]) fieldsByDoc[dIdx] = [];
             fieldsByDoc[dIdx].push(f);
@@ -172,8 +178,9 @@ router.get('/token/:token', async (req, res) => {
         res.json({
             success: true,
             recipient,
-            fields: fieldsList,
+            fields: visibleFields,
             fieldsByDoc,
+            fieldCount: fieldsList.length,
             existingSignature: existingSig
         });
     } catch (err) {
@@ -345,6 +352,16 @@ router.post('/submit', async (req, res) => {
 
         const name = String(signerName || recipient.name || recipient.email).trim();
         const signingRecipients = recipients.filter((r) => requestHelpers.isSigningRole(r.role));
+
+        const [ownFieldRows] = await db.query('SELECT field_type, recipient_id, options FROM document_fields WHERE document_id = ?', [docId]);
+        const ownFields = ownFieldRows
+            .map(requestHelpers.parseFieldRow)
+            .filter((f) => requestHelpers.fieldBelongsToRecipient(f, recipient, signingRecipients));
+        const needsSignature = recipient.role !== 'approver'
+            && (ownFieldRows.length === 0 || ownFields.some((f) => f.type === 'Signature' || f.type === 'Initial'));
+        if (needsSignature && !isUsableSignature(signatureData)) {
+            return res.status(400).json({ success: false, error: 'Your signature is empty. Please draw, type or upload your signature, then finish again.' });
+        }
         const ip = requestHelpers.getRequestIp(req);
         const signedAt = new Date().toISOString();
 

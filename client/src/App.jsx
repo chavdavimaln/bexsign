@@ -29,6 +29,7 @@ import MyProfile from './pages/MyProfile';
 import Settings from './pages/Settings';
 import SignaturesModule from './pages/SignaturesModule';
 import UserManagement from './pages/UserManagement';
+import VerifyDocument from './pages/VerifyDocument';
 
 export default function App() {
   return (
@@ -41,6 +42,7 @@ export default function App() {
 
         {/* Public Recipient Signing Token Route (Section 21 & 22 PDF Requirement) */}
         <Route path="/sign/:token" element={<PublicSigning />} />
+        <Route path="/verify" element={<VerifyDocument />} />
         <Route path="/documents/sign/:id" element={<PublicSigning />} />
 
         {/* Protected App Routes inside Main Layout */}

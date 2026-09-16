@@ -10,12 +10,18 @@ import CompletedDocumentViewer from '../components/CompletedDocumentViewer';
 import BexDocumentSheet from '../components/BexDocumentSheet';
 import { printDocumentSheet } from '../utils/documentPrinter';
 import { getDefaultDocContent } from '../utils/documentDefaults';
+import { applySignerDefaults } from '../utils/documentFields';
+import { canvasHasInk, isTypedSignatureValid } from '../utils/signatureInk';
+import { downloadSignedDocument } from '../utils/signedPdf';
 
 export default function PublicSigning() {
   const { token, id } = useParams();
   const docId = id || token || '1';
   const navigate = useNavigate();
-  const fullBexsignId = generateBexsignId(docId);
+  // The request's real BexSign ID comes from the server; the generated one is only a stable placeholder until then
+  const [placeholderBexsignId] = useState(() => generateBexsignId(docId));
+  const [serverBexsignId, setServerBexsignId] = useState('');
+  const fullBexsignId = serverBexsignId || placeholderBexsignId;
   // Each recipient has their own signing session (multi-recipient requests)
   const signerEmailParam = (new URLSearchParams(window.location.search).get('email') || '').trim();
   const sigKey = (suffix) => `bexsign_doc_${docId}_${signerEmailParam ? `${signerEmailParam.toLowerCase()}_` : ''}${suffix}`;
@@ -73,6 +79,9 @@ export default function PublicSigning() {
     ];
   });
   const [activeDocIndex, setActiveDocIndex] = useState(0);
+
+  // Total placed fields of the request (the server only returns this signer's own fields while in progress)
+  const [requestFieldCount, setRequestFieldCount] = useState(0);
 
   // Partitioned fields per document
   const [fieldsByDoc, setFieldsByDoc] = useState(() => {
@@ -155,16 +164,6 @@ export default function PublicSigning() {
         setFieldsByDoc(loadedFields);
       }
 
-      // 2. Fetch server database state
-      let doc = null;
-      try {
-        const res = await fetch(`http://localhost:5000/api/documents/${docId}${signerEmailParam ? `?email=${encodeURIComponent(signerEmailParam)}` : ''}`);
-        const data = await res.json();
-        if (data.success && data.document) {
-          doc = data.document;
-        }
-      } catch (eDoc) {}
-
       // Determine active user email for isolation and saved signature
       let activeUserEmail = '';
       let activeUserName = '';
@@ -182,6 +181,16 @@ export default function PublicSigning() {
         }
       } catch (e) {}
 
+      // 2. Fetch server database state (only this recipient's fields are returned while in progress)
+      let doc = null;
+      try {
+        const res = await fetch(`http://localhost:5000/api/documents/${docId}${activeUserEmail ? `?email=${encodeURIComponent(activeUserEmail)}` : ''}`);
+        const data = await res.json();
+        if (data.success && data.document) {
+          doc = data.document;
+        }
+      } catch (eDoc) {}
+
       // Fallback: fetch via token route if document was not found directly
       if (!doc || !doc.id) {
         try {
@@ -194,6 +203,7 @@ export default function PublicSigning() {
               custom_message: tokenData.recipient?.custom_message,
               fields: tokenData.fields,
               fieldsByDoc: tokenData.fieldsByDoc,
+              fieldCount: tokenData.fieldCount,
               status: tokenData.recipient?.status || 'In Progress'
             };
           }
@@ -201,6 +211,7 @@ export default function PublicSigning() {
       }
 
       if (doc) {
+        if (doc.bexsign_doc_id) setServerBexsignId(doc.bexsign_doc_id);
         const currentSignerEmail = activeUserEmail || doc.recipient_email || 'vimal@bexcodeservices.com';
         const expiresOn = doc.expires_on ? new Date(doc.expires_on) : null;
         const daysLeft = expiresOn ? Math.max(0, Math.ceil((expiresOn.getTime() - Date.now()) / 86400000)) : 15;
@@ -250,13 +261,30 @@ export default function PublicSigning() {
           }
         }
 
-        // Populate fieldsByDoc directly from server response
+        // Populate fieldsByDoc directly from server response. While in progress the response holds only this
+        // recipient's fields, so it is cached only once completed (the sender's editor shares these keys).
+        const serverFieldsComplete = doc.status === 'Completed';
+        const serverFieldCount = Number(doc.fieldCount) || 0;
+        setRequestFieldCount(serverFieldCount);
+        // The signer's own untouched fields start with the values the page shows (name, email, company, today)
+        const signerDefaults = {
+          signerName: matched?.name || '',
+          signerEmail: currentSignerEmail,
+          signDate: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+        };
+        const isSignerField = (f) => Boolean(f) && !f.isAssignedToOther
+          && (!f.assigneeEmail || f.assigneeEmail.toLowerCase() === currentSignerEmail.toLowerCase());
+        const withSignerDefaults = (list) => (serverFieldsComplete
+          ? list
+          : (list || []).map((f) => (isSignerField(f) ? applySignerDefaults([f], signerDefaults)[0] : f)));
         if (doc.fieldsByDoc && Object.keys(doc.fieldsByDoc).length > 0) {
-          setFieldsByDoc(doc.fieldsByDoc);
-          try {
-            localStorage.setItem(`bexsign_doc_${docId}_fields_by_doc`, JSON.stringify(doc.fieldsByDoc));
-            localStorage.setItem(`bexsign_doc_${docId}_fields`, JSON.stringify(Object.values(doc.fieldsByDoc).flat()));
-          } catch (e) {}
+          setFieldsByDoc(Object.fromEntries(Object.entries(doc.fieldsByDoc).map(([idx, list]) => [idx, withSignerDefaults(list)])));
+          if (serverFieldsComplete) {
+            try {
+              localStorage.setItem(`bexsign_doc_${docId}_fields_by_doc`, JSON.stringify(doc.fieldsByDoc));
+              localStorage.setItem(`bexsign_doc_${docId}_fields`, JSON.stringify(Object.values(doc.fieldsByDoc).flat()));
+            } catch (e) {}
+          }
         } else if (doc.fields && Array.isArray(doc.fields) && doc.fields.length > 0) {
           const byDoc = {};
           doc.fields.forEach(f => {
@@ -264,11 +292,16 @@ export default function PublicSigning() {
             if (!byDoc[idx]) byDoc[idx] = [];
             byDoc[idx].push(f);
           });
-          setFieldsByDoc(byDoc);
-          try {
-            localStorage.setItem(`bexsign_doc_${docId}_fields_by_doc`, JSON.stringify(byDoc));
-            localStorage.setItem(`bexsign_doc_${docId}_fields`, JSON.stringify(doc.fields));
-          } catch (e) {}
+          setFieldsByDoc(Object.fromEntries(Object.entries(byDoc).map(([idx, list]) => [idx, withSignerDefaults(list)])));
+          if (serverFieldsComplete) {
+            try {
+              localStorage.setItem(`bexsign_doc_${docId}_fields_by_doc`, JSON.stringify(byDoc));
+              localStorage.setItem(`bexsign_doc_${docId}_fields`, JSON.stringify(doc.fields));
+            } catch (e) {}
+          }
+        } else if (Array.isArray(doc.fields) || doc.fieldCount !== undefined) {
+          // The server answered: none of the request's fields belong to this recipient
+          setFieldsByDoc({});
         }
 
         if ((Array.isArray(doc.files) && doc.files.length > 0) || !loadedDocs || loadedDocs.length === 0) {
@@ -319,9 +352,6 @@ export default function PublicSigning() {
               setSignatureData(savedSig.signature_image);
               setSignaturePlaced(true);
               setSignatureType(savedSig.signature_image.startsWith('data:') ? 'draw' : 'type');
-            } else {
-              setSignaturePlaced(true);
-              setSignatureType('type');
             }
             if (savedSig.signature_style) setSelectedStyle(savedSig.signature_style);
           }
@@ -362,7 +392,6 @@ export default function PublicSigning() {
     ctx.beginPath();
     ctx.moveTo(coords.x, coords.y);
     setIsDrawing(true);
-    setHasDrawn(true);
   };
 
   const draw = (e) => {
@@ -373,6 +402,7 @@ export default function PublicSigning() {
     const coords = getCoordinates(e);
     ctx.lineTo(coords.x, coords.y);
     ctx.stroke();
+    if (!hasDrawn) setHasDrawn(true);
   };
 
   const stopDrawing = () => {
@@ -405,11 +435,11 @@ export default function PublicSigning() {
 
     if (sigType === 'draw') {
       const canvas = canvasRef.current;
-      if (canvas && hasDrawn) {
+      if (canvas && hasDrawn && canvasHasInk(canvas)) {
         appliedSig = canvas.toDataURL('image/png');
         appliedType = 'draw';
       } else {
-        showPopupAlert('Please draw your signature on the pad before clicking Ok.', { title: 'Signature Required', type: 'warning' });
+        showPopupAlert('The signature pad is empty. Draw your signature before clicking Ok.', { title: 'Signature Required', type: 'warning' });
         return;
       }
     } else if (sigType === 'upload') {
@@ -420,7 +450,11 @@ export default function PublicSigning() {
       appliedSig = uploadedImage;
       appliedType = 'upload';
     } else {
-      appliedSig = typedName;
+      if (!isTypedSignatureValid(typedName)) {
+        showPopupAlert('Type your name to create your signature before clicking Ok.', { title: 'Signature Required', type: 'warning' });
+        return;
+      }
+      appliedSig = typedName.trim();
       appliedType = 'type';
     }
 
@@ -452,13 +486,8 @@ export default function PublicSigning() {
         }
         return f;
       });
-      const nextByDoc = { ...prev, [activeDocIndex]: updatedList };
-      try {
-        localStorage.setItem(`bexsign_doc_${docId}_fields_by_doc`, JSON.stringify(nextByDoc));
-        const flatList = Object.values(nextByDoc).flat();
-        localStorage.setItem(`bexsign_doc_${docId}_fields`, JSON.stringify(flatList));
-      } catch (e) {}
-      return nextByDoc;
+      // Kept in memory only: the shared field cache belongs to the sender's editor and holds every recipient's fields
+      return { ...prev, [activeDocIndex]: updatedList };
     });
   };
 
@@ -499,16 +528,27 @@ export default function PublicSigning() {
   };
 
   const handleDownloadSignedPdf = async (pass = '') => {
+    // Once this recipient has signed, their copy is the locked PDF issued by the server
+    if (isCompleted || signerContext?.alreadySigned) {
+      try {
+        const { fileName } = await downloadSignedDocument(docId, { index: activeDocIndex, email: documentDetails.recipient });
+        showPopupAlert(`Downloaded "${fileName}". Signed PDFs are locked and cannot be edited.`, { title: 'Download Complete', type: 'success' });
+      } catch (err) {
+        showPopupAlert(err instanceof TypeError ? 'Could not reach the BexSign server at http://localhost:5000.' : err.message, { title: 'Download Error', type: 'error' });
+      }
+      return;
+    }
     try {
       const activeDoc = documentsList[activeDocIndex] || {};
       const docTitle = activeDoc.name || documentDetails.title || `Document 1.pdf`;
       const docMsg = activeDoc.customMessage || documentDetails.message || 'check the document for signature';
       const docBexId = documentsList.length > 1 ? `${fullBexsignId}-${activeDocIndex + 1}` : fullBexsignId;
-      const currentFields = fieldsByDoc[activeDocIndex] || [];
+      const currentFields = getOutputFields(activeDocIndex);
 
       const activeText = activeDoc.documentText || getDefaultDocContent(docTitle, docMsg);
 
       await generateAndDownloadPdf({
+        defaultSignature: !requestHasFields,
         documentName: docTitle,
         documentText: activeText,
         docId: docBexId || docId,
@@ -540,9 +580,10 @@ export default function PublicSigning() {
     const docMsg = activeDoc.customMessage || documentDetails.message || 'check the document for signature';
     const docBexId = documentsList.length > 1 ? `${fullBexsignId}-${activeDocIndex + 1}` : fullBexsignId;
     const activeText = activeDoc.documentText || getDefaultDocContent(docTitle, docMsg);
-    const currentFields = fieldsByDoc[activeDocIndex] || [];
+    const currentFields = getOutputFields(activeDocIndex);
 
     printDocumentSheet({
+      defaultSignature: !requestHasFields,
       documentName: docTitle,
       documentText: activeText,
       docId: docBexId || docId,
@@ -588,7 +629,10 @@ export default function PublicSigning() {
     const me = (documentDetails.recipient || '').toLowerCase();
     return !f.assigneeEmail || !me || f.assigneeEmail.toLowerCase() === me;
   };
-  const requestHasFields = Object.values(fieldsByDoc).some((list) => (list || []).length > 0);
+  const requestHasFields = requestFieldCount > 0 || Object.values(fieldsByDoc).some((list) => (list || []).length > 0);
+  // A recipient's own copy (download/print from the signing page, also after Finish) holds only their fields and
+  // signature box; the completed request with every recipient's signature is shown by CompletedDocumentViewer
+  const getOutputFields = (docIdx) => (fieldsByDoc[docIdx] || []).filter(isMyField);
 
   const getDocumentStatus = (docIdx) => {
     const docFields = (fieldsByDoc[docIdx] || []).filter(isMyField);
@@ -690,10 +734,11 @@ export default function PublicSigning() {
         const docMsg = doc.customMessage || documentDetails.message || 'check the document for signature';
         const docBexId = documentsList.length > 1 ? `${fullBexsignId}-${i + 1}` : fullBexsignId;
         const activeText = doc.documentText || getDefaultDocContent(docTitle, docMsg);
-        const currentFields = fieldsByDoc[i] || [];
+        const currentFields = (fieldsByDoc[i] || []).filter(isMyField);
 
         try {
           const pdfObj = await generatePdfBase64({
+            defaultSignature: !requestHasFields,
             documentName: docTitle,
             documentText: activeText,
             docId: docBexId || docId,
@@ -754,7 +799,9 @@ export default function PublicSigning() {
           recipient_email: documentDetails.recipient,
           owner: documentDetails.sender ? documentDetails.sender.split('<')[0].trim() : 'Manu Yadav',
           signature_image: signatureData,
-          status: 'Completed'
+          status: 'Completed',
+          // Completed requests return every recipient's fields from the server
+          ...(Object.keys(fieldsByDoc).length > 0 ? { fieldsByDoc } : {})
         }}
         onBack={() => navigate('/documents')}
       />
@@ -1220,6 +1267,8 @@ export default function PublicSigning() {
           onOpenSignatureModal={handleOpenSignatureModal}
           isCompleted={isCompleted}
           showTooltips={true}
+          allFieldsComplete={isAllDocsComplete}
+          defaultSignature={!requestHasFields}
           copiedId={copiedId}
           onCopyId={handleCopyId}
           placedFields={fieldsByDoc[activeDocIndex] || []}

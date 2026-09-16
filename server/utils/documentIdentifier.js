@@ -1,5 +1,6 @@
 const db = require('../db');
 const crypto = require('crypto');
+const { isUsableSignature } = require('./signatureValidation');
 
 /**
  * Server-side Document Identifier & BexSign Signature Tracking Utility
@@ -275,12 +276,14 @@ async function upsertEmployeeSignature({
   signatureImage = null,
   signatureStyle = 'font-signature-1',
   empId = null,
-  designation = 'Software Specialist',
-  department = 'Engineering'
+  designation = null,
+  department = null
 }) {
   await ensureEmployeeSignaturesTable();
   const cleanEmail = email.trim();
   const existing = await getEmployeeSignatureByEmail(cleanEmail);
+  // An empty signature (blank drawing, 1x1 image, empty text) never replaces or creates a directory signature
+  signatureImage = isUsableSignature(signatureImage) ? signatureImage : null;
 
   if (existing) {
     await db.query(
@@ -305,7 +308,7 @@ async function upsertEmployeeSignature({
       `INSERT INTO employee_signatures 
        (employee_id, employee_name, employee_email, designation, department, initials, signature_id, signature_image, signature_style)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [generatedEmpId, name, cleanEmail, designation, department, initials, sigId, signatureImage, signatureStyle]
+      [generatedEmpId, name, cleanEmail, designation || 'Software Specialist', department || 'Engineering', initials, sigId, signatureImage, signatureStyle]
     );
     return await getEmployeeSignatureByEmail(cleanEmail);
   }

@@ -7,49 +7,93 @@ import {
   ShieldCheck, Share2, UserCheck
 } from 'lucide-react';
 import { generateBexsignId } from '../utils/documentId';
+import { getDocumentOwner } from '../utils/currentUser';
+import EditCopyModal from '../components/EditCopyModal';
+
+const formatDateTime = (value) => {
+  if (!value) return '-';
+  const d = new Date(value);
+  return Number.isNaN(d.getTime())
+    ? String(value)
+    : d.toLocaleString('en-US', { month: 'short', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+};
+
+const describeDevice = (userAgent) => {
+  if (!userAgent) return 'Web';
+  return /Mobile|Android|iPhone|iPad/i.test(userAgent) ? 'Mobile' : 'Web';
+};
+
+// Details page statuses: 'signed', 'viewed' (viewed, not signed) or 'pending' (not viewed, not signed)
+const toRecipientStatus = (status) => {
+  const s = String(status || '').toLowerCase();
+  if (s === 'signed') return 'signed';
+  if (s === 'viewed') return 'viewed';
+  return 'pending';
+};
 
 export default function DocumentDetails() {
   const { id } = useParams();
   const navigate = useNavigate();
   const docId = parseInt(id) || 1;
-  const fullBexsignId = generateBexsignId(docId);
+  const [placeholderBexsignId] = useState(() => generateBexsignId(docId));
+  const [serverBexsignId, setServerBexsignId] = useState('');
+  const fullBexsignId = serverBexsignId || placeholderBexsignId;
 
-  const [document, setDocument] = useState({
-    id: docId,
-    name: docId === 1 ? 'Document Sign 4' : `Document ${docId}`,
-    owner: 'Manu Yadav',
-    ownerEmail: 'manu.yadav@oladigital.health',
-    description: 'No description given',
-    submittedAt: 'Aug 27, 2026 02:36',
-    lastUpdatedAt: 'Aug 27, 2026 02:40',
-    status: 'In Progress',
-    recipients: [
-      {
-        id: 1,
-        name: 'Vimal Chavda',
-        email: 'vimal@bexcodeservices.com',
-        status: 'signed',
-        ipAddress: '223.181.69.208',
-        actionDevice: 'Web',
-        signedAt: 'Aug 27, 2026 02:40',
-        viewedAt: 'Aug 27, 2026 02:38',
-        mailedAt: 'Aug 27, 2026 02:36'
-      },
-      {
-        id: 2,
-        name: 'Aakash',
-        email: 'aakash@bexcodeservices.com',
-        status: 'pending', // 'pending' (not viewed, not signed) or 'viewed' (viewed, not signed)
-        ipAddress: null,
-        actionDevice: null,
-        signedAt: null,
-        viewedAt: null,
-        mailedAt: 'Aug 27, 2026 02:36'
-      }
-    ]
+  // Filled from the request saved on the server; the owner is the user who created the request
+  const [document, setDocument] = useState(() => {
+    const owner = getDocumentOwner(null);
+    return {
+      id: docId,
+      name: `Document ${docId}`,
+      owner: owner.name,
+      ownerEmail: owner.email,
+      description: 'No description given',
+      submittedAt: '-',
+      lastUpdatedAt: '-',
+      status: '',
+      recipients: []
+    };
   });
 
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`http://localhost:5000/api/documents/${docId}`)
+      .then((res) => res.json())
+      .then((data) => {
+        const doc = data?.document;
+        if (cancelled || !data?.success || !doc) return;
+        const owner = getDocumentOwner(doc);
+        if (doc.bexsign_doc_id) setServerBexsignId(doc.bexsign_doc_id);
+        setDocument({
+          id: doc.id || docId,
+          name: doc.document_name || `Document ${docId}`,
+          owner: owner.name,
+          ownerEmail: owner.email,
+          description: doc.description || 'No description given',
+          submittedAt: formatDateTime(doc.sent_at || doc.created_at),
+          lastUpdatedAt: formatDateTime(doc.updated_at || doc.completed_at || doc.created_at),
+          status: doc.status || '',
+          recipients: (doc.recipients || []).filter((r) => !r.isFallback).map((r) => ({
+            id: r.id,
+            name: r.name || r.email,
+            email: r.email,
+            status: toRecipientStatus(r.status),
+            ipAddress: r.signed_ip ? String(r.signed_ip).replace(/^::ffff:/, '') : '-',
+            actionDevice: describeDevice(r.signed_user_agent),
+            signedAt: formatDateTime(r.signed_at),
+            viewedAt: formatDateTime(r.viewed_at),
+            mailedAt: formatDateTime(r.sent_at)
+          }))
+        });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [docId]);
+
   const [activeMenu, setActiveMenu] = useState(false);
+  const [showEditCopy, setShowEditCopy] = useState(false);
   const [copiedId, setCopiedId] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
   const [extendModal, setExtendModal] = useState(false);
@@ -116,7 +160,11 @@ export default function DocumentDetails() {
           </button>
 
           <button
-            onClick={() => navigate(`/documents/${document.id}/edit`)}
+            onClick={() => {
+              // A sent or completed request is never edited in place: editing creates a draft copy
+              if (String(document.status || '').toLowerCase() === 'draft') navigate(`/documents/${document.id}/edit`);
+              else setShowEditCopy(true);
+            }}
             className="flex items-center gap-1.5 px-3 py-1.5 hover:bg-slate-100 rounded-lg text-xs font-bold text-slate-700 transition"
           >
             <Edit size={16} className="text-slate-500" /> Edit
@@ -392,6 +440,17 @@ export default function DocumentDetails() {
           })}
         </div>
       </div>
+
+      {showEditCopy && (
+        <EditCopyModal
+          doc={{ id: document.id, document_name: document.name, status: document.status }}
+          onClose={() => setShowEditCopy(false)}
+          onCopied={(newId) => {
+            setShowEditCopy(false);
+            navigate(`/documents/${newId}/send`);
+          }}
+        />
+      )}
 
       {/* Extend Expiry Date Modal */}
       {extendModal && (

@@ -21,6 +21,16 @@ const {
   sendDocumentCopyEmail
 } = require('../utils/emailService');
 const requestHelpers = require('../utils/requestHelpers');
+const { isUsableSignature } = require('../utils/signatureValidation');
+const { sha256, findFingerprint } = require('../utils/pdfFingerprints');
+const { buildCompletedRequestFiles, buildSignerCopy } = require('../utils/requestCompletion');
+
+const EMPTY_SIGNATURE_ERROR = 'The signature is empty. Draw, type or upload a signature before saving.';
+
+// Directory rows never expose an empty image: the card and signing prefill fall back to the typed name
+const withUsableSignature = (row) => (row && row.signature_image && !isUsableSignature(row.signature_image)
+    ? { ...row, signature_image: null }
+    : row);
 
 // Ensure uploads directory exists inside server/
 const uploadDir = path.join(__dirname, '../uploads');
@@ -96,9 +106,11 @@ router.get('/', async (req, res) => {
                    di.signature_status, 
                    di.signature_image,
                    di.signature_style,
-                   di.signed_at 
-            FROM documents d 
-            LEFT JOIN document_identifiers di ON d.id = di.document_id 
+                   di.signed_at,
+                   ${requestHelpers.OWNER_COLUMNS}
+            FROM documents d
+            LEFT JOIN document_identifiers di ON d.id = di.document_id
+            ${requestHelpers.OWNER_JOIN}
             WHERE 1=1
         `;
         const params = [];
@@ -195,8 +207,10 @@ router.post('/upload', uploadRequestFiles, async (req, res) => {
             ? await requestHelpers.saveRecipients(targetId, recipientList)
             : await requestHelpers.getRecipients(targetId);
 
+        // A draft may be emptied only when the client says the user removed every document
+        const allowEmptyDocuments = docStatus === 'Draft' && TRUE_VALUES.includes(req.body.documentsCleared);
         const savedFiles = Array.isArray(metaDocs)
-            ? await requestHelpers.syncDocumentFiles(targetId, metaDocs, uploadedFiles)
+            ? await requestHelpers.syncDocumentFiles(targetId, metaDocs, uploadedFiles, { allowEmpty: allowEmptyDocuments })
             : await requestHelpers.getDocumentFiles(targetId);
 
         if (savedFiles[0]?.file_path) {
@@ -238,12 +252,68 @@ router.post('/upload', uploadRequestFiles, async (req, res) => {
     }
 });
 
+const verifyUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024, files: 1 } });
+
+// @route   POST /api/documents/verify
+// @desc    Check whether a PDF is an unchanged copy of a PDF issued by BexSign (SHA-256 fingerprint registry).
+//          Any change to a file, by any application, changes its fingerprint.
+router.post('/verify', (req, res, next) => {
+    verifyUpload.single('document')(req, res, (err) => {
+        if (err) {
+            return res.status(400).json({ success: false, error: err.code === 'LIMIT_FILE_SIZE' ? 'The file must be 25 MB or smaller.' : err.message });
+        }
+        next();
+    });
+}, async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ success: false, error: 'Choose the PDF file you want to verify.' });
+    }
+    try {
+        const hash = sha256(req.file.buffer);
+        const match = await findFingerprint(hash);
+        if (!match) {
+            return res.json({ success: true, verified: false, sha256: hash, fileName: req.file.originalname });
+        }
+        const [docs] = await db.query(
+            `SELECT d.id, d.document_name, d.status, d.sent_at, d.completed_at, di.bexsign_doc_id
+             FROM documents d LEFT JOIN document_identifiers di ON di.document_id = d.id
+             WHERE d.id = ?`,
+            [match.document_id]
+        );
+        const doc = docs[0] || {};
+        const recipients = await requestHelpers.getRecipients(match.document_id);
+        res.json({
+            success: true,
+            verified: true,
+            sha256: hash,
+            fileName: req.file.originalname,
+            record: {
+                kind: match.kind,
+                issuedFileName: match.file_name,
+                issuedAt: match.created_at,
+                recipientEmail: match.recipient_email,
+                requestName: doc.document_name || '-',
+                bexsignDocId: doc.bexsign_doc_id || '-',
+                status: doc.status || '-',
+                sentAt: doc.sent_at,
+                completedAt: doc.completed_at,
+                signers: recipients
+                    .filter((r) => requestHelpers.isSigningRole(r.role))
+                    .map((r) => ({ name: r.name, email: r.email, status: r.status, signedAt: r.signed_at }))
+            }
+        });
+    } catch (err) {
+        console.error('Verify document error:', err);
+        res.status(500).json({ success: false, error: 'The document could not be verified.' });
+    }
+});
+
 // @route   GET /api/documents/employees/signatures
 // @desc    Get all employee signatures from employee_signatures table
 router.get('/employees/signatures', async (req, res) => {
     try {
         const [rows] = await db.query('SELECT * FROM employee_signatures ORDER BY id ASC');
-        res.json({ success: true, employees: rows });
+        res.json({ success: true, employees: rows.map(withUsableSignature) });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -266,7 +336,7 @@ router.get('/employees/:empId/signature', async (req, res) => {
 router.get('/employees/by-email/:email', async (req, res) => {
     const { email } = req.params;
     try {
-        const employee = await getEmployeeSignatureByEmail(email);
+        const employee = withUsableSignature(await getEmployeeSignatureByEmail(email));
         if (employee) {
             return res.json({ success: true, employee });
         }
@@ -297,6 +367,9 @@ router.post('/employees/signatures', async (req, res) => {
 
     if (!email) {
         return res.status(400).json({ error: 'Email address is required.' });
+    }
+    if (image && !isUsableSignature(image)) {
+        return res.status(400).json({ error: EMPTY_SIGNATURE_ERROR });
     }
 
     try {
@@ -330,6 +403,10 @@ router.put('/employees/signatures/:id', async (req, res) => {
         designation, department, signature_style, signature_image, status 
     } = req.body;
 
+    if (signature_image && !isUsableSignature(signature_image)) {
+        return res.status(400).json({ error: EMPTY_SIGNATURE_ERROR });
+    }
+
     try {
         await db.query(
             `UPDATE employee_signatures 
@@ -360,7 +437,7 @@ router.put('/employees/signatures/:id', async (req, res) => {
         res.json({
             success: true,
             message: 'Signature updated successfully!',
-            employee: rows[0]
+            employee: withUsableSignature(rows[0])
         });
     } catch (err) {
         console.error('Update signature error:', err);
@@ -394,7 +471,7 @@ router.get('/:id/identifier', async (req, res) => {
 
 // @route   GET /api/documents/:id
 // @desc    Get document details by ID joined with document_identifiers table
-//          (?email=<recipient> masks other recipients' field values while the request is in progress)
+//          (?email=<recipient> returns only that recipient's fields while the request is in progress)
 router.get('/:id', async (req, res) => {
     const { id } = req.params;
     const viewerEmail = String(req.query.email || '').trim().toLowerCase();
@@ -408,9 +485,11 @@ router.get('/:id', async (req, res) => {
                    di.signature_status,
                    di.signature_image,
                    di.signature_style,
-                   di.signed_at
+                   di.signed_at,
+                   ${requestHelpers.OWNER_COLUMNS}
             FROM documents d
             LEFT JOIN document_identifiers di ON d.id = di.document_id
+            ${requestHelpers.OWNER_JOIN}
             WHERE d.id = ?
         `, [id]);
 
@@ -445,25 +524,9 @@ router.get('/:id', async (req, res) => {
             console.warn('Files query warning:', eFiles.message);
         }
 
+        let recRows = [];
         try {
-            const [fieldRows] = await db.query('SELECT * FROM document_fields WHERE document_id = ? ORDER BY id ASC', [id]);
-            doc.fields = fieldRows.map(requestHelpers.parseFieldRow).map((f) => {
-                if (isCompleted) return f;
-                const { signatureImage, ...withoutImage } = f;
-                const ownerEmail = String(f.assigneeEmail || '').toLowerCase();
-                if (viewerEmail && ownerEmail && ownerEmail !== viewerEmail) {
-                    // Zoho Sign privacy: other recipients' values stay hidden until completion
-                    return { ...withoutImage, isAssignedToOther: true, value: '', gridValue: null };
-                }
-                return viewerEmail ? f : withoutImage;
-            });
-            doc.fieldsByDoc = requestHelpers.groupFieldsByDoc(doc.fields);
-        } catch (eFldGet) {
-            console.warn('Document fields query warning:', eFldGet.message);
-        }
-
-        try {
-            const recRows = await requestHelpers.getRecipients(id);
+            recRows = await requestHelpers.getRecipients(id);
             if (recRows && recRows.length > 0) {
                 doc.recipients = recRows.map(({ signature_image, ...r }) => r);
             } else if (doc.recipient_email) {
@@ -484,6 +547,31 @@ router.get('/:id', async (req, res) => {
         } catch (eRecGet) {
             console.warn('Document recipients query warning:', eRecGet.message);
             doc.recipients = [];
+        }
+
+        try {
+            const [fieldRows] = await db.query('SELECT * FROM document_fields WHERE document_id = ? ORDER BY id ASC', [id]);
+            const allFields = fieldRows.map(requestHelpers.parseFieldRow);
+            // Total placed fields of the request, so a signer view knows fields exist even when none are theirs
+            doc.fieldCount = allFields.length;
+
+            if (isCompleted) {
+                doc.fields = allFields;
+            } else if (viewerEmail) {
+                // Zoho Sign privacy: while the request is in progress a recipient only receives their own fields
+                const signingRecipients = recRows.filter((r) => requestHelpers.isSigningRole(r.role));
+                const viewer = recRows.find((r) => String(r.email || '').trim().toLowerCase() === viewerEmail);
+                doc.fields = allFields.filter((f) => {
+                    if (viewer) return requestHelpers.fieldBelongsToRecipient(f, viewer, signingRecipients);
+                    const ownerEmail = String(f.assigneeEmail || '').trim().toLowerCase();
+                    return !ownerEmail || ownerEmail === viewerEmail;
+                });
+            } else {
+                doc.fields = allFields.map(({ signatureImage, ...withoutImage }) => withoutImage);
+            }
+            doc.fieldsByDoc = requestHelpers.groupFieldsByDoc(doc.fields);
+        } catch (eFldGet) {
+            console.warn('Document fields query warning:', eFldGet.message);
         }
 
         try {
@@ -604,30 +692,63 @@ router.post('/send/:id', async (req, res) => {
             }
         }
 
-        await db.query("UPDATE documents SET status = 'In Progress', sent_at = COALESCE(sent_at, NOW()) WHERE id = ?", [id]);
+        // A request that was sent before (in progress, completed, recalled...) starts a new signing round:
+        // otherwise recipients who already signed are skipped and nobody would be emailed
+        const previousStatus = String(found[0].status || '').trim().toLowerCase();
+        const restarted = previousStatus !== '' && previousStatus !== 'draft';
+        if (restarted) {
+            await requestHelpers.restartSigningRound(id);
+        }
+
+        await db.query(
+            `UPDATE documents SET status = 'In Progress', sent_at = ${restarted ? 'NOW()' : 'COALESCE(sent_at, NOW())'} WHERE id = ?`,
+            [id]
+        );
         const [docs] = await db.query('SELECT * FROM documents WHERE id = ?', [id]);
         const doc = docs[0];
         await getOrCreateDocumentIdentifier(id, { status: 'In Progress' });
 
+        const roundRecipients = restarted ? await requestHelpers.getRecipients(id) : recipients;
         const isSequential = doc.signing_order === 'sequential';
-        const group = requestHelpers.getActiveSigningGroup(recipients, isSequential);
+        const group = requestHelpers.getActiveSigningGroup(roundRecipients, isSequential);
+        if (group.length === 0) {
+            return res.status(409).json({
+                success: false,
+                error: 'No recipient is waiting to sign this document, so no email was sent.'
+            });
+        }
         const results = await requestHelpers.sendSigningInvitations(doc, group, { req });
         const dispatchedEmails = results.filter((r) => r.success).map((r) => r.email);
         const failedEmails = results.filter((r) => !r.success);
 
+        if (restarted) {
+            await requestHelpers.logRequestEvent(id, {
+                description: `Signing restarted for "${doc.document_name}": every recipient must sign again (previous status: ${found[0].status})`,
+                req
+            });
+        }
         await requestHelpers.logRequestEvent(id, {
             description: `Document "${doc.document_name}" sent for signature (${isSequential ? 'in order' : 'parallel'}) to: ${group.map((r) => r.email).join(', ')}`,
             req
         });
 
+        const finalRecipients = await requestHelpers.getRecipients(id);
+        const signingRecipientsNow = finalRecipients.filter((r) => requestHelpers.isSigningRole(r.role));
         res.json({
             success: true,
+            restarted,
+            signingOrder: isSequential ? 'sequential' : 'parallel',
             message: failedEmails.length
                 ? `Document sent. Email could not be delivered to: ${failedEmails.map((f) => f.email).join(', ')}`
                 : `Document dispatched to: ${dispatchedEmails.join(', ')}`,
             dispatchedEmails,
+            dispatched: results.filter((r) => r.success).map((r) => ({ name: r.name, email: r.email })),
             failedEmails,
-            recipients: await requestHelpers.getRecipients(id)
+            // Signers who receive the request later, in signing order
+            waiting: signingRecipientsNow
+                .filter((r) => !group.some((g) => g.id === r.id))
+                .map((r) => ({ name: r.name, email: r.email, step: r.signing_order_index })),
+            recipients: finalRecipients
         });
     } catch (err) {
         console.error('Send Error:', err);
@@ -891,58 +1012,203 @@ router.post('/:id/email-copy', async (req, res) => {
     }
 });
 
+// Name of an editable copy: "doc-2" -> "doc-2 (Copy)", then "doc-2 (Copy 2)", ... (never an existing request name)
+async function nextCopySuffix(name) {
+    const stem = String(name || 'Document').trim().replace(/\.pdf$/i, '').replace(/ \(Copy(?: \d+)?\)$/i, '');
+    const [rows] = await db.query("SELECT document_name FROM documents WHERE LOWER(COALESCE(status, '')) <> 'trashed'");
+    const taken = new Set(rows.map((r) => String(r.document_name || '').trim().replace(/\.pdf$/i, '').toLowerCase()));
+    for (let n = 1; n < 1000; n++) {
+        const suffix = ` (Copy${n > 1 ? ` ${n}` : ''})`;
+        if (!taken.has(`${stem}${suffix}`.toLowerCase())) return suffix;
+    }
+    return ` (Copy ${Date.now()})`;
+}
+
+const withCopySuffix = (name, suffix) => {
+    const text = String(name || 'Document').trim();
+    const hasPdf = /\.pdf$/i.test(text);
+    const stem = text.replace(/\.pdf$/i, '').replace(/ \(Copy(?: \d+)?\)$/i, '');
+    return `${stem}${suffix}${hasPdf ? '.pdf' : ''}`;
+};
+
 // @route   POST /api/documents/:id/clone
-// @desc    "Edit as new" - clone document with unique new ID and BexSign Doc ID (PDF 3 p.9)
+// @desc    Edit a sent or completed request as a new draft copy. Its documents, recipients (pending again), placed
+//          fields (without signatures or signer-entered values) and settings are copied; the original request and
+//          its signed documents are never changed. The copy is renamed automatically ("... (Copy)").
 router.post('/:id/clone', async (req, res) => {
     const { id } = req.params;
     try {
+        await requestHelpers.ensureRequestSchema();
         const [existing] = await db.query('SELECT * FROM documents WHERE id = ?', [id]);
         if (existing.length === 0) {
-            return res.status(404).json({ error: 'Original document not found' });
+            return res.status(404).json({ success: false, error: 'Original document not found' });
         }
-
-        const sourceDoc = existing[0];
-        const newTitle = `${sourceDoc.document_name || 'Document'} (Copy)`;
+        const source = existing[0];
+        const ownerId = parseInt(req.body?.userId, 10) || source.user_id || 1;
+        const suffix = await nextCopySuffix(source.document_name);
+        const copyName = withCopySuffix(source.document_name, suffix);
+        const sourceFiles = await requestHelpers.getDocumentFiles(id);
 
         const [insertRes] = await db.query(
-            `INSERT INTO documents 
-             (user_id, document_name, file_path, folder_name, status, recipient_email, template_used, custom_message)
-             VALUES (?, ?, ?, ?, 'Draft', ?, ?, ?)`,
+            `INSERT INTO documents
+             (user_id, document_name, file_path, folder_name, status, recipient_email, template_used, custom_message,
+              signing_order, expiration_days, reminder_days, document_type, description, validity, auto_reminders, allow_comments)
+             VALUES (?, ?, ?, ?, 'Draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
-                sourceDoc.user_id || 1,
-                newTitle,
-                sourceDoc.file_path,
-                sourceDoc.folder_name,
-                sourceDoc.recipient_email,
-                sourceDoc.template_used,
-                sourceDoc.custom_message
+                ownerId,
+                copyName,
+                sourceFiles[0]?.file_path || '/uploads/sample.pdf',
+                source.folder_name,
+                source.recipient_email,
+                source.template_used,
+                source.custom_message,
+                source.signing_order,
+                source.expiration_days,
+                source.reminder_days,
+                source.document_type,
+                source.description,
+                source.validity,
+                source.auto_reminders,
+                source.allow_comments
             ]
         );
-
         const newDocId = insertRes.insertId;
-        const newIdentifier = await getOrCreateDocumentIdentifier(newDocId, {
-            signerEmail: sourceDoc.recipient_email,
-            signerName: 'Vimal Chavda',
-            status: 'Draft'
-        });
 
-        try {
-            await db.query(
-                `INSERT INTO activity_history (document_id, activity_description, ip_address)
-                 VALUES (?, ?, ?)`,
-                [newDocId, `Document cloned from ID ${id} as new document with BexSign ID ${newIdentifier.bexsign_doc_id}`, req.ip || '127.0.0.1']
-            );
-        } catch (e) {}
+        // Documents (original uploads and text, not the signed PDFs)
+        await requestHelpers.syncDocumentFiles(newDocId, sourceFiles.map((f) => ({
+            name: withCopySuffix(f.file_name, suffix),
+            filePath: f.file_path,
+            documentText: f.document_text
+        })));
+
+        // Recipients keep their roles and signing steps, and start pending
+        const sourceRecipients = await requestHelpers.getRecipients(id);
+        const newRecipients = await requestHelpers.saveRecipients(newDocId, sourceRecipients.map((r) => ({
+            email: r.email,
+            name: r.name,
+            role: r.role_label || r.role,
+            deliveryMode: r.delivery_mode,
+            privateNote: r.private_note,
+            signingOrder: r.signing_order_index
+        })));
+
+        // Placed fields per document, then clear anything a signer entered in the original
+        const [fieldRows] = await db.query('SELECT * FROM document_fields WHERE document_id = ? ORDER BY id ASC', [id]);
+        const sourceFields = fieldRows.map(requestHelpers.parseFieldRow);
+        if (sourceFields.length > 0) {
+            await requestHelpers.saveDocumentFields(newDocId, { fieldsByDoc: requestHelpers.groupFieldsByDoc(sourceFields) }, newRecipients);
+        }
+        await requestHelpers.restartSigningRound(newDocId);
+
+        const sourceIdentifier = await getOrCreateDocumentIdentifier(id);
+        const idRecord = await getOrCreateDocumentIdentifier(newDocId, { status: 'Draft' });
+        await requestHelpers.logRequestEvent(newDocId, {
+            description: `Created "${copyName}" as an editable copy of "${source.document_name}" (${sourceIdentifier?.bexsign_doc_id || `#${id}`})`,
+            req
+        });
+        await requestHelpers.logRequestEvent(id, {
+            description: `Copied to a new draft "${copyName}" for editing; this request was not changed`,
+            req
+        });
 
         res.status(201).json({
             success: true,
-            message: 'Document created as new with unique ID!',
+            message: `"${copyName}" was created as a draft copy.`,
             newDocumentId: newDocId,
-            bexsignDocId: newIdentifier.bexsign_doc_id
+            documentName: copyName,
+            bexsignDocId: idRecord.bexsign_doc_id
         });
     } catch (err) {
-        console.error('Clone error:', err);
-        res.status(500).json({ error: err.message });
+        console.error('Clone Document Error:', err);
+        res.status(500).json({ success: false, error: 'The copy could not be created.' });
+    }
+});
+
+const pdfDownloadName = (name, fallback = 'Document') => {
+    const base = String(name || fallback).replace(/\.pdf$/i, '').replace(/[\\/:*?"<>|\r\n]+/g, '_').trim() || fallback;
+    return `${base}.pdf`;
+};
+
+function sendPdfDownload(res, buffer, fileName, hash) {
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName.replace(/"/g, "'")}"; filename*=UTF-8''${encodeURIComponent(fileName)}`);
+    res.setHeader('X-BexSign-SHA256', hash);
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, X-BexSign-SHA256');
+    res.send(buffer);
+}
+
+// Signed PDFs of a completed request. Files missing on disk, or issued before signed PDFs were locked and
+// fingerprinted, are rebuilt (locked) first.
+async function completedPdfBuffers(documentId) {
+    const readPublic = (publicPath) => {
+        if (!publicPath) return null;
+        const abs = path.join(__dirname, '..', publicPath);
+        return fs.existsSync(abs) ? fs.readFileSync(abs) : null;
+    };
+    const files = await requestHelpers.getDocumentFiles(documentId);
+    const documents = files.map((f) => ({ name: pdfDownloadName(f.file_name), buffer: readPublic(f.signed_file_path) }));
+    const certificate = readPublic(`/uploads/completed/${documentId}/certificate-of-completion.pdf`);
+
+    const buffers = [...documents.map((d) => d.buffer), certificate];
+    let current = files.length > 0 && buffers.every(Boolean);
+    for (const buffer of buffers) {
+        if (!current) break;
+        if (!(await findFingerprint(sha256(buffer)))) current = false;
+    }
+    if (current) return { documents, certificate };
+
+    const bundle = await buildCompletedRequestFiles(documentId);
+    return {
+        documents: bundle.attachments.map((a) => ({ name: pdfDownloadName(a.filename), buffer: a.content })),
+        certificate: bundle.certificate.content
+    };
+}
+
+// @route   GET /api/documents/:id/signed-pdf?index=<document index>[&email=<recipient>]
+// @desc    Download a locked signed PDF: the final document of a completed request, or (in progress) the
+//          requesting recipient's own signed copy after they have signed
+router.get('/:id/signed-pdf', async (req, res) => {
+    const { id } = req.params;
+    const index = Math.max(parseInt(req.query.index, 10) || 0, 0);
+    const email = String(req.query.email || '').trim();
+    try {
+        const [docs] = await db.query('SELECT id, status FROM documents WHERE id = ?', [id]);
+        if (docs.length === 0) {
+            return res.status(404).json({ success: false, error: 'Document not found.' });
+        }
+        if (String(docs[0].status || '').toLowerCase() === 'completed') {
+            const { documents } = await completedPdfBuffers(id);
+            const item = documents[Math.min(index, documents.length - 1)];
+            if (!item || !item.buffer) {
+                return res.status(404).json({ success: false, error: 'The signed document is not available.' });
+            }
+            return sendPdfDownload(res, item.buffer, item.name, sha256(item.buffer));
+        }
+        if (email) {
+            const copy = await buildSignerCopy(id, email, index);
+            if (copy) return sendPdfDownload(res, copy.buffer, copy.fileName, copy.sha256);
+        }
+        res.status(409).json({ success: false, error: 'A signed copy can be downloaded after the document has been signed.' });
+    } catch (err) {
+        console.error('Signed PDF download error:', err);
+        res.status(500).json({ success: false, error: 'The signed document could not be prepared.' });
+    }
+});
+
+// @route   GET /api/documents/:id/certificate-pdf
+// @desc    Download the locked Certificate of Completion of a completed request
+router.get('/:id/certificate-pdf', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const [docs] = await db.query('SELECT id, status FROM documents WHERE id = ?', [id]);
+        if (docs.length === 0 || String(docs[0].status || '').toLowerCase() !== 'completed') {
+            return res.status(409).json({ success: false, error: 'The certificate is available once the document is completed.' });
+        }
+        const { certificate } = await completedPdfBuffers(id);
+        sendPdfDownload(res, certificate, 'Certificate of Completion.pdf', sha256(certificate));
+    } catch (err) {
+        console.error('Certificate download error:', err);
+        res.status(500).json({ success: false, error: 'The certificate could not be prepared.' });
     }
 });
 
@@ -993,7 +1259,10 @@ router.get('/:id/versions', async (req, res) => {
 
         // If no versions recorded yet, generate default version 1.0 from document data
         if (!rows || rows.length === 0) {
-            const [docs] = await db.query('SELECT * FROM documents WHERE id = ?', [id]);
+            const [docs] = await db.query(
+                `SELECT d.*, ${requestHelpers.OWNER_COLUMNS} FROM documents d ${requestHelpers.OWNER_JOIN} WHERE d.id = ?`,
+                [id]
+            );
             const doc = docs && docs[0] ? docs[0] : null;
 
             const defaultVersion = {
@@ -1001,7 +1270,7 @@ router.get('/:id/versions', async (req, res) => {
                 document_id: parseInt(id),
                 version_number: 1,
                 version_label: '1.0',
-                created_by: (doc && doc.owner) ? doc.owner : 'Manu Yadav',
+                created_by: (doc && (doc.owner || doc.owner_email)) || 'BexSign',
                 details: (doc && doc.status === 'Completed') 
                     ? 'Physically signed this document and uploaded a copy'
                     : 'Initial draft version and document creation',
@@ -1055,6 +1324,15 @@ router.post('/:id/versions', async (req, res) => {
         );
         const nextNum = (existing && existing[0] ? existing[0].cnt : 0) + 1;
         const nextLabel = version_label || `${nextNum}.0`;
+        let versionAuthor = created_by;
+        if (!versionAuthor) {
+            // Default author: the request's owner (the user who created it)
+            const [ownerRows] = await db.query(
+                `SELECT ${requestHelpers.OWNER_COLUMNS} FROM documents d ${requestHelpers.OWNER_JOIN} WHERE d.id = ?`,
+                [id]
+            );
+            versionAuthor = ownerRows[0]?.owner || ownerRows[0]?.owner_email || 'BexSign';
+        }
 
         const [result] = await db.query(
             `INSERT INTO document_versions 
@@ -1064,7 +1342,7 @@ router.post('/:id/versions', async (req, res) => {
                 id, 
                 nextNum, 
                 nextLabel, 
-                created_by || 'Manu Yadav', 
+                versionAuthor,
                 details || 'Updated document version', 
                 file_path || null, 
                 action_type || 'Updated'
@@ -1174,9 +1452,11 @@ router.get('/:id/certificate-data', async (req, res) => {
                     di.signer_email, 
                     di.signature_image, 
                     di.signature_style, 
-                    di.signed_at as di_signed_at
+                    di.signed_at as di_signed_at,
+                    ${requestHelpers.OWNER_COLUMNS}
              FROM documents d
              LEFT JOIN document_identifiers di ON d.id = di.document_id
+             ${requestHelpers.OWNER_JOIN}
              WHERE d.id = ?`,
             [id]
         );
@@ -1200,9 +1480,9 @@ router.get('/:id/certificate-data', async (req, res) => {
         const certificateData = {
             documentId: doc.bexsign_doc_id || `361682B4-Z_-TPGJ5TMDVLEYSYWJSHXZUCDEMHV156UKVOTAC7-S`,
             documentName: doc.document_name || doc.title || "This is vnc's doc",
-            owner: doc.owner || 'Manu Yadav',
-            ownerEmail: 'manu.yadav@oladigital.health',
-            organization: 'Dcode Health',
+            owner: doc.owner || doc.owner_email || '-',
+            ownerEmail: doc.owner_email || '-',
+            organization: doc.owner_company || 'BexSign',
             orgAddress: '5908 Breckenridge Pkwy, Tampa, Florida, United States 33610',
             sentOn: doc.created_at ? new Date(doc.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' EDT' : 'Sep 1, 2026 14:51:34 EDT',
             completedOn: doc.completed_at ? new Date(doc.completed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' EDT' : 'Sep 1, 2026 15:07:13 EDT',

@@ -11,6 +11,7 @@ const helpers = require('./requestHelpers');
 const { generateSignedDocumentPdf, generateCompletionCertificatePdf } = require('./completedPdfGenerator');
 const { sendDocumentCompletedEmail } = require('./emailService');
 const { getOrCreateDocumentIdentifier } = require('./documentIdentifier');
+const { recordFingerprint } = require('./pdfFingerprints');
 
 function safeFileName(name, fallback) {
   const base = String(name || fallback).replace(/\.pdf$/i, '').replace(/[\\/:*?"<>|]+/g, '_').trim() || fallback;
@@ -93,7 +94,8 @@ async function buildCompletedRequestFiles(documentId) {
     if (d.id) {
       await db.query('UPDATE document_files SET signed_file_path = ? WHERE id = ?', [publicPath, d.id]);
     }
-    attachments.push({ filename: fileName, content: buffer, contentType: 'application/pdf', publicPath });
+    d.sha256 = await recordFingerprint(buffer, { documentId, fileIndex: i, kind: 'signed', fileName, filePath: publicPath });
+    attachments.push({ filename: fileName, content: buffer, contentType: 'application/pdf', publicPath, sha256: d.sha256 });
   }
 
   const certificateBuffer = await generateCompletionCertificatePdf({
@@ -115,6 +117,12 @@ async function buildCompletedRequestFiles(documentId) {
     contentType: 'application/pdf',
     publicPath: `/uploads/completed/${documentId}/certificate-of-completion.pdf`
   };
+  certificate.sha256 = await recordFingerprint(certificateBuffer, {
+    documentId,
+    kind: 'certificate',
+    fileName: certificate.filename,
+    filePath: certificate.publicPath
+  });
 
   if (attachments[0]) {
     await db.query('UPDATE documents SET file_path = ? WHERE id = ?', [attachments[0].publicPath, documentId]);
@@ -189,7 +197,55 @@ async function finalizeCompletedRequest(documentId, { fallbackAttachments = [] }
   };
 }
 
+/**
+ * A recipient's own signed copy of one document while the request is still in progress (only their fields).
+ * Locked like the final documents and recorded so it can be verified. Returns null when they have not signed.
+ */
+async function buildSignerCopy(documentId, email, fileIndex = 0) {
+  const [docs] = await db.query('SELECT * FROM documents WHERE id = ?', [documentId]);
+  const doc = docs[0];
+  if (!doc) return null;
+  const recipients = await helpers.getRecipients(documentId);
+  const recipient = recipients.find((r) => String(r.email || '').toLowerCase() === String(email || '').trim().toLowerCase());
+  if (!recipient || recipient.status !== 'signed') return null;
+
+  const files = await helpers.getDocumentFiles(documentId);
+  const documents = files.length > 0
+    ? files.map((f) => ({ id: f.id, name: f.file_name, text: f.document_text }))
+    : [{ id: null, name: doc.document_name, text: doc.custom_message }];
+  const index = Math.min(Math.max(parseInt(fileIndex, 10) || 0, 0), documents.length - 1);
+  const target = documents[index];
+
+  const signingRecipients = recipients.filter((r) => helpers.isSigningRole(r.role));
+  const [fieldRows] = await db.query('SELECT * FROM document_fields WHERE document_id = ? ORDER BY id ASC', [documentId]);
+  const allFields = fieldRows.map(helpers.parseFieldRow);
+  let fields = allFields.filter((f) => f.docIndex === index && helpers.fieldBelongsToRecipient(f, recipient, signingRecipients));
+  if (allFields.length === 0) fields = [{ type: 'Signature', label: 'Signature' }];
+
+  const identifier = await getOrCreateDocumentIdentifier(documentId);
+  const bexId = identifier?.bexsign_doc_id || `BEX-DOC-${documentId}`;
+  const buffer = await generateSignedDocumentPdf({
+    documentName: target.name,
+    documentText: target.text,
+    bexsignDocId: documents.length > 1 ? `${bexId}-${index + 1}` : bexId,
+    sections: fields.length > 0 ? [{ recipient, fields }] : [],
+    signerSummary: [recipient.name || recipient.email],
+    completedAt: recipient.signed_at || new Date(),
+    sender: await helpers.getRequestSender(doc)
+  });
+  const fileName = safeFileName(target.name, `Document ${index + 1}`);
+  const hash = await recordFingerprint(buffer, {
+    documentId,
+    fileIndex: index,
+    kind: 'signer-copy',
+    fileName,
+    recipientEmail: recipient.email
+  });
+  return { buffer, fileName, sha256: hash };
+}
+
 module.exports = {
   buildCompletedRequestFiles,
-  finalizeCompletedRequest
+  finalizeCompletedRequest,
+  buildSignerCopy
 };

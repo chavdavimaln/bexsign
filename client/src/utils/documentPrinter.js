@@ -1,9 +1,19 @@
 import { generateBexsignId } from './documentId';
 import { getDefaultDocContent } from './documentDefaults';
+import {
+  isSignatureField,
+  getFieldSignatureImage,
+  getStampImage,
+  isFieldChecked,
+  isFieldForSigner,
+  getFieldDisplayValue,
+  escapeHtml
+} from './documentFields';
 
 /**
  * Utility to print the canonical BexSign document sheet
  * matching the on-screen view and zoho_signed_doc_example.pdf.
+ * Placed fields print without labels; a stamp prints only when a Stamp field was placed.
  */
 export function printDocumentSheet({
   documentName = 'Document 1.pdf',
@@ -15,7 +25,9 @@ export function printDocumentSheet({
   signatureImage = '',
   signatureStyle = 'font-signature-1',
   fields = [],
-  placedFields = []
+  placedFields = [],
+  // Print a signature block when the document has no placed fields at all
+  defaultSignature = true
 }) {
   const fullDocId = bexsignDocId || (typeof docId === 'string' && docId.startsWith('BEX-') ? docId : generateBexsignId(docId));
   const docTitle = documentName || 'Document 1.pdf';
@@ -26,33 +38,50 @@ export function printDocumentSheet({
   let sigIdLine1 = 'BEX-SIGN-VC-EMP001-2026';
   let sigIdLine2 = typeof fullDocId === 'string' ? fullDocId.replace('BEX-DOC-', '').substring(0, 24) : '361682B4-ERZWA2U19FQKOU0L';
 
-  const sigHtml = signatureImage && signatureImage.startsWith('data:')
-    ? `<img src="${signatureImage}" style="max-height: 48px; max-width: 200px; object-fit: contain; margin: 4px 0; display: block;" />`
-    : `<div style="font-family: 'Brush Script MT', 'Caveat', 'Segoe Script', cursive; font-size: 26px; color: #0f172a; margin: 4px 0; font-weight: 700;">${signerName || 'Vimal Chavda'}</div>`;
+  const signatureHtml = (name, image) => {
+    const imageHtml = image && image.startsWith('data:')
+      ? `<img src="${escapeHtml(image)}" alt="Signature" style="max-height: 48px; max-width: 200px; object-fit: contain; margin: 4px 0; display: block;" />`
+      : `<div style="font-family: 'Brush Script MT', 'Caveat', 'Segoe Script', cursive; font-size: 26px; color: #0f172a; margin: 4px 0; font-weight: 700;">${escapeHtml(name || 'Vimal Chavda')}</div>`;
+    return `
+      <div class="sig-bracket-box">
+        <div class="sig-signed-by">- Signed by: ${escapeHtml(name)}</div>
+        ${imageHtml}
+        <div class="sig-line"></div>
+        <div class="sig-ids">
+          ${escapeHtml(sigIdLine1)}<br />
+          ${escapeHtml(sigIdLine2)}
+        </div>
+      </div>
+    `;
+  };
 
   const allFields = (fields && fields.length > 0 ? fields : placedFields) || [];
-  const otherFields = allFields.filter(f => f.type !== 'Signature' && f.type !== 'Initial' && f.type !== 'Stamp');
-
-  let otherFieldsHtml = '';
-  if (otherFields.length > 0) {
-    otherFieldsHtml = `
-      <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin: 18px 0;">
-        ${otherFields.map(f => {
-          let fVal = '';
-          if (f.type === 'Company') fVal = f.value || 'Bexcode Services';
-          else if (f.type === 'Email') fVal = f.value || signerEmail;
-          else if (f.type === 'Full name' || f.type === 'Name') fVal = f.value || signerName;
-          else if (f.type === 'Sign date' || f.type === 'Date') fVal = f.value || new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-          else if (f.type === 'Job title') fVal = f.value || 'Designated Signer';
-          else if (f.type === 'Checkbox') fVal = (f.value === true || f.value === 'true') ? '☑ Confirmed' : '☐ Not checked';
-          else fVal = f.value || f.label || '-';
-
-          return `
-            <div style="border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px 12px; background: #f8fafc;">
-              <div class="field-label" style="margin-bottom: 3px;">${f.label || f.type}</div>
-              <div style="font-size: 12px; font-weight: 700; color: #0f172a;">${fVal}</div>
-            </div>
-          `;
+  let fieldsHtml = '';
+  if (allFields.length === 0) {
+    // Requests created without placed fields keep a single signature block
+    fieldsHtml = !defaultSignature ? '' : `${signatureHtml(signerName, signatureImage)}<div class="email-text">${escapeHtml(signerEmail)}</div>`;
+  } else {
+    fieldsHtml = `
+      <div class="fields-grid">
+        ${allFields.map((f) => {
+          // Another recipient's masked field never appears in this copy
+          if (f.isAssignedToOther) return '';
+          if (isSignatureField(f)) {
+            const ownSignature = getFieldSignatureImage(f);
+            // One signature box per signer: another recipient's unsigned signature field is left out (no empty box)
+            if (!ownSignature && !isFieldForSigner(f, signerEmail)) return '';
+            return `<div class="field-full">${signatureHtml(f.signerName || signerName, ownSignature || signatureImage)}</div>`;
+          }
+          if (f.type === 'Stamp') {
+            const stampSrc = getStampImage(f);
+            return stampSrc ? `<div><img class="stamp-image" src="${escapeHtml(stampSrc)}" alt="Stamp" /></div>` : '';
+          }
+          if (f.type === 'Checkbox') {
+            const checked = isFieldChecked(f);
+            return `<div><span class="checkbox${checked ? ' checked' : ''}">${checked ? '&#10003;' : ''}</span></div>`;
+          }
+          const value = getFieldDisplayValue(f, { signerName, signerEmail });
+          return `<div><div class="field-value">${value ? escapeHtml(value) : '&nbsp;'}</div></div>`;
         }).join('')}
       </div>
     `;
@@ -69,7 +98,7 @@ export function printDocumentSheet({
     <html>
       <head>
         <meta charset="utf-8" />
-        <title>${docTitle}</title>
+        <title>${escapeHtml(docTitle)}</title>
         <style>
           @page {
             size: A4;
@@ -113,13 +142,46 @@ export function printDocumentSheet({
             padding-top: 24px;
             margin-top: 24px;
           }
-          .field-label {
-            font-size: 10px;
+          .fields-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 16px 28px;
+            align-items: start;
+          }
+          .field-full {
+            grid-column: 1 / -1;
+          }
+          .field-value {
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            padding: 8px 12px;
+            background: #f8fafc;
+            font-size: 12px;
             font-weight: 700;
-            color: #64748b;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            margin-bottom: 8px;
+            color: #0f172a;
+            min-height: 34px;
+            word-break: break-word;
+          }
+          .stamp-image {
+            display: block;
+            max-width: 150px;
+            max-height: 110px;
+            object-fit: contain;
+          }
+          .checkbox {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 16px;
+            height: 16px;
+            border: 1.5px solid #64748b;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: 900;
+            color: #047857;
+          }
+          .checkbox.checked {
+            border-color: #047857;
           }
           .sig-bracket-box {
             border-left: 2.5px solid #1c4b82;
@@ -144,37 +206,6 @@ export function printDocumentSheet({
             color: #64748b;
             line-height: 1.4;
           }
-          .stamp-box {
-            border: 2px dashed #cbd5e1;
-            border-radius: 6px;
-            padding: 8px 12px;
-            display: inline-flex;
-            align-items: center;
-            gap: 10px;
-            width: 250px;
-            justify-content: space-between;
-            font-size: 12px;
-            font-weight: 700;
-            color: #334155;
-            margin-bottom: 18px;
-            background: #f8fafc;
-          }
-          .bex-badge {
-            background: #E71414;
-            color: white;
-            font-weight: 900;
-            padding: 3px 8px;
-            border-radius: 4px;
-            font-size: 11px;
-          }
-          .verified-badge {
-            font-size: 9px;
-            color: #047857;
-            background: #ecfdf5;
-            padding: 2px 6px;
-            border-radius: 3px;
-            border: 1px solid #a7f3d0;
-          }
           .email-text {
             font-size: 12px;
             font-weight: 600;
@@ -188,33 +219,11 @@ export function printDocumentSheet({
           BexSign Document ID: <strong style="color: #1e293b;">${fullDocId}</strong>
         </div>
 
-        <div class="doc-title">${docTitle}</div>
+        <div class="doc-title">${escapeHtml(docTitle)}</div>
         <div class="doc-content">${cleanBody}</div>
 
         <div class="fields-section">
-          <div class="field-label">SIGNATURE</div>
-          <div class="sig-bracket-box">
-            <div class="sig-signed-by">- Signed by: ${signerName}</div>
-            ${sigHtml}
-            <div class="sig-line"></div>
-            <div class="sig-ids">
-              ${sigIdLine1}<br />
-              ${sigIdLine2}
-            </div>
-          </div>
-
-          ${otherFieldsHtml}
-
-          <div class="field-label">STAMP</div>
-          <div class="stamp-box">
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <span class="bex-badge">Bex</span>
-              <span>Corporate Official Stamp</span>
-            </div>
-            <span class="verified-badge">Verified</span>
-          </div>
-
-          <div class="email-text">${signerEmail}</div>
+          ${fieldsHtml}
         </div>
 
         <script>

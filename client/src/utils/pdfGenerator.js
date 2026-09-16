@@ -1,5 +1,13 @@
 import { generateBexsignId, generateEmployeeSignatureId } from './documentId';
 import { getDefaultDocContent } from './documentDefaults';
+import {
+  isSignatureField,
+  getFieldSignatureImage,
+  getStampImage,
+  isFieldChecked,
+  isFieldForSigner,
+  getFieldDisplayValue
+} from './documentFields';
 
 /**
  * Converts a signature image (dataURL, drawn canvas, or typed name)
@@ -78,9 +86,99 @@ function dataUrlToJpegBytes(dataUrl) {
   }
 }
 
+/** Converts an uploaded image (e.g. a company stamp) into JPEG bytes, keeping its aspect ratio. */
+function prepareImageObject(src, maxSize = 320) {
+  return new Promise((resolve) => {
+    try {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, maxSize / Math.max(img.width || 1, img.height || 1));
+        const width = Math.max(1, Math.round((img.width || 1) * scale));
+        const height = Math.max(1, Math.round((img.height || 1) * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+        const jpeg = dataUrlToJpegBytes(canvas.toDataURL('image/jpeg', 0.92));
+        resolve(jpeg ? { ...jpeg, width, height } : null);
+      };
+      img.onerror = () => resolve(null);
+      img.src = src;
+    } catch (e) {
+      resolve(null);
+    }
+  });
+}
+
+const PDF_CHAR_MAP = {
+  '‘': "'", '’': "'", '“': '"', '”': '"',
+  '–': '-', '—': '-', '•': '*', '…': '...'
+};
+
+/** Escapes text for a PDF string literal (WinAnsi fonts: Latin-1 characters become octal escapes). */
+function pdfText(value) {
+  let out = '';
+  for (const ch of String(value ?? '')) {
+    const mapped = PDF_CHAR_MAP[ch];
+    if (mapped) {
+      out += mapped;
+      continue;
+    }
+    const code = ch.codePointAt(0);
+    if (ch === '\\' || ch === '(' || ch === ')') out += `\\${ch}`;
+    else if (code >= 0x20 && code <= 0x7e) out += ch;
+    else if (code >= 0xa0 && code <= 0xff) out += `\\${code.toString(8).padStart(3, '0')}`;
+    else out += '?';
+  }
+  return out;
+}
+
+function fitText(value, maxChars) {
+  const text = String(value ?? '');
+  return text.length > maxChars ? `${text.slice(0, maxChars - 3)}...` : text;
+}
+
+/** Serializes numbered PDF objects (index 0 = object 1) with a byte-exact cross-reference table. */
+function buildPdfParts(objects) {
+  const encoder = new TextEncoder();
+  const parts = [];
+  let offset = 0;
+  const push = (part) => {
+    const bytes = typeof part === 'string' ? encoder.encode(part) : part;
+    parts.push(bytes);
+    offset += bytes.length;
+  };
+
+  push('%PDF-1.4\n');
+  push(new Uint8Array([0x25, 0xe2, 0xe3, 0xcf, 0xd3, 0x0a]));
+  const offsets = [];
+  objects.forEach((objectParts, idx) => {
+    offsets.push(offset);
+    push(`${idx + 1} 0 obj\n`);
+    objectParts.forEach(push);
+    push('\nendobj\n');
+  });
+  const xrefOffset = offset;
+  push(`xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map((o) => `${String(o).padStart(10, '0')} 00000 n \n`).join('')}`);
+  push(`trailer\n<< /Size ${objects.length + 1} /Root 2 0 R /Info 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`);
+  return parts;
+}
+
+const PAGE_WIDTH = 612;
+const PAGE_HEIGHT = 792;
+const PAGE_BOTTOM = 56;
+const COLUMN_X = [50, 315];
+const COLUMN_WIDTH = 245;
+
 /**
- * Generate and download a certified BexSign PDF document
- * with authentic signature stamp, vector handwritten stroke or actual drawn/uploaded signature image.
+ * Build a BexSign document PDF: header, document text and the placed fields.
+ * Fields are rendered without labels (Zoho Sign style); a stamp is drawn only for a placed Stamp field
+ * with an image; every Signature/Initial field shows its own signer's signature.
+ * `defaultSignature` draws one signature block for documents that have no placed fields at all.
+ * Returns { blob, cleanFileName } (use generateAndDownloadPdf to download it).
  */
 export async function generatePdfBlob({
   documentName = 'Document 1.pdf',
@@ -90,13 +188,10 @@ export async function generatePdfBlob({
   signerEmail = 'vimal@bexcodeservices.com',
   employeeId = 'EMP001',
   date = new Date().toLocaleString(),
-  ipAddress = '223.181.69.208',
-  status = 'Completed',
   signatureImage = '',
-  signatureType = 'type',
-  password = '',
   fields = [],
-  placedFields = []
+  placedFields = [],
+  defaultSignature = true
 }) {
   const cleanFileName = documentName.endsWith('.pdf') ? documentName : `${documentName}.pdf`;
   const fullSignatureId = typeof docId === 'string' && (docId.startsWith('BEX-SIGN') || docId.startsWith('BEX-DOC'))
@@ -137,9 +232,8 @@ export async function generatePdfBlob({
         .replace(/&#39;/g, "'")
         .replace(/&nbsp;/g, ' ')
     : cleanDocBody;
-  const rawParagraphs = rawText.split('\n');
   const wrappedBodyLines = [];
-  for (const p of rawParagraphs) {
+  for (const p of rawText.split('\n')) {
     const trimmed = p.trim();
     if (!trimmed) {
       if (wrappedBodyLines.length > 0 && wrappedBodyLines[wrappedBodyLines.length - 1] !== '') {
@@ -147,9 +241,8 @@ export async function generatePdfBlob({
       }
       continue;
     }
-    const words = trimmed.split(/\s+/);
     let curr = '';
-    for (const w of words) {
+    for (const w of trimmed.split(/\s+/)) {
       if ((curr + ' ' + w).trim().length <= 88) {
         curr = (curr + ' ' + w).trim();
       } else {
@@ -162,111 +255,22 @@ export async function generatePdfBlob({
 
   // Cap at 14 lines max to preserve signature block and fields placement
   const displayLines = wrappedBodyLines.slice(0, 14);
-
   const pdfBodyTextOps = displayLines.length > 0
-    ? displayLines.map((line, idx) => {
-        const escaped = line.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
-        return idx === 0 ? `50 678 Td (${escaped}) Tj` : `0 -12.5 Td (${escaped}) Tj`;
-      }).join('\n')
+    ? displayLines.map((line, idx) => (idx === 0 ? `50 678 Td (${pdfText(line)}) Tj` : `0 -12.5 Td (${pdfText(line)}) Tj`)).join('\n')
     : '50 678 Td (check the document for signature) Tj';
 
-  // Dynamic vertical coordinate calculations
   const allFields = (fields && fields.length > 0 ? fields : placedFields) || [];
-  const otherFields = allFields.filter(f => f.type !== 'Signature' && f.type !== 'Initial' && f.type !== 'Stamp');
+  const dividerY = Math.min(650, Math.max(420, 678 - displayLines.length * 12.5 - 12));
 
-  const textEndOffset = displayLines.length * 12.5;
-  const dividerY = Math.min(650, Math.max(420, 678 - textEndOffset - 12));
-  const sigLabelY = dividerY - 18;
-  const sigBracketTop = dividerY - 32;
-  const sigBracketBottom = dividerY - 105;
-  const sigSignedByY = dividerY - 38;
-  const sigImageY = dividerY - 95;
-  const sigIdsY = dividerY - 118;
+  // Embedded JPEG images, referenced as /Im1, /Im2, ...
+  const images = [];
+  const addImage = (imgObj) => {
+    if (!imgObj) return null;
+    images.push(imgObj);
+    return `Im${images.length}`;
+  };
 
-  // Custom placed fields (e.g. Company, Email, Full name, Sign date, Job title, Text)
-  let customFieldsOperators = '';
-  let nextSectionY = sigIdsY - 20;
-
-  if (otherFields.length > 0) {
-    for (let i = 0; i < otherFields.length; i++) {
-      const f = otherFields[i];
-      const colIndex = i % 2;
-      const colX = colIndex === 0 ? 50 : 315;
-      const rowY = nextSectionY - Math.floor(i / 2) * 48;
-
-      const fLabel = (f.label || f.type || 'Field').toUpperCase().replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
-      let fVal = '';
-      if (f.type === 'Company') {
-        fVal = f.value || 'Bexcode Services';
-      } else if (f.type === 'Email') {
-        fVal = f.value || signerEmail;
-      } else if (f.type === 'Full name' || f.type === 'Name') {
-        fVal = f.value || signerName;
-      } else if (f.type === 'Sign date' || f.type === 'Date') {
-        fVal = f.value || date || new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-      } else if (f.type === 'Job title') {
-        fVal = f.value || 'Designated Signer';
-      } else if (f.type === 'Checkbox') {
-        fVal = (f.value === true || f.value === 'true') ? '[X] Confirmed' : '[ ] Not checked';
-      } else {
-        fVal = f.value || f.label || '';
-      }
-      const escapedVal = String(fVal).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
-
-      customFieldsOperators += `
-% Placed Field: ${f.type}
-BT
-/F2 8 Tf
-0.45 0.5 0.55 rg
-${colX} ${rowY} Td
-(${fLabel}) Tj
-ET
-
-0.82 0.85 0.88 RG
-0.75 w
-${colX} ${rowY - 24} 245 20 re S
-
-BT
-/F2 9.5 Tf
-0.15 0.2 0.25 rg
-${colX + 8} ${rowY - 16} Td
-(${escapedVal}) Tj
-ET
-`;
-    }
-    const rowCount = Math.ceil(otherFields.length / 2);
-    nextSectionY = nextSectionY - rowCount * 48 - 8;
-  }
-
-  const stampLabelY = nextSectionY;
-  const stampBoxY = nextSectionY - 45;
-  const stampContentY = nextSectionY - 30;
-  const emailY = stampBoxY - 20;
-
-  // Convert user signature into image bytes if provided
-  const imgObj = await prepareSignatureImageObject(signatureImage, signerName);
-
-  let imageOperators = '';
-  if (imgObj) {
-    imageOperators = `
-q
-160 0 0 50 64 ${sigImageY} cm
-/Im1 Do
-Q
-`;
-  } else {
-    imageOperators = `
-% Fallback Vector Signature Strokes
-0.08 0.12 0.2 RG
-1.8 w
-65 ${sigImageY + 10} m 76 ${sigImageY + 42} 86 ${sigImageY - 5} 94 ${sigImageY + 24} c 100 ${sigImageY + 45} 92 ${sigImageY + 56} 82 ${sigImageY + 44} c 74 ${sigImageY + 30} 90 ${sigImageY - 10} 105 ${sigImageY + 46} c 116 ${sigImageY} 129 ${sigImageY + 36} 142 ${sigImageY + 20} c 154 ${sigImageY + 5} 167 ${sigImageY + 31} 180 ${sigImageY + 15} c 193 ${sigImageY + 2} 206 ${sigImageY + 28} 221 ${sigImageY + 13} c 236 ${sigImageY - 2} 252 ${sigImageY + 25} 268 ${sigImageY + 16} c S
-74 ${sigImageY + 2} m 122 ${sigImageY + 5} 185 ${sigImageY + 2} 258 ${sigImageY + 6} c S
-`;
-  }
-
-  // EXACT SHEET STREAM MATCHING ZOHO SIGN REFERENCE & ATTACHMENT 1
-  const streamBody = `q
-% 1. Header Metadata Section
+  const pages = [[`% 1. Header Metadata Section
 BT
 /F1 9 Tf
 0.4 0.45 0.5 rg
@@ -274,7 +278,7 @@ BT
 (BexSign Document ID: ) Tj
 /F2 9 Tf
 0.15 0.2 0.25 rg
-(${fullBexsignId}) Tj
+(${pdfText(fullBexsignId)}) Tj
 ET
 
 % Header Divider Line
@@ -287,7 +291,7 @@ BT
 /F2 18 Tf
 0.08 0.1 0.15 rg
 50 705 Td
-(${cleanDocTitle.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)')}) Tj
+(${pdfText(cleanDocTitle)}) Tj
 ET
 
 % 3. Document Body Text
@@ -300,186 +304,213 @@ ET
 % Divider before fields
 0.88 0.9 0.92 RG
 0.75 w
-50 ${dividerY} m 562 ${dividerY} l S
+50 ${dividerY} m 562 ${dividerY} l S`]];
+  let ops = pages[0];
+  let cursorY = dividerY - 24;
 
-% 4. SIGNATURE FIELD LABEL
+  const ensureSpace = (height) => {
+    if (cursorY - height >= PAGE_BOTTOM) return;
+    ops = [`% Continuation page header
 BT
-/F2 8.5 Tf
-0.45 0.5 0.55 rg
-50 ${sigLabelY} Td
-(SIGNATURE) Tj
+/F1 8 Tf
+0.4 0.45 0.5 rg
+50 750 Td
+(BexSign Document ID: ${pdfText(fullBexsignId)}) Tj
 ET
+0.88 0.9 0.92 RG
+0.75 w
+50 738 m 562 738 l S`];
+    pages.push(ops);
+    cursorY = 714;
+  };
 
-% Blue Bracket for Signature
+  // Signature stamp (bracket, "Signed by", signature, signature IDs)
+  const signatureBlockOps = (top, { name, imageName }) => {
+    const bracketTop = top - 6;
+    const bracketBottom = top - 79;
+    const imageY = top - 69;
+    let out = `
+% Signature Field
 0.11 0.29 0.51 RG
 1.8 w
 1 J
 1 j
-58 ${sigBracketTop} m 50 ${sigBracketTop} 48 ${sigBracketTop - 2} 48 ${sigBracketTop - 10} c 48 ${sigBracketBottom + 10} l 48 ${sigBracketBottom + 2} 50 ${sigBracketBottom} 58 ${sigBracketBottom} c S
-
-% Baseline for Signature
+58 ${bracketTop} m 50 ${bracketTop} 48 ${bracketTop - 2} 48 ${bracketTop - 10} c 48 ${bracketBottom + 10} l 48 ${bracketBottom + 2} 50 ${bracketBottom} 58 ${bracketBottom} c S
 0.75 0.8 0.85 RG
 0.75 w
-48 ${sigBracketBottom} m 280 ${sigBracketBottom} l S
+48 ${bracketBottom} m 280 ${bracketBottom} l S`;
 
-% Stamp Text: "- Signed by: [Signer Name]"
+    out += `
 BT
 /F2 9.5 Tf
 0.11 0.29 0.51 rg
-62 ${sigSignedByY} Td
+62 ${top - 12} Td
 (- Signed by: ) Tj
 /F1 9.5 Tf
 0.15 0.2 0.25 rg
-(${signerName}) Tj
-ET
-
-${imageOperators}
-
-% Signature IDs below baseline
+(${pdfText(name)}) Tj
+ET`;
+    out += imageName
+      ? `
+q
+160 0 0 50 64 ${imageY} cm
+/${imageName} Do
+Q`
+      : `
+% Fallback Vector Signature Strokes
+0.08 0.12 0.2 RG
+1.8 w
+65 ${imageY + 10} m 76 ${imageY + 42} 86 ${imageY - 5} 94 ${imageY + 24} c 100 ${imageY + 45} 92 ${imageY + 56} 82 ${imageY + 44} c 74 ${imageY + 30} 90 ${imageY - 10} 105 ${imageY + 46} c 116 ${imageY} 129 ${imageY + 36} 142 ${imageY + 20} c 154 ${imageY + 5} 167 ${imageY + 31} 180 ${imageY + 15} c 193 ${imageY + 2} 206 ${imageY + 28} 221 ${imageY + 13} c 236 ${imageY - 2} 252 ${imageY + 25} 268 ${imageY + 16} c S
+74 ${imageY + 2} m 122 ${imageY + 5} 185 ${imageY + 2} 258 ${imageY + 6} c S`;
+    out += `
 BT
 /F1 7.5 Tf
 0.35 0.4 0.45 rg
-58 ${sigIdsY} Td
-(${docIdLine1}) Tj
+58 ${top - 92} Td
+(${pdfText(docIdLine1)}) Tj
 0 -10 Td
-(${docIdLine2}) Tj
-ET
+(${pdfText(docIdLine2)}) Tj
+ET`;
+    return out;
+  };
 
-${customFieldsOperators}
-
-% 5. STAMP FIELD LABEL
-BT
-/F2 8.5 Tf
-0.45 0.5 0.55 rg
-50 ${stampLabelY} Td
-(STAMP) Tj
-ET
-
-% Dashed Box for Stamp
-[3 2] 0 d
-0.75 0.8 0.85 RG
-1 w
-50 ${stampBoxY} 220 45 re S
-[] 0 d
-
-% Red Box for "Bex"
-0.9 0.1 0.1 rg
-58 ${stampBoxY + 10} 26 24 re f
-
-% White "Bex" Text inside red box
-BT
-/F2 11 Tf
-1 1 1 rg
-62 ${stampContentY} Td
-(Bex) Tj
-ET
-
-% "Corporate Official Stamp" & "Verified"
-BT
-/F2 9.5 Tf
-0.15 0.2 0.25 rg
-92 ${stampContentY} Td
-(Corporate Official Stamp) Tj
-/F1 8 Tf
-0.0 0.5 0.35 rg
-130 0 Td
-(Verified) Tj
-ET
-
-% 6. Recipient Email
+  if (allFields.length === 0) {
+    if (defaultSignature) {
+      ensureSpace(140);
+      const imageName = addImage(await prepareSignatureImageObject(signatureImage, signerName));
+      ops.push(signatureBlockOps(cursorY, { name: signerName, imageName }));
+      cursorY -= 120;
+      ops.push(`
+% Signer Email
 BT
 /F1 9 Tf
 0.35 0.4 0.45 rg
-50 ${emailY} Td
-(${signerEmail}) Tj
-ET
-Q`;
-
-  const streamLength = streamBody.length;
-
-  let headerPart = `%PDF-1.4
-%âãÏÓ
-1 0 obj
-<< /Title (${cleanFileName}) /Author (${signerName}) /Subject (BexSign Signed Electronic Document) /Creator (BexSign Electronic Document System) >>
-endobj
-2 0 obj
-<< /Type /Catalog /Pages 3 0 R >>
-endobj
-3 0 obj
-<< /Type /Pages /Kids [4 0 R] /Count 1 >>
-endobj
-4 0 obj
-<< /Type /Page /Parent 3 0 R /MediaBox [0 0 612 792] /Contents 5 0 R /Resources << /Font << /F1 6 0 R /F2 7 0 R >> ${imgObj ? '/XObject << /Im1 8 0 R >>' : ''} >> >>
-endobj
-5 0 obj
-<< /Length ${streamLength} >>
-stream
-${streamBody}
-endstream
-endobj
-6 0 obj
-<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
-endobj
-7 0 obj
-<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
-endobj
-`;
-
-  let blobParts = [];
-
-  if (imgObj) {
-    headerPart += `8 0 obj
-<< /Type /XObject /Subtype /Image /Width ${imgObj.width} /Height ${imgObj.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${imgObj.length} >>
-stream
-`;
-    const footerPart = `
-endstream
-endobj
-xref
-0 9
-0000000000 65535 f 
-0000000015 00000 n 
-0000000160 00000 n 
-0000000213 00000 n 
-0000000276 00000 n 
-0000000420 00000 n 
-0000002200 00000 n 
-0000002300 00000 n 
-0000002400 00000 n 
-trailer
-<< /Size 9 /Root 2 0 R /Info 1 0 R >>
-startxref
-2800
-%%EOF`;
-    blobParts = [headerPart, imgObj.bytes, footerPart];
+50 ${cursorY} Td
+(${pdfText(signerEmail)}) Tj
+ET`);
+      cursorY -= 20;
+    }
   } else {
-    headerPart += `xref
-0 8
-0000000000 65535 f 
-0000000015 00000 n 
-0000000160 00000 n 
-0000000213 00000 n 
-0000000276 00000 n 
-0000000405 00000 n 
-0000002200 00000 n 
-0000002300 00000 n 
-trailer
-<< /Size 8 /Root 2 0 R /Info 1 0 R >>
-startxref
-2500
-%%EOF`;
-    blobParts = [headerPart];
+    // Signatures take a full row; stamps, checkboxes and text fields flow in two columns
+    let column = 0;
+    let rowTop = cursorY;
+    let rowHeight = 0;
+    const closeRow = () => {
+      if (column === 0) return;
+      cursorY = rowTop - rowHeight - 14;
+      column = 0;
+      rowHeight = 0;
+    };
+
+    for (const field of allFields) {
+      // Another recipient's masked field never appears in this copy
+      if (field.isAssignedToOther) continue;
+
+      if (isSignatureField(field)) {
+        const ownSignature = getFieldSignatureImage(field);
+        // One signature box per signer: another recipient's unsigned signature field is left out (no empty box)
+        if (!ownSignature && !isFieldForSigner(field, signerEmail)) continue;
+        closeRow();
+        ensureSpace(112);
+        const fieldSigner = field.signerName || signerName;
+        const imageName = addImage(await prepareSignatureImageObject(ownSignature || signatureImage, fieldSigner));
+        ops.push(signatureBlockOps(cursorY, { name: fieldSigner, imageName }));
+        cursorY -= 122;
+        continue;
+      }
+
+      let block = null;
+      if (field.type === 'Stamp') {
+        const stampSrc = getStampImage(field);
+        const imgObj = stampSrc ? await prepareImageObject(stampSrc) : null;
+        if (!imgObj) continue; // no stamp was placed with an image: nothing is drawn
+        const scale = Math.min(120 / imgObj.width, 90 / imgObj.height);
+        const w = Number((imgObj.width * scale).toFixed(2));
+        const h = Number((imgObj.height * scale).toFixed(2));
+        const imageName = addImage(imgObj);
+        block = {
+          height: h,
+          ops: (x, top) => `
+% Stamp Field
+q
+${w} 0 0 ${h} ${x} ${Number((top - h).toFixed(2))} cm
+/${imageName} Do
+Q`
+        };
+      } else if (field.type === 'Checkbox') {
+        const checked = isFieldChecked(field);
+        block = {
+          height: 12,
+          ops: (x, top) => `
+% Checkbox Field
+0.45 0.5 0.55 RG
+0.9 w
+${x} ${top - 12} 12 12 re S${checked ? `
+0 0.45 0.33 RG
+1.6 w
+1 J
+1 j
+${x + 2.5} ${top - 6} m ${x + 5} ${top - 9.5} l ${x + 9.5} ${top - 2.5} l S` : ''}`
+        };
+      } else {
+        const text = fitText(getFieldDisplayValue(field, { signerName, signerEmail, date }), 44);
+        block = {
+          height: 20,
+          ops: (x, top) => `
+% Placed Field: ${pdfText(field.type)}
+0.82 0.85 0.88 RG
+0.75 w
+${x} ${top - 20} ${COLUMN_WIDTH} 20 re S
+BT
+/F2 9.5 Tf
+0.15 0.2 0.25 rg
+${x + 8} ${top - 14} Td
+(${pdfText(text)}) Tj
+ET`
+        };
+      }
+
+      if (column === 0) {
+        ensureSpace(block.height);
+        rowTop = cursorY;
+      }
+      ops.push(block.ops(COLUMN_X[column], rowTop));
+      rowHeight = Math.max(rowHeight, block.height);
+      column += 1;
+      if (column === 2) closeRow();
+    }
+    closeRow();
   }
 
-  const blob = new Blob(blobParts, { type: 'application/pdf' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = cleanFileName;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
+  const encoder = new TextEncoder();
+  const pageObjectNumber = (i) => 6 + i * 2;
+  const imageObjectNumber = (j) => 6 + pages.length * 2 + j;
+  const xObjects = images.length > 0
+    ? `/XObject << ${images.map((_, j) => `/Im${j + 1} ${imageObjectNumber(j)} 0 R`).join(' ')} >>`
+    : '';
+
+  const objects = [
+    [`<< /Title (${pdfText(cleanFileName)}) /Author (${pdfText(signerName)}) /Subject (BexSign Signed Electronic Document) /Creator (BexSign Electronic Document System) >>`],
+    ['<< /Type /Catalog /Pages 3 0 R >>'],
+    [`<< /Type /Pages /Kids [${pages.map((_, i) => `${pageObjectNumber(i)} 0 R`).join(' ')}] /Count ${pages.length} >>`],
+    ['<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>'],
+    ['<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>']
+  ];
+  pages.forEach((pageOps, i) => {
+    objects.push([`<< /Type /Page /Parent 3 0 R /MediaBox [0 0 ${PAGE_WIDTH} ${PAGE_HEIGHT}] /Contents ${pageObjectNumber(i) + 1} 0 R /Resources << /Font << /F1 4 0 R /F2 5 0 R >> ${xObjects} >> >>`]);
+    const content = encoder.encode(`q\n${pageOps.join('\n')}\nQ`);
+    objects.push([`<< /Length ${content.length} >>\nstream\n`, content, '\nendstream']);
+  });
+  images.forEach((img) => {
+    objects.push([
+      `<< /Type /XObject /Subtype /Image /Width ${img.width} /Height ${img.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${img.length} >>\nstream\n`,
+      img.bytes,
+      '\nendstream'
+    ]);
+  });
+
+  const blob = new Blob(buildPdfParts(objects), { type: 'application/pdf' });
+  return { blob, cleanFileName };
 }
 
 /**

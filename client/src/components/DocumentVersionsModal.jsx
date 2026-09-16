@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, FileText, Download, Eye, Clock, CheckCircle2 } from 'lucide-react';
 import { generateAndDownloadPdf } from '../utils/pdfGenerator';
 import { generateBexsignId } from '../utils/documentId';
+import { getDocumentOwner } from '../utils/currentUser';
 
 export default function DocumentVersionsModal({ doc, onClose, onViewVersion }) {
   const [versions, setVersions] = useState([]);
@@ -31,7 +32,7 @@ export default function DocumentVersionsModal({ doc, onClose, onViewVersion }) {
         {
           id: 1,
           version_label: '1.0',
-          created_by: doc?.owner || 'Manu Yadav',
+          created_by: getDocumentOwner(doc).name,
           details: doc?.status === 'Completed'
             ? 'Physically signed this document and uploaded a copy'
             : 'Initial draft version and document creation',
@@ -145,7 +146,7 @@ export default function DocumentVersionsModal({ doc, onClose, onViewVersion }) {
                       </td>
                       <td className="py-3 px-4 space-y-0.5 align-top">
                         <p className="font-bold text-slate-900">
-                          Created by {ver.created_by || 'Manu Yadav'}
+                          Created by {ver.created_by || getDocumentOwner(doc).name}
                         </p>
                         <p className="text-slate-500 text-[11px]">
                           Created at {formattedDate}

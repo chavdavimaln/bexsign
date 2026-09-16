@@ -26,6 +26,7 @@ import {
 import SignatureStamp from '../components/SignatureStamp';
 import BexTableToolbar from '../components/BexTableToolbar';
 import { showPopupAlert } from '../components/GlobalAlertModal';
+import { canvasHasInk, canvasPoint } from '../utils/signatureInk';
 
 const INITIAL_SIG_COLUMNS = [
   { id: 'employee', label: 'Employee & Email', required: true, visible: true },
@@ -221,9 +222,7 @@ export default function SignaturesModule() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
-    const rect = canvas.getBoundingClientRect();
-    const x = (e.clientX || e.touches[0].clientX) - rect.left;
-    const y = (e.clientY || e.touches[0].clientY) - rect.top;
+    const { x, y } = canvasPoint(canvas, e);
 
     ctx.beginPath();
     ctx.moveTo(x, y);
@@ -232,7 +231,6 @@ export default function SignaturesModule() {
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     setIsDrawing(true);
-    setHasDrawn(true);
   };
 
   const draw = (e) => {
@@ -240,12 +238,11 @@ export default function SignaturesModule() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
-    const rect = canvas.getBoundingClientRect();
-    const x = (e.clientX || e.touches[0].clientX) - rect.left;
-    const y = (e.clientY || e.touches[0].clientY) - rect.top;
+    const { x, y } = canvasPoint(canvas, e);
 
     ctx.lineTo(x, y);
     ctx.stroke();
+    if (!hasDrawn) setHasDrawn(true);
   };
 
   const stopDrawing = () => {
@@ -288,10 +285,19 @@ export default function SignaturesModule() {
       return;
     }
 
+    // Never save an empty signature: a drawn one needs visible strokes, an upload needs an image
     let finalSignatureData = null;
-    if (activeTab === 'draw' && canvasRef.current && hasDrawn) {
+    if (activeTab === 'draw') {
+      if (!canvasRef.current || !hasDrawn || !canvasHasInk(canvasRef.current)) {
+        setFormError('The signature pad is empty. Draw a signature, or use the Type or Upload tab.');
+        return;
+      }
       finalSignatureData = canvasRef.current.toDataURL('image/png');
-    } else if (activeTab === 'upload' && uploadedImage) {
+    } else if (activeTab === 'upload') {
+      if (!uploadedImage) {
+        setFormError('Choose a signature image to upload, or use the Type or Draw tab.');
+        return;
+      }
       finalSignatureData = uploadedImage;
     }
 
@@ -309,11 +315,16 @@ export default function SignaturesModule() {
     try {
       if (editingItem) {
         // Edit existing signature
-        await fetch(`http://localhost:5000/api/documents/employees/signatures/${editingItem.id}`, {
+        const res = await fetch(`http://localhost:5000/api/documents/employees/signatures/${editingItem.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
+        if (res.status === 400) {
+          const data = await res.json().catch(() => ({}));
+          setFormError(data.error || 'The signature could not be saved.');
+          return;
+        }
 
         // Update local state
         setSignatures(prev => prev.map(s => s.id === editingItem.id ? { ...s, ...payload, signature_image: finalSignatureData || s.signature_image } : s));
@@ -326,6 +337,10 @@ export default function SignaturesModule() {
           body: JSON.stringify(payload)
         });
         const data = await res.json();
+        if (res.status === 400) {
+          setFormError(data.error || 'The signature could not be saved.');
+          return;
+        }
         if (data.success && data.employee) {
           setSignatures(prev => [data.employee, ...prev]);
         } else {

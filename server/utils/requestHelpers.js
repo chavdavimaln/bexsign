@@ -101,25 +101,43 @@ async function getRecipients(documentId) {
 }
 
 /**
+ * Signing steps for an ordered recipient list. A recipient's `signingOrder` (or `signing_order_index`) is its step;
+ * recipients sharing a number receive the request at the same time. Missing numbers fall back to the list position.
+ * Steps are made consecutive (e.g. 1, 1, 4 -> 1, 1, 2).
+ */
+function normalizeSigningSteps(list) {
+  const requested = list.map((r, idx) => {
+    const n = parseInt(r.signingOrder ?? r.signing_order_index, 10);
+    return Number.isFinite(n) && n > 0 ? n : idx + 1;
+  });
+  const ranks = new Map([...new Set(requested)].sort((a, b) => a - b).map((value, idx) => [value, idx + 1]));
+  return requested.map((value) => ranks.get(value));
+}
+
+/**
  * Upsert recipients by email so ids, statuses and signatures survive draft saves and re-sends.
- * List order is the signing order. An empty/invalid list leaves existing recipients untouched.
+ * List order (or each recipient's signingOrder step) is the signing order. An empty/invalid list leaves
+ * existing recipients untouched.
  */
 async function saveRecipients(documentId, list) {
-  const incoming = (Array.isArray(list) ? list : []).filter((r) => r && String(r.email || '').trim());
+  const seen = new Set();
+  const incoming = (Array.isArray(list) ? list : []).filter((r) => {
+    const key = String(r?.email || '').trim().toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
   if (incoming.length === 0) return getRecipients(documentId);
   await ensureRequestSchema();
 
   const [existingRows] = await db.query('SELECT * FROM document_recipients WHERE document_id = ?', [documentId]);
   const existingByEmail = new Map(existingRows.map((row) => [String(row.email || '').trim().toLowerCase(), row]));
-  const seen = new Set();
-  let position = 0;
+  const steps = normalizeSigningSteps(incoming);
 
-  for (const r of incoming) {
+  for (const [index, r] of incoming.entries()) {
     const email = String(r.email).trim();
     const key = email.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    position += 1;
+    const position = steps[index];
 
     const existing = existingByEmail.get(key);
     const rawLabel = r.role_label || r.roleLabel || r.role;
@@ -166,6 +184,58 @@ async function saveRecipients(documentId, list) {
   return recipients;
 }
 
+// Data written on a field when its recipient signs (POST /api/signatures/submit)
+const FIELD_SIGNING_KEYS = ['signatureImage', 'signatureStyle', 'signerName', 'signerEmail', 'signedAt'];
+
+/**
+ * Start a new signing round for a request that was sent before (e.g. a completed request that was edited and
+ * sent again). Every recipient goes back to pending (and is emailed again in signing order); signatures,
+ * signer-entered field values, signed copies and the completion date of the previous round are cleared.
+ * Field values the sender prefilled are kept.
+ */
+async function restartSigningRound(documentId) {
+  await ensureRequestSchema();
+  await db.query(
+    `UPDATE document_recipients
+     SET status = 'pending', sent_at = NULL, viewed_at = NULL, signed_at = NULL,
+         signed_ip = NULL, signed_user_agent = NULL, signature_image = NULL
+     WHERE document_id = ?`,
+    [documentId]
+  );
+
+  const [fieldRows] = await db.query('SELECT id, field_type, options FROM document_fields WHERE document_id = ?', [documentId]);
+  for (const row of fieldRows) {
+    const opts = parseJsonInput(row.options, {}) || {};
+    if (!FIELD_SIGNING_KEYS.some((key) => opts[key] !== undefined)) continue;
+    const filledBySigner = opts.signedAt !== undefined;
+    FIELD_SIGNING_KEYS.forEach((key) => delete opts[key]);
+    if (filledBySigner) {
+      // Same starting value as a newly placed field in the editor
+      delete opts.gridValue;
+      delete opts.checked;
+      if (row.field_type === 'Sign date') delete opts.value; // the signing page shows the signing day
+      else if (row.field_type === 'Split text') opts.value = '';
+      else if (row.field_type === 'Checkbox') opts.value = 'true';
+      else if (row.field_type === 'Full name') opts.value = opts.assignee || row.field_type;
+      else opts.value = row.field_type;
+    }
+    await db.query('UPDATE document_fields SET options = ? WHERE id = ?', [JSON.stringify(opts), row.id]);
+  }
+
+  try {
+    await db.query(
+      `DELETE v FROM document_field_values v
+       JOIN document_recipients r ON r.id = v.recipient_id
+       WHERE r.document_id = ?`,
+      [documentId]
+    );
+  } catch (err) {
+    console.warn('[Restart] field value cleanup warning:', err.message);
+  }
+  await db.query('UPDATE document_files SET signed_file_path = NULL WHERE document_id = ?', [documentId]);
+  await db.query('UPDATE documents SET completed_at = NULL WHERE id = ?', [documentId]);
+}
+
 async function getDocumentFiles(documentId) {
   await ensureRequestSchema();
   const [rows] = await db.query(
@@ -193,9 +263,10 @@ async function remapFieldDocIndexes(documentId, indexMap) {
  * Persist the ordered document list of a request. Existing rows are matched by `fileId`
  * (or a legacy `id` equal to the row id) and updated in place; uploads are matched by
  * `uploadKey` (multer field name `file_<uploadKey>`). Field docIndexes follow re-ordering/removal.
+ * An empty list is ignored unless `allowEmpty` is set (the user removed every document of a draft).
  */
-async function syncDocumentFiles(documentId, metaDocs, uploadedFiles = []) {
-  if (!Array.isArray(metaDocs) || metaDocs.length === 0) return getDocumentFiles(documentId);
+async function syncDocumentFiles(documentId, metaDocs, uploadedFiles = [], { allowEmpty = false } = {}) {
+  if (!Array.isArray(metaDocs) || (metaDocs.length === 0 && !allowEmpty)) return getDocumentFiles(documentId);
   const oldFiles = await getDocumentFiles(documentId);
   const oldById = new Map(oldFiles.map((f, idx) => [String(f.id), { row: f, index: idx }]));
   const keptIds = new Set();
@@ -246,6 +317,9 @@ async function syncDocumentFiles(documentId, metaDocs, uploadedFiles = []) {
   const reindexed = removed.length > 0 || [...indexMap].some(([from, to]) => from !== to);
   if (oldFiles.length > 0 && keptIds.size > 0 && reindexed) {
     await remapFieldDocIndexes(documentId, indexMap);
+  } else if (metaDocs.length === 0 && oldFiles.length > 0) {
+    // Every document was removed: their placed fields go with them
+    await db.query('DELETE FROM document_fields WHERE document_id = ?', [documentId]);
   }
 
   const files = await getDocumentFiles(documentId);
@@ -307,7 +381,8 @@ async function saveDocumentFields(documentId, { fieldsByDoc, fields } = {}, reci
   for (const f of list) {
     const { id, type, label, required, x, y, page, width, height, description, recipientId, isAssignedToOther, ...rest } = f;
     const assigned = recipientByEmail.get(String(rest.assigneeEmail || '').toLowerCase());
-    const options = { ...rest, clientId: rest.clientId ?? id, docIndex: f.docIndex };
+    // assigneeId always refers to the saved recipient row, so every client matches the field to the same recipient
+    const options = { ...rest, ...(assigned ? { assigneeId: assigned.id } : {}), clientId: rest.clientId ?? id, docIndex: f.docIndex };
     await db.query(
       `INSERT INTO document_fields (document_id, recipient_id, page_number, field_type, label, description, is_required, pos_x, pos_y, width, height, options)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -364,6 +439,12 @@ async function getRequestSender(doc) {
     return fallback;
   }
 }
+
+// Owner of a request = the user who created it (documents.user_id). Use with `documents d` in the FROM clause.
+const OWNER_JOIN = 'LEFT JOIN users owner_user ON owner_user.id = d.user_id';
+const OWNER_COLUMNS = `NULLIF(TRIM(CONCAT(COALESCE(owner_user.first_name, ''), ' ', COALESCE(owner_user.last_name, ''))), '') AS owner,
+       owner_user.email AS owner_email,
+       owner_user.company AS owner_company`;
 
 function getRequestExpiry(doc) {
   const base = doc?.sent_at ? new Date(doc.sent_at) : new Date();
@@ -483,6 +564,8 @@ module.exports = {
   ensureRequestSchema,
   getRecipients,
   saveRecipients,
+  normalizeSigningSteps,
+  restartSigningRound,
   getDocumentFiles,
   syncDocumentFiles,
   parseFieldRow,
@@ -490,6 +573,8 @@ module.exports = {
   saveDocumentFields,
   fieldBelongsToRecipient,
   getRequestSender,
+  OWNER_JOIN,
+  OWNER_COLUMNS,
   getRequestExpiry,
   formatDisplayDate,
   getActiveSigningGroup,

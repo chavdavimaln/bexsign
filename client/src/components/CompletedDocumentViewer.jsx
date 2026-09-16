@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   FileText,
   ChevronUp,
@@ -22,11 +22,13 @@ import {
   ExternalLink
 } from 'lucide-react';
 import { generateBexsignId } from '../utils/documentId';
-import { generateAndDownloadPdf } from '../utils/pdfGenerator';
 import SignatureStamp from './SignatureStamp';
 import BexDocumentSheet from './BexDocumentSheet';
 import { printDocumentSheet } from '../utils/documentPrinter';
 import { getDefaultDocContent } from '../utils/documentDefaults';
+import { getDocumentOwner } from '../utils/currentUser';
+import { downloadSignedDocument } from '../utils/signedPdf';
+import { showPopupAlert } from './GlobalAlertModal';
 
 export default function CompletedDocumentViewer({ doc, onClose, onBack }) {
   const [currentPage, setCurrentPage] = useState(1);
@@ -94,15 +96,41 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack }) {
     return {};
   });
 
-  const activeDocFields = fieldsByDoc[activeDocIndex] || fieldsByDoc[0] || [];
+  const activeDocFields = fieldsByDoc[activeDocIndex] || [];
+  // A document without placed fields shows the default signature only when the whole request has none
+  const requestHasFields = Object.values(fieldsByDoc).some((list) => Array.isArray(list) && list.length > 0);
   const activeDoc = documentsList[activeDocIndex] || documentsList[0];
   const documentName = activeDoc?.name || doc?.document_name || doc?.title || doc?.name || "Document 1.pdf";
-  const docId = doc?.bexsign_doc_id || generateBexsignId(doc?.id || 1);
+  const [placeholderBexsignId] = useState(() => generateBexsignId(doc?.id || 1));
+  const [serverBexsignId, setServerBexsignId] = useState('');
+  const docId = doc?.bexsign_doc_id || serverBexsignId || placeholderBexsignId;
+
+  // The completed request's fields come from the server: each Signature field carries its own signer's
+  // signature, so every recipient's box shows their signature (cached editor fields have no signatures)
+  useEffect(() => {
+    if (!doc?.id) return undefined;
+    let cancelled = false;
+    fetch(`http://localhost:5000/api/documents/${doc.id}`)
+      .then((res) => res.json())
+      .then((data) => {
+        const serverDoc = data?.document;
+        if (cancelled || !serverDoc || String(serverDoc.status || '').toLowerCase() !== 'completed') return;
+        if (serverDoc.bexsign_doc_id) setServerBexsignId(serverDoc.bexsign_doc_id);
+        if (serverDoc.fieldsByDoc && Object.keys(serverDoc.fieldsByDoc).length > 0) {
+          setFieldsByDoc(serverDoc.fieldsByDoc);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [doc?.id]);
   const signerName = doc?.signer_name || 'Vimal Chavda';
   const signerEmail = doc?.recipient_email || 'vimal@bexcodeservices.com';
-  const ownerName = doc?.owner || 'Manu Yadav';
-  const ownerEmail = 'manu.yadav@oladigital.health';
-  const organization = 'Dcode Health';
+  const owner = getDocumentOwner(doc);
+  const ownerName = owner.name;
+  const ownerEmail = owner.email;
+  const organization = owner.company || 'BexSign';
   const signedDate = doc?.signed_at
     ? new Date(doc.signed_at).toLocaleString()
     : 'Sep 01, 2026 15:07:14 EDT';
@@ -126,24 +154,13 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack }) {
 
   const documentBodyText = activeDoc?.documentText || doc?.documentText || doc?.document_text || getDefaultDocContent(documentName, doc?.custom_message);
 
-  const handleDownload = () => {
-    const savedSig = doc?.signature_image || localStorage.getItem(`bexsign_doc_${doc?.id}_signature`) || '';
-    const savedSigner = doc?.signer_name || localStorage.getItem(`bexsign_doc_${doc?.id}_signer`) || signerName;
-    const savedType = localStorage.getItem(`bexsign_doc_${doc?.id}_sigtype`) || (savedSig && savedSig.startsWith('data:') ? 'draw' : 'type');
-    const docBexId = documentsList.length > 1 ? `${docId}-${activeDocIndex + 1}` : docId;
-
-    generateAndDownloadPdf({
-      documentName,
-      documentText: documentBodyText,
-      docId: docBexId,
-      signerName: savedSigner,
-      signerEmail,
-      date: signedDate,
-      status: 'Completed',
-      signatureImage: savedSig,
-      signatureType: savedType,
-      fields: activeDocFields
-    });
+  // The completed document is downloaded as the locked signed PDF issued by the server
+  const handleDownload = async () => {
+    try {
+      await downloadSignedDocument(doc?.id, { index: activeDocIndex });
+    } catch (err) {
+      showPopupAlert(err instanceof TypeError ? 'Could not reach the BexSign server at http://localhost:5000.' : err.message, { title: 'Download failed', type: 'error' });
+    }
   };
 
   const handlePrint = () => {
@@ -159,7 +176,8 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack }) {
       signerName: savedSigner,
       signerEmail,
       signatureImage: savedSig,
-      placedFields: activeDocFields
+      placedFields: activeDocFields,
+      defaultSignature: !requestHasFields
     });
   };
 
@@ -346,6 +364,7 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack }) {
               signatureImage={doc?.signature_image || localStorage.getItem(`bexsign_doc_${doc?.id}_signature`) || ''}
               isCompleted={true}
               showTooltips={false}
+              defaultSignature={!requestHasFields}
               placedFields={activeDocFields}
             />
           </div>

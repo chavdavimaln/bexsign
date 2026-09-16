@@ -1,24 +1,41 @@
 import React from 'react';
-import { Copy, PenTool, CheckCircle2, Calendar, Lock } from 'lucide-react';
+import { Copy, PenTool, CheckCircle2, Calendar, Check } from 'lucide-react';
 import SignatureStamp from './SignatureStamp';
 import { generateBexsignId } from '../utils/documentId';
 import { getDefaultDocContent } from '../utils/documentDefaults';
+import { getStampImage, DEFAULT_COMPANY_NAME } from '../utils/documentFields';
 
 /**
  * Canonical BexDocumentSheet Component
- * 
+ *
  * Renders the exact document sheet used across:
  * 1. Document View (In Progress, Completed, Draft)
  * 2. Print (via @media print and standalone print)
  * 3. Download PDF (1:1 visual reference)
- * 
+ *
  * Matches Zoho Sign standard and reference attachments:
  * - BexSign Document ID header
  * - Document Name & Body Text ("check the document for signature" or custom message)
  * - 3-Tier Signature Stamp (- Signed by: [Name], stroke, BEX-SIGN-VC-EMP001-2026, hash)
- * - Official Bex Corporate Stamp (Bex logo, Corporate Official Stamp, Verified)
- * - Recipient Email & Per-document Custom Placed Fields
+ * - Per-document placed fields without labels (the field name is only a hint inside the field)
+ * - A stamp only when a Stamp field was placed; a signer never sees other recipients' fields
  */
+
+// Hint shown inside a field while signing (never rendered as a label above the field)
+const fieldHint = (field) => field.label || field.type || 'Field';
+
+function RequiredMark({ field, className = '' }) {
+  if (!field.required) return null;
+  return (
+    <span
+      aria-hidden="true"
+      className={`text-red-500 font-black leading-none select-none pointer-events-none print:hidden ${className}`}
+    >
+      *
+    </span>
+  );
+}
+
 export default function BexDocumentSheet({
   docId = 1,
   bexsignDocId = '',
@@ -32,6 +49,10 @@ export default function BexDocumentSheet({
   onOpenSignatureModal = null,
   isCompleted = false,
   showTooltips = true,
+  // False while other fields of the signer are still empty (the "Click Finish" hint waits for them)
+  allFieldsComplete = true,
+  // Show a signature block when the document has no placed fields at all
+  defaultSignature = true,
   copiedId = false,
   onCopyId = null,
   placedFields = null,
@@ -39,6 +60,73 @@ export default function BexDocumentSheet({
   className = ''
 }) {
   const displayDocId = bexsignDocId || (typeof docId === 'string' && docId.startsWith('BEX-') ? docId : generateBexsignId(docId));
+
+  // While signing, only the viewer's own fields are shown (Zoho Sign privacy); completed documents show every field
+  const visibleFields = (placedFields || []).filter((field) => isCompleted || !(
+    field.isAssignedToOther ||
+    (field.assigneeEmail && signerEmail && field.assigneeEmail.toLowerCase() !== signerEmail.toLowerCase())
+  ));
+
+  const inputClass = (paddingLeft = 'pl-3') => `w-full py-2.5 ${paddingLeft} pr-7 text-xs border border-dashed border-emerald-500 rounded-lg bg-emerald-50/40 hover:bg-emerald-50 focus:bg-white focus:border-solid focus:border-[#007355] focus:ring-2 focus:ring-emerald-100 outline-none font-semibold text-slate-800 placeholder:text-slate-400 placeholder:font-medium transition shadow-2xs`;
+  const valueClass = 'text-xs font-semibold text-slate-800 px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg min-h-[38px] break-words';
+
+  const renderSignature = (field, { key, id, fieldSignature = '', fieldSigner = signerName, hint = 'Signature', required = true }) => (
+    <div key={key} id={id} className="relative sm:col-span-2" title={hint}>
+      {signaturePlaced || isCompleted || signatureImage || fieldSignature ? (
+        <div className="relative inline-block">
+          <div
+            onClick={!isCompleted && onOpenSignatureModal ? onOpenSignatureModal : undefined}
+            className={`p-3 bg-white border border-slate-200 rounded-lg transition shadow-2xs w-fit ${
+              !isCompleted && onOpenSignatureModal ? 'cursor-pointer hover:border-[#1c4b82]' : ''
+            }`}
+          >
+            <SignatureStamp
+              signerName={fieldSigner}
+              signatureImage={fieldSignature || signatureImage}
+              signatureStyle={signatureStyle}
+              docId={displayDocId}
+            />
+            {!isCompleted && onOpenSignatureModal && (
+              <p className="text-[10px] text-emerald-700 font-bold mt-1.5 print:hidden">
+                ✓ Signature Placed (Click to modify)
+              </p>
+            )}
+            {isCompleted && (
+              <div className="flex items-center gap-1 text-[10px] text-emerald-700 font-bold mt-1.5 print:hidden">
+                <CheckCircle2 size={12} />
+                <span>Digitally Certified & Verified</span>
+              </div>
+            )}
+          </div>
+          {showTooltips && !isCompleted && allFieldsComplete && (
+            <div className="absolute left-full top-2 ml-4 p-2.5 bg-slate-900 text-white rounded-lg shadow-xl text-xs font-semibold whitespace-nowrap hidden sm:flex items-center gap-2 z-20 print:hidden pointer-events-none">
+              <span>You've successfully filled all fields. Click Finish to complete.</span>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="relative inline-block w-64 max-w-full">
+          <button
+            type="button"
+            onClick={onOpenSignatureModal || undefined}
+            aria-label={`${hint}${required ? ' (required)' : ''}`}
+            className="w-full h-16 px-4 border-2 border-dashed border-emerald-600 bg-emerald-50 text-emerald-800 font-bold text-sm rounded-lg flex items-center justify-between cursor-pointer hover:bg-emerald-100 hover:border-solid transition shadow-2xs"
+          >
+            <span className="flex items-center gap-2">
+              <PenTool size={16} />
+              <span>{hint}</span>
+            </span>
+            {required && <span className="text-red-500 font-black">*</span>}
+          </button>
+          {showTooltips && (
+            <div className="absolute left-full top-4 ml-4 p-2.5 bg-slate-900 text-white rounded-lg shadow-xl text-xs font-semibold whitespace-nowrap hidden sm:flex items-center gap-3 z-20 print:hidden pointer-events-none">
+              <span>Enter your signature.</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div
@@ -101,164 +189,65 @@ export default function BexDocumentSheet({
         </div>
 
         {/* ========================================================
-            FIELDS SECTION (Render placed fields or standard fields)
+            FIELDS SECTION (placed fields only, without labels)
         ======================================================== */}
-        <div className="pt-8 border-t border-slate-200 space-y-6 print:border-slate-300">
-          {placedFields && placedFields.length > 0 ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-              {placedFields.map((field) => {
-                const isOtherSignerField = !isCompleted && Boolean(
-                  field.isAssignedToOther ||
-                  (field.assigneeEmail && signerEmail && field.assigneeEmail.toLowerCase() !== signerEmail.toLowerCase())
-                );
-
-                if (isOtherSignerField) {
-                  if (field.type === 'Signature' || field.type === 'Initial') {
-                    return (
-                      <div key={field.id} id={`doc-field-${field.id}`} className="relative sm:col-span-2 p-4 bg-slate-50 border border-dashed border-slate-300 rounded-xl max-w-sm shadow-2xs">
-                        <div className="flex items-center justify-between mb-1.5">
-                          <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                            {field.label || field.type || 'Signature'}
-                          </span>
-                          <span className="text-[9px] font-bold bg-slate-200 text-slate-600 px-2 py-0.5 rounded flex items-center gap-1">
-                            <Lock size={10} /> Other Signer
-                          </span>
-                        </div>
-                        <p className="text-xs font-semibold text-slate-600">
-                          Assigned to: <strong className="text-slate-800">{field.assignee || 'Another Signer'}</strong>
-                        </p>
-                        <p className="text-[10px] text-slate-400 mt-1">
-                          • Confidential • Masked until all signers complete
-                        </p>
-                      </div>
-                    );
-                  }
-                  return (
-                    <div key={field.id} id={`doc-field-${field.id}`} className="w-full sm:w-64 p-3.5 bg-slate-50 border border-dashed border-slate-300 rounded-xl shadow-2xs">
-                      <div className="flex items-center justify-between mb-1.5">
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                          {field.label || field.type}
-                        </span>
-                        <span className="text-[9px] font-bold bg-slate-200 text-slate-600 px-2 py-0.5 rounded flex items-center gap-1">
-                          <Lock size={10} /> Other Signer
-                        </span>
-                      </div>
-                      <p className="text-xs font-semibold text-slate-600">
-                        Assigned to: <strong className="text-slate-800">{field.assignee || 'Another Signer'}</strong>
-                      </p>
-                      <p className="text-[10px] text-slate-400 mt-1">
-                        • Confidential • Masked during signing
-                      </p>
-                    </div>
-                  );
-                }
+        {visibleFields.length > 0 ? (
+          <div className="pt-8 border-t border-slate-200 print:border-slate-300">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5 items-start">
+              {visibleFields.map((field) => {
+                const hint = fieldHint(field);
+                const key = field.id;
+                const id = `doc-field-${field.id}`;
 
                 if (field.type === 'Signature' || field.type === 'Initial') {
                   // Placeholder values from the editor ("Signature"/"Initial") are not signatures
                   const fieldSignature = field.signatureImage
                     || (field.value && field.value !== field.type && field.value !== field.label ? field.value : '');
-                  return (
-                    <div key={field.id} id={`doc-field-${field.id}`} className="relative sm:col-span-2">
-                      <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2 print:text-slate-600">
-                        {field.label || field.type || 'Signature'}
-                        {field.required && <span className="text-red-500 ml-1 font-bold">*</span>}
-                      </label>
-                      {signaturePlaced || isCompleted || signatureImage || fieldSignature ? (
-                        <div className="relative inline-block">
-                          <div
-                            onClick={!isCompleted && onOpenSignatureModal ? onOpenSignatureModal : undefined}
-                            className={`p-3 bg-white border border-slate-200 rounded-lg transition shadow-2xs w-fit ${
-                              !isCompleted && onOpenSignatureModal ? 'cursor-pointer hover:border-[#1c4b82]' : ''
-                            }`}
-                          >
-                            <SignatureStamp
-                              signerName={field.signerName || signerName}
-                              signatureImage={fieldSignature || signatureImage}
-                              signatureStyle={signatureStyle}
-                              docId={displayDocId}
-                            />
-                            {!isCompleted && onOpenSignatureModal && (
-                              <p className="text-[10px] text-emerald-700 font-bold mt-1.5 print:hidden">
-                                ✓ Signature Placed (Click to modify)
-                              </p>
-                            )}
-                            {isCompleted && (
-                              <div className="flex items-center gap-1 text-[10px] text-emerald-700 font-bold mt-1.5 print:hidden">
-                                <CheckCircle2 size={12} />
-                                <span>Digitally Certified & Verified</span>
-                              </div>
-                            )}
-                          </div>
-                          {showTooltips && !isCompleted && (
-                            <div className="absolute left-full top-2 ml-4 p-2.5 bg-slate-900 text-white rounded-lg shadow-xl text-xs font-semibold whitespace-nowrap hidden sm:flex items-center gap-2 z-20 print:hidden pointer-events-none">
-                              <span>You've successfully filled all fields. Click Finish to complete.</span>
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <div className="relative inline-block w-64">
-                          <button
-                            type="button"
-                            onClick={onOpenSignatureModal || undefined}
-                            className="w-full p-4 border-2 border-emerald-600 bg-emerald-50 text-emerald-800 font-bold text-sm rounded-lg text-left flex items-center justify-between cursor-pointer hover:bg-emerald-100 transition shadow-2xs"
-                          >
-                            <span className="flex items-center gap-1">
-                              <span>{field.label || 'Signature'}</span>
-                              <span className="text-red-500 font-bold">*</span>
-                            </span>
-                            <PenTool size={16} />
-                          </button>
-                          {showTooltips && (
-                            <div className="absolute left-full top-1 ml-4 p-2.5 bg-slate-900 text-white rounded-lg shadow-xl text-xs font-semibold whitespace-nowrap hidden sm:flex items-center gap-3 z-20 print:hidden pointer-events-none">
-                              <span>Enter your signature.</span>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
+                  return renderSignature(field, {
+                    key,
+                    id,
+                    fieldSignature,
+                    fieldSigner: field.signerName || signerName,
+                    hint,
+                    required: field.required !== false
+                  });
                 }
 
                 if (field.type === 'Stamp') {
+                  // A stamp is displayed only when one was placed (with its image) while creating the document
+                  const stampSrc = getStampImage(field);
+                  if (!stampSrc) return null;
                   return (
-                    <div key={field.id} id={`doc-field-${field.id}`} className="w-full sm:w-64">
-                      <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2 print:text-slate-600">
-                        {field.label || 'Stamp'}
-                      </label>
-                      <div className="p-3 border-2 border-dashed border-slate-300 rounded-lg bg-slate-50 flex items-center justify-between text-xs text-slate-700 font-bold shadow-2xs">
-                        <div className="flex items-center gap-2.5">
-                          <div className="w-8 h-8 rounded bg-[#E71414] text-white flex items-center justify-center font-black text-xs shrink-0 shadow-2xs">
-                            Bex
-                          </div>
-                          <span>Corporate Official Stamp</span>
-                        </div>
-                        <span className="text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
-                          Verified
-                        </span>
-                      </div>
+                    <div key={key} id={id} className="w-full sm:w-64" title="Stamp">
+                      <img
+                        src={stampSrc}
+                        alt="Stamp"
+                        className="max-h-28 max-w-[160px] object-contain"
+                        style={{ transform: field.stampRotation ? `rotate(${field.stampRotation}deg)` : undefined }}
+                      />
                     </div>
                   );
                 }
 
                 if (field.type === 'Email') {
+                  const emailValue = field.value !== undefined && field.value !== 'Email' ? field.value : signerEmail;
                   return (
-                    <div key={field.id} id={`doc-field-${field.id}`} className="w-full sm:w-64">
-                      <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 print:text-slate-600">
-                        {field.label || 'Email'}
-                        {field.required && <span className="text-red-500 ml-1 font-bold">*</span>}
-                      </label>
+                    <div key={key} id={id} className="w-full sm:w-64 relative" title={hint}>
                       {!isCompleted ? (
-                        <input
-                          type="email"
-                          value={field.value !== undefined && field.value !== 'Email' ? field.value : signerEmail}
-                          onChange={(e) => onUpdateField && onUpdateField(field.id, e.target.value)}
-                          className="w-full p-2.5 text-xs border border-slate-300 rounded-lg bg-white focus:border-[#007355] focus:ring-1 focus:ring-[#007355] outline-none font-semibold text-slate-800 shadow-2xs"
-                          placeholder="Enter email address"
-                        />
+                        <>
+                          <input
+                            type="email"
+                            value={emailValue}
+                            onChange={(e) => onUpdateField && onUpdateField(field.id, e.target.value)}
+                            className={inputClass()}
+                            placeholder={hint}
+                            aria-label={hint}
+                            aria-required={Boolean(field.required)}
+                          />
+                          <RequiredMark field={field} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-sm" />
+                        </>
                       ) : (
-                        <div className="text-xs font-semibold text-slate-800 p-2 bg-slate-50 border border-slate-200 rounded-lg">
-                          {field.value || signerEmail}
-                        </div>
+                        <div className={valueClass}>{field.value && field.value !== 'Email' ? field.value : signerEmail}</div>
                       )}
                     </div>
                   );
@@ -267,26 +256,25 @@ export default function BexDocumentSheet({
                 if (field.type === 'Sign date') {
                   const dateVal = field.value || new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
                   return (
-                    <div key={field.id} id={`doc-field-${field.id}`} className="w-full sm:w-64">
-                      <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 print:text-slate-600">
-                        {field.label || 'Sign date'}
-                        {field.required && <span className="text-red-500 ml-1 font-bold">*</span>}
-                      </label>
+                    <div key={key} id={id} className="w-full sm:w-64 relative" title={hint}>
                       {!isCompleted ? (
-                        <div className="relative">
+                        <>
                           <input
                             type="text"
                             value={field.value !== undefined ? field.value : dateVal}
                             onChange={(e) => onUpdateField && onUpdateField(field.id, e.target.value)}
-                            className="w-full pl-8 pr-3 py-2.5 text-xs font-semibold text-slate-800 bg-white border border-slate-300 rounded-lg focus:border-[#007355] focus:ring-1 focus:ring-[#007355] outline-none shadow-2xs"
-                            placeholder="Enter or confirm date"
+                            className={inputClass('pl-8')}
+                            placeholder={hint}
+                            aria-label={hint}
+                            aria-required={Boolean(field.required)}
                           />
-                          <Calendar size={14} className="absolute left-2.5 top-3 text-slate-400 pointer-events-none" />
-                        </div>
+                          <Calendar size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-emerald-700/70 pointer-events-none" />
+                          <RequiredMark field={field} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-sm" />
+                        </>
                       ) : (
-                        <div className="text-xs font-semibold text-slate-800 p-2.5 bg-slate-50 border border-slate-200 rounded-lg flex items-center gap-2">
-                          <Calendar size={14} className="text-slate-400" />
-                          <span>{field.value || dateVal}</span>
+                        <div className={`${valueClass} flex items-center gap-2`}>
+                          <Calendar size={14} className="text-slate-400 shrink-0" />
+                          <span>{dateVal}</span>
                         </div>
                       )}
                     </div>
@@ -297,70 +285,74 @@ export default function BexDocumentSheet({
                   const count = field.charCount || 10;
                   const charArray = Array.isArray(field.gridValue) && field.gridValue.length > 0
                     ? field.gridValue
-                    : (field.value !== undefined && field.value !== null ? String(field.value).split('') : ['s','-','1']);
+                    : (field.value !== undefined && field.value !== null && field.value !== field.type ? String(field.value).split('') : []);
 
                   return (
-                    <div key={field.id} id={`doc-field-${field.id}`} className="w-full sm:col-span-2">
-                      <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 print:text-slate-600">
-                        {field.label || 'Split text'}
-                        {field.required && <span className="text-red-500 ml-1 font-bold">*</span>}
-                      </label>
+                    <div key={key} id={id} className="w-full sm:col-span-2" title={hint}>
                       {!isCompleted ? (
-                        <div className="flex border border-sky-400 bg-white text-xs font-mono font-bold text-sky-900 w-fit rounded p-0.5 shadow-2xs">
-                          {Array.from({ length: count }).map((_, cIdx) => (
-                            <input
-                              key={cIdx}
-                              id={`split-cell-${field.id}-${cIdx}`}
-                              type="text"
-                              maxLength={1}
-                              value={charArray[cIdx] !== undefined ? charArray[cIdx] : ''}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                const newGrid = Array.from({ length: count }, (_, i) => charArray[i] !== undefined ? charArray[i] : '');
-                                newGrid[cIdx] = val;
-                                onUpdateField && onUpdateField(field.id, newGrid.join(''), newGrid);
+                        <div className="flex items-center gap-1.5">
+                          <div
+                            role="group"
+                            aria-label={hint}
+                            className="flex border border-dashed border-sky-400 bg-white text-xs font-mono font-bold text-sky-900 w-fit max-w-full overflow-x-auto rounded p-0.5 shadow-2xs"
+                          >
+                            {Array.from({ length: count }).map((_, cIdx) => (
+                              <input
+                                key={cIdx}
+                                id={`split-cell-${field.id}-${cIdx}`}
+                                type="text"
+                                maxLength={1}
+                                aria-label={`${hint} character ${cIdx + 1}`}
+                                value={charArray[cIdx] !== undefined ? charArray[cIdx] : ''}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  const newGrid = Array.from({ length: count }, (_, i) => charArray[i] !== undefined ? charArray[i] : '');
+                                  newGrid[cIdx] = val;
+                                  onUpdateField && onUpdateField(field.id, newGrid.join(''), newGrid);
 
-                                if (val && cIdx < count - 1) {
-                                  const nextInput = document.getElementById(`split-cell-${field.id}-${cIdx + 1}`);
-                                  if (nextInput) {
-                                    nextInput.focus();
-                                    nextInput.select();
+                                  if (val && cIdx < count - 1) {
+                                    const nextInput = document.getElementById(`split-cell-${field.id}-${cIdx + 1}`);
+                                    if (nextInput) {
+                                      nextInput.focus();
+                                      nextInput.select();
+                                    }
                                   }
-                                }
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Backspace' && (!charArray[cIdx] || charArray[cIdx] === '') && cIdx > 0) {
-                                  const prevInput = document.getElementById(`split-cell-${field.id}-${cIdx - 1}`);
-                                  if (prevInput) {
-                                    prevInput.focus();
-                                    prevInput.select();
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Backspace' && (!charArray[cIdx] || charArray[cIdx] === '') && cIdx > 0) {
+                                    const prevInput = document.getElementById(`split-cell-${field.id}-${cIdx - 1}`);
+                                    if (prevInput) {
+                                      prevInput.focus();
+                                      prevInput.select();
+                                    }
+                                  } else if (e.key === 'ArrowRight' && cIdx < count - 1) {
+                                    const nextInput = document.getElementById(`split-cell-${field.id}-${cIdx + 1}`);
+                                    if (nextInput) nextInput.focus();
+                                  } else if (e.key === 'ArrowLeft' && cIdx > 0) {
+                                    const prevInput = document.getElementById(`split-cell-${field.id}-${cIdx - 1}`);
+                                    if (prevInput) prevInput.focus();
                                   }
-                                } else if (e.key === 'ArrowRight' && cIdx < count - 1) {
-                                  const nextInput = document.getElementById(`split-cell-${field.id}-${cIdx + 1}`);
-                                  if (nextInput) nextInput.focus();
-                                } else if (e.key === 'ArrowLeft' && cIdx > 0) {
-                                  const prevInput = document.getElementById(`split-cell-${field.id}-${cIdx - 1}`);
-                                  if (prevInput) prevInput.focus();
-                                }
-                              }}
-                              onPaste={(e) => {
-                                e.preventDefault();
-                                const pasted = e.clipboardData.getData('text') || '';
-                                if (!pasted) return;
-                                const newGrid = Array.from({ length: count }, (_, i) => charArray[i] !== undefined ? charArray[i] : '');
-                                for (let p = 0; p < pasted.length && (cIdx + p) < count; p++) {
-                                  newGrid[cIdx + p] = pasted[p];
-                                }
-                                onUpdateField && onUpdateField(field.id, newGrid.join(''), newGrid);
-                              }}
-                              style={{ width: `${field.width || 22}px`, height: `${field.height || 26}px` }}
-                              className="border-r last:border-r-0 border-sky-300 text-center bg-sky-50/40 text-[11px] font-bold text-sky-900 focus:bg-sky-100 focus:outline-none transition selection:bg-sky-200"
-                            />
-                          ))}
+                                }}
+                                onPaste={(e) => {
+                                  e.preventDefault();
+                                  const pasted = e.clipboardData.getData('text') || '';
+                                  if (!pasted) return;
+                                  const newGrid = Array.from({ length: count }, (_, i) => charArray[i] !== undefined ? charArray[i] : '');
+                                  for (let p = 0; p < pasted.length && (cIdx + p) < count; p++) {
+                                    newGrid[cIdx + p] = pasted[p];
+                                  }
+                                  onUpdateField && onUpdateField(field.id, newGrid.join(''), newGrid);
+                                }}
+                                style={{ width: `${field.width || 22}px`, height: `${field.height || 26}px` }}
+                                className="shrink-0 border-r last:border-r-0 border-sky-300 text-center bg-sky-50/40 text-[11px] font-bold text-sky-900 focus:bg-sky-100 focus:outline-none transition selection:bg-sky-200"
+                              />
+                            ))}
+                          </div>
+                          <RequiredMark field={field} className="text-sm" />
                         </div>
                       ) : (
-                        <div className="font-mono text-xs font-bold text-slate-800 p-2 bg-slate-50 border border-slate-200 rounded w-fit">
-                          {field.value || charArray.join('')}
+                        <div className="font-mono text-xs font-bold text-slate-800 px-3 py-2 bg-slate-50 border border-slate-200 rounded w-fit tracking-[0.2em]">
+                          {Array.isArray(field.gridValue) && field.gridValue.some(Boolean) ? field.gridValue.join('') : (field.value && field.value !== field.type ? field.value : '-')}
                         </div>
                       )}
                     </div>
@@ -368,133 +360,72 @@ export default function BexDocumentSheet({
                 }
 
                 if (field.type === 'Checkbox') {
+                  const checked = field.value === true || field.value === 'true';
                   return (
-                    <div key={field.id} id={`doc-field-${field.id}`} className="flex items-center gap-2 pt-4">
-                      <input
-                        type="checkbox"
-                        checked={field.value === true || field.value === 'true'}
-                        onChange={(e) => onUpdateField && onUpdateField(field.id, e.target.checked)}
-                        disabled={isCompleted}
-                        className="w-4 h-4 rounded text-[#007355] focus:ring-[#007355] cursor-pointer"
-                      />
-                      <label className="text-xs font-semibold text-slate-700">
-                        {field.label || 'I agree to the terms'}
-                        {field.required && <span className="text-red-500 ml-1 font-bold">*</span>}
-                      </label>
+                    <div key={key} id={id} className="flex items-center gap-1.5 min-h-[38px]" title={hint}>
+                      {!isCompleted ? (
+                        <>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => onUpdateField && onUpdateField(field.id, e.target.checked)}
+                            aria-label={hint}
+                            aria-required={Boolean(field.required)}
+                            className="w-5 h-5 rounded border-emerald-500 accent-[#007355] cursor-pointer"
+                          />
+                          <RequiredMark field={field} className="text-sm" />
+                        </>
+                      ) : (
+                        <span
+                          aria-label={`${hint}: ${checked ? 'checked' : 'not checked'}`}
+                          className={`w-5 h-5 rounded border-2 flex items-center justify-center ${checked ? 'border-[#007355] bg-emerald-50 text-[#007355]' : 'border-slate-300 bg-white'}`}
+                        >
+                          {checked && <Check size={14} strokeWidth={3} />}
+                        </span>
+                      )}
                     </div>
                   );
                 }
 
                 // Default Text / Full name / Job title / Company
                 return (
-                  <div key={field.id} id={`doc-field-${field.id}`} className="w-full sm:w-64">
-                    <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 print:text-slate-600">
-                      {field.label || field.type}
-                      {field.required && <span className="text-red-500 ml-1 font-bold">*</span>}
-                    </label>
+                  <div key={key} id={id} className="w-full sm:w-64 relative" title={hint}>
                     {!isCompleted ? (
-                      <input
-                        type="text"
-                        value={field.value !== undefined && field.value !== field.type ? field.value : (field.type === 'Full name' ? signerName : (field.type === 'Company' ? 'Bexcode Services' : ''))}
-                        onChange={(e) => onUpdateField && onUpdateField(field.id, e.target.value)}
-                        className="w-full p-2.5 text-xs border border-slate-300 rounded-lg bg-white focus:border-[#007355] focus:ring-1 focus:ring-[#007355] outline-none font-semibold text-slate-800 shadow-2xs"
-                        placeholder={`Enter ${field.label || field.type.toLowerCase()}`}
-                      />
+                      <>
+                        <input
+                          type="text"
+                          value={field.value !== undefined && field.value !== field.type ? field.value : (field.type === 'Full name' ? signerName : (field.type === 'Company' ? DEFAULT_COMPANY_NAME : ''))}
+                          onChange={(e) => onUpdateField && onUpdateField(field.id, e.target.value)}
+                          className={inputClass()}
+                          placeholder={hint}
+                          aria-label={hint}
+                          aria-required={Boolean(field.required)}
+                        />
+                        <RequiredMark field={field} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-sm" />
+                      </>
                     ) : (
-                      <div className="text-xs font-semibold text-slate-800 p-2 bg-slate-50 border border-slate-200 rounded-lg">
-                        {field.value || (field.type === 'Company' ? 'Bexcode Services' : (field.type === 'Full name' ? signerName : '-'))}
+                      <div className={valueClass}>
+                        {field.value && field.value !== field.type
+                          ? field.value
+                          : (field.type === 'Company' ? DEFAULT_COMPANY_NAME : (field.type === 'Full name' ? (field.signerName || signerName) : '-'))}
                       </div>
                     )}
                   </div>
                 );
               })}
             </div>
-          ) : (
-            <>
-              {/* Default Standard 3 Fields */}
-              <div id="signature-field-container" className="relative">
-                <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2 print:text-slate-600">
-                  Signature
-                </label>
-
-                {signaturePlaced || isCompleted || signatureImage ? (
-                  <div className="relative inline-block">
-                    <div
-                      onClick={!isCompleted && onOpenSignatureModal ? onOpenSignatureModal : undefined}
-                      className={`p-3 bg-white border border-slate-200 rounded-lg transition shadow-2xs w-fit ${
-                        !isCompleted && onOpenSignatureModal ? 'cursor-pointer hover:border-[#1c4b82]' : ''
-                      }`}
-                    >
-                      <SignatureStamp
-                        signerName={signerName}
-                        signatureImage={signatureImage}
-                        signatureStyle={signatureStyle}
-                        docId={displayDocId}
-                      />
-                      {!isCompleted && onOpenSignatureModal && (
-                        <p className="text-[10px] text-emerald-700 font-bold mt-1.5 print:hidden">
-                          ✓ Signature Placed (Click to modify)
-                        </p>
-                      )}
-                      {isCompleted && (
-                        <div className="flex items-center gap-1 text-[10px] text-emerald-700 font-bold mt-1.5 print:hidden">
-                          <CheckCircle2 size={12} />
-                          <span>Digitally Certified & Verified</span>
-                        </div>
-                      )}
-                    </div>
-
-                    {showTooltips && !isCompleted && (
-                      <div className="absolute left-full top-2 ml-4 p-2.5 bg-slate-900 text-white rounded-lg shadow-xl text-xs font-semibold whitespace-nowrap hidden sm:flex items-center gap-2 z-20 print:hidden pointer-events-none">
-                        <span>You've successfully filled all fields. Click Finish to complete.</span>
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="relative inline-block w-64">
-                    <button
-                      type="button"
-                      onClick={onOpenSignatureModal || undefined}
-                      className="w-full p-4 border-2 border-emerald-600 bg-emerald-50 text-emerald-800 font-bold text-sm rounded-lg text-left flex items-center justify-between cursor-pointer hover:bg-emerald-100 transition shadow-2xs"
-                    >
-                      <span>Signature</span>
-                      <PenTool size={16} />
-                    </button>
-
-                    {showTooltips && (
-                      <div className="absolute left-full top-1 ml-4 p-2.5 bg-slate-900 text-white rounded-lg shadow-xl text-xs font-semibold whitespace-nowrap hidden sm:flex items-center gap-3 z-20 print:hidden pointer-events-none">
-                        <span>Enter your signature.</span>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* STAMP FIELD */}
-              <div className="w-64">
-                <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2 print:text-slate-600">
-                  Stamp
-                </label>
-                <div className="p-3 border-2 border-dashed border-slate-300 rounded-lg bg-slate-50 flex items-center justify-between text-xs text-slate-700 font-bold shadow-2xs">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded bg-[#E71414] text-white flex items-center justify-center font-black text-xs shrink-0 shadow-2xs">
-                      Bex
-                    </div>
-                    <span>Corporate Official Stamp</span>
-                  </div>
-                  <span className="text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
-                    Verified
-                  </span>
-                </div>
-              </div>
-
-              {/* RECIPIENT EMAIL */}
-              <div className="text-xs font-semibold text-slate-600 pt-2">
-                {signerEmail || "vimal@bexcodeservices.com"}
-              </div>
-            </>
-          )}
-        </div>
+          </div>
+        ) : defaultSignature ? (
+          <div className="pt-8 border-t border-slate-200 space-y-4 print:border-slate-300">
+            {/* Documents without placed fields: one signature and the signer's email (no default stamp) */}
+            <div id="signature-field-container">
+              {renderSignature(null, { key: 'default-signature', id: undefined, hint: 'Signature' })}
+            </div>
+            <div className="text-xs font-semibold text-slate-600">
+              {signerEmail || "vimal@bexcodeservices.com"}
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );

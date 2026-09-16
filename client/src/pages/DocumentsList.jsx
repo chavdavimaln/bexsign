@@ -10,6 +10,9 @@ import FormDataModal from '../components/FormDataModal';
 import DocumentVersionsModal from '../components/DocumentVersionsModal';
 import BexDocumentSheet from '../components/BexDocumentSheet';
 import { getDefaultDocContent } from '../utils/documentDefaults';
+import { getDocumentOwner } from '../utils/currentUser';
+import EditCopyModal from '../components/EditCopyModal';
+import { downloadAllSignedDocuments } from '../utils/signedPdf';
 import {
   FileText,
   Plus,
@@ -114,6 +117,8 @@ export default function DocumentsList() {
 
   // Active Modals State
   const [activeModal, setActiveModal] = useState(null);
+  // Sent/completed request whose "Edit" asks to create an editable copy
+  const [editCopyDoc, setEditCopyDoc] = useState(null);
   const [recallReason, setRecallReason] = useState('');
   const [newExpiryDate, setNewExpiryDate] = useState('2026-09-11');
   const [reminderDays, setReminderDays] = useState(5);
@@ -195,12 +200,12 @@ export default function DocumentsList() {
   };
 
   const getFallbackDocuments = () => [
-    { id: 1, name: 'Document Sign 4', folder: '-', owner: 'Manu Yadav', recipient: 'vimal@bexcodeservices.com, aakash@bexcodeservices.com', signform: '-', templates: '-', status: 'In Progress', created: 'Aug 27, 2026 02:36' },
-    { id: 2, name: 'First sign.pdf', folder: '-', owner: 'Manu Yadav', recipient: 'manu.yadav@oladigital.health', signform: '-', templates: '-', status: 'Completed', created: 'Aug 27, 2026 01:59' },
-    { id: 3, name: 'Document Sign', folder: '-', owner: 'Manu Yadav', recipient: 'vimal@bexcodeservices.com, dhruv@bexcodeservices.com', signform: '-', templates: '-', status: 'Completed', created: 'Aug 27, 2026 00:52' },
-    { id: 4, name: 'test.pdf', folder: '-', owner: 'Manu Yadav', recipient: 'manu.yadav@oladigital.health', signform: '-', templates: '-', status: 'Draft', created: 'Aug 25, 2026 21:24' },
-    { id: 5, name: 'My new Document.pdf', folder: '-', owner: 'Manu Yadav', recipient: 'vimal@bexcodeservices.com', signform: '-', templates: '-', status: 'Draft', created: 'Aug 25, 2026 21:13' },
-    { id: 6, name: 'Document Sign', folder: '-', owner: 'Manu Yadav', recipient: 'vimal@bexcodeservices.com', signform: '-', templates: '-', status: 'In Progress', created: 'Aug 24, 2026 23:40' }
+    { id: 1, name: 'Document Sign 4', folder: '-', recipient: 'vimal@bexcodeservices.com, aakash@bexcodeservices.com', signform: '-', templates: '-', status: 'In Progress', created: 'Aug 27, 2026 02:36' },
+    { id: 2, name: 'First sign.pdf', folder: '-', recipient: 'manu.yadav@oladigital.health', signform: '-', templates: '-', status: 'Completed', created: 'Aug 27, 2026 01:59' },
+    { id: 3, name: 'Document Sign', folder: '-', recipient: 'vimal@bexcodeservices.com, dhruv@bexcodeservices.com', signform: '-', templates: '-', status: 'Completed', created: 'Aug 27, 2026 00:52' },
+    { id: 4, name: 'test.pdf', folder: '-', recipient: 'manu.yadav@oladigital.health', signform: '-', templates: '-', status: 'Draft', created: 'Aug 25, 2026 21:24' },
+    { id: 5, name: 'My new Document.pdf', folder: '-', recipient: 'vimal@bexcodeservices.com', signform: '-', templates: '-', status: 'Draft', created: 'Aug 25, 2026 21:13' },
+    { id: 6, name: 'Document Sign', folder: '-', recipient: 'vimal@bexcodeservices.com', signform: '-', templates: '-', status: 'In Progress', created: 'Aug 24, 2026 23:40' }
   ];
 
   const [activeMenuDoc, setActiveMenuDoc] = useState(null);
@@ -269,7 +274,18 @@ export default function DocumentsList() {
     setTimeout(() => setActionMessage(''), 3500);
   };
 
-  const handleDownloadDocument = (doc) => {
+  const handleDownloadDocument = async (doc) => {
+    // Completed requests download the locked signed PDFs issued by the server (they cannot be edited)
+    if (String(doc.status || '').toLowerCase() === 'completed') {
+      try {
+        handleActionToast('Preparing the signed documents...');
+        const names = await downloadAllSignedDocuments(doc.id);
+        handleActionToast(`Downloaded ${names.length === 1 ? `"${names[0]}"` : `${names.length} signed documents`} (locked PDF).`);
+      } catch (err) {
+        showPopupAlert(err instanceof TypeError ? 'Could not reach the BexSign server at http://localhost:5000.' : err.message, { title: 'Download failed', type: 'error' });
+      }
+      return;
+    }
     const docName = doc.document_name || doc.name || 'Document 1.pdf';
     // Retrieve saved signature image, signer name, and signature type from database or local storage
     const savedSig = doc.signature_image || localStorage.getItem(`bexsign_doc_${doc.id}_signature`) || '';
@@ -399,7 +415,7 @@ export default function DocumentsList() {
       `Request ID - 530279000000973128`,
       `Document ID - ${docId}`,
       `Document Name - ${doc.document_name || doc.name || 'Document.pdf'}`,
-      `Owner - ${doc.owner || 'Manu Yadav'}`,
+      `Owner - ${getDocumentOwner(doc).name}`,
       `Recipient - ${doc.recipient_email || doc.recipient || 'Signer'}`,
       `Status - ${doc.status || 'Draft'}`,
       `Created on - ${doc.created_at ? new Date(doc.created_at).toLocaleString() : doc.created || 'Aug 27, 2026 02:33'}`
@@ -409,14 +425,9 @@ export default function DocumentsList() {
     handleActionToast('Debug info copied to clipboard!');
   };
 
+  // "Edit" of a sent/completed request and "Edit as new" both create an editable copy after confirmation
   const handleEditAsNew = (doc) => {
-    navigate(`/documents/create`, {
-      state: {
-        documentName: `Copy of ${doc.document_name || doc.name || 'Document'}`,
-        recipient: doc.recipient_email || doc.recipient
-      }
-    });
-    handleActionToast(`Cloned "${doc.document_name || doc.name}" as new draft.`);
+    setEditCopyDoc(doc);
   };
 
   const handleExportFormData = (doc) => {
@@ -562,7 +573,7 @@ export default function DocumentsList() {
     const docName = (doc.document_name || doc.name || '').toLowerCase();
     const docFolder = (doc.folder || '-').toLowerCase();
     const docType = (doc.type || 'Document').toLowerCase();
-    const docOwner = (doc.owner || 'Manu Yadav').toLowerCase();
+    const docOwner = getDocumentOwner(doc).name.toLowerCase();
     const docRecipient = (doc.recipient_email || doc.recipient || '').toLowerCase();
     const docRecipientName = (doc.signer_name || '').toLowerCase();
     const docSignform = (doc.signform || '-').toLowerCase();
@@ -726,6 +737,15 @@ export default function DocumentsList() {
           </p>
         </div>
         <div className="flex items-center gap-3">
+          {!isTrashView && (
+            <Link
+              to="/verify"
+              className="bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 px-4 py-2 rounded-lg font-bold text-xs shadow-2xs flex items-center gap-2 transition cursor-pointer"
+              title="Check that a signed PDF is an unchanged original"
+            >
+              <ShieldCheck size={15} className="text-[#007355]" /> Verify document
+            </Link>
+          )}
           {!isTrashView && (
             <Link
               to="/documents/create"
@@ -1055,7 +1075,7 @@ export default function DocumentsList() {
               paginatedDocs.map((doc) => {
                 const docName = doc.document_name || doc.name || 'Untitled.pdf';
                 const docStatus = (doc.status || 'Draft').toUpperCase();
-                const docOwner = doc.owner || 'Manu Yadav';
+                const docOwner = getDocumentOwner(doc).name;
                 const docRecipient = doc.recipient_email || doc.recipient || 'manu.yadav@oladigital.health';
                 const docCreated = doc.created_at
                   ? new Date(doc.created_at).toLocaleDateString()
@@ -1261,7 +1281,7 @@ export default function DocumentsList() {
                     <>
                       <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><UserCheck size={15} /> Recipient status</button>
                       <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/sign/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Eye size={15} /> View document</button>
-                      <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/send`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Edit size={15} /> Edit</button>
+                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); setEditCopyDoc(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Edit size={15} /> Edit</button>
                       <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/send`); handleActionToast('Document in correction state.'); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><FileCheck size={15} /> Correct document</button>
                       <button onClick={() => triggerModal('extend', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Clock size={15} /> Extend</button>
                       <button onClick={() => triggerModal('reminder', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Bell size={15} /> Send reminder</button>
@@ -1287,7 +1307,7 @@ export default function DocumentsList() {
                     <>
                       <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><UserCheck size={15} /> Recipient status</button>
                       <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); setSelectedDoc(d); setActiveModal('viewCompleted'); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Eye size={15} /> View document</button>
-                      <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/send`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Edit size={15} /> Edit</button>
+                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); setEditCopyDoc(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Edit size={15} /> Edit</button>
                       <button onClick={() => triggerModal('certificate', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><FileCheck size={15} /> Completion certificate</button>
                       <button onClick={() => triggerModal('email', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Mail size={15} /> Email document</button>
                       <button onClick={() => triggerModal('saveCloud', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Cloud size={15} /> Save to cloud</button>
@@ -1557,7 +1577,7 @@ export default function DocumentsList() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-[11px]">
-                  <tr><td className="p-2.5 whitespace-nowrap font-mono align-middle">Aug 27, 2026 02:33</td><td className="p-2.5 break-words font-medium align-middle">{selectedDoc?.owner || 'Manu Yadav'}</td><td className="p-2.5 whitespace-nowrap align-middle"><span className="bg-blue-100 text-blue-800 px-2 py-0.5 rounded font-bold">DRAFTED</span></td><td className="p-2.5 break-words align-middle">Document created</td></tr>
+                  <tr><td className="p-2.5 whitespace-nowrap font-mono align-middle">Aug 27, 2026 02:33</td><td className="p-2.5 break-words font-medium align-middle">{getDocumentOwner(selectedDoc).name}</td><td className="p-2.5 whitespace-nowrap align-middle"><span className="bg-blue-100 text-blue-800 px-2 py-0.5 rounded font-bold">DRAFTED</span></td><td className="p-2.5 break-words align-middle">Document created</td></tr>
                   <tr><td className="p-2.5 whitespace-nowrap font-mono align-middle">Aug 27, 2026 02:36</td><td className="p-2.5 break-words font-medium align-middle">System Generated</td><td className="p-2.5 whitespace-nowrap align-middle"><span className="bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-bold">LINK EMAILED</span></td><td className="p-2.5 break-words align-middle">Document sent</td></tr>
                 </tbody>
               </table>
@@ -1593,6 +1613,18 @@ export default function DocumentsList() {
       )}
 
       {/* 11. Delete Confirmation Modal (Move to Trash) */}
+      {editCopyDoc && (
+        <EditCopyModal
+          doc={editCopyDoc}
+          onClose={() => setEditCopyDoc(null)}
+          onCopied={(newId, copyName) => {
+            setEditCopyDoc(null);
+            handleActionToast(`"${copyName}" was created as a draft. The original was not changed.`);
+            navigate(`/documents/${newId}/send`);
+          }}
+        />
+      )}
+
       {activeModal === 'delete' && selectedDoc && (
         <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
           <div className="bg-white text-slate-900 rounded-xl max-w-sm w-full p-6 shadow-2xl border border-slate-200 space-y-4 text-xs my-auto">

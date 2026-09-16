@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Trash2, Folder, X, FileText, MoreVertical, Edit } from 'lucide-react';
 import BexTableToolbar from '../components/BexTableToolbar';
+import { getLoggedInUser } from '../utils/currentUser';
 
 const INITIAL_TEMPLATE_COLUMNS = [
   { id: 'name', label: 'Template name', required: true, visible: true },
@@ -71,7 +72,7 @@ export default function Templates() {
     if (file) {
       formData.append('templateFile', file);
     }
-    formData.append('userId', 1);
+    formData.append('userId', getLoggedInUser()?.id || 1);
     formData.append('activeSignForms', 1);
 
     try {

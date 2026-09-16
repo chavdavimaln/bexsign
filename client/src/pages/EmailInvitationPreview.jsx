@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Mail, ArrowLeft, ExternalLink, CheckCircle2, ShieldCheck, Clock } from 'lucide-react';
+import { getDocumentOwner, getLoggedInUser } from '../utils/currentUser';
 
 /**
  * Email Invitation Preview (Page 7)
@@ -13,14 +14,14 @@ import { Mail, ArrowLeft, ExternalLink, CheckCircle2, ShieldCheck, Clock } from 
 export default function EmailInvitationPreview() {
   const navigate = useNavigate();
   const { id } = useParams();
-  const [docDetails, setDocDetails] = useState({
+  const [docDetails, setDocDetails] = useState(() => ({
     name: "This is vnc's doc",
-    sender: 'Manu Yadav',
-    senderEmail: 'manu.yadav@oladigital.health',
-    orgName: 'Dcode Health',
+    sender: getLoggedInUser()?.name || '',
+    senderEmail: getLoggedInUser()?.email || '',
+    orgName: getLoggedInUser()?.company || 'BexSign',
     expiresOn: 'Sep 16, 2026',
     message: '-'
-  });
+  }));
 
   useEffect(() => {
     // Fetch document details or read from localStorage
@@ -35,11 +36,13 @@ export default function EmailInvitationPreview() {
             day: 'numeric',
             year: 'numeric'
           });
+          // The sender is the request's owner (the user who created it)
+          const owner = getDocumentOwner(d);
           setDocDetails({
             name: d.document_name || "This is vnc's doc",
-            sender: d.owner || 'Manu Yadav',
-            senderEmail: 'manu.yadav@oladigital.health',
-            orgName: 'Dcode Health',
+            sender: d.sender?.name || owner.name,
+            senderEmail: d.sender?.email || owner.email,
+            orgName: d.sender?.company || owner.company || 'BexSign',
             expiresOn: expiry,
             message: d.custom_message || '-'
           });

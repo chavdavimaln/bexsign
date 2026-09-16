@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { X, Download, Printer, ShieldCheck, FileCheck, CheckCircle2 } from 'lucide-react';
 import { generateBexsignId } from '../utils/documentId';
 import { generateCompletionCertificatePdf } from '../utils/pdfGenerator';
+import { getDocumentOwner } from '../utils/currentUser';
+import { downloadCompletionCertificate } from '../utils/signedPdf';
 
 export default function CompletionCertificateModal({ doc, onClose }) {
   const [certData, setCertData] = useState(null);
@@ -11,9 +13,10 @@ export default function CompletionCertificateModal({ doc, onClose }) {
   const docId = doc?.bexsign_doc_id || generateBexsignId(doc?.id || 1);
   const signerName = doc?.signer_name || 'Vimal Chavda';
   const signerEmail = doc?.recipient_email || 'vimal@bexcodeservices.com';
-  const ownerName = doc?.owner || 'Manu Yadav';
-  const ownerEmail = 'manu.yadav@oladigital.health';
-  const organization = 'Dcode Health';
+  const owner = getDocumentOwner(doc);
+  const ownerName = owner.name;
+  const ownerEmail = owner.email;
+  const organization = owner.company || 'BexSign';
   const orgAddress = '5908 Breckenridge Pkwy, Tampa, Florida, United States 33610';
   const isPhysicallySigned = Boolean(doc?.file_path && doc?.file_path.includes('signed'));
   const savedSig = doc?.signature_image || localStorage.getItem(`bexsign_doc_${doc?.id}_signature`) || '';
@@ -50,7 +53,16 @@ export default function CompletionCertificateModal({ doc, onClose }) {
     loadData();
   }, [doc?.id]);
 
-  const handleDownloadPdf = () => {
+  const handleDownloadPdf = async () => {
+    // Completed requests: the locked certificate issued by the server (with document fingerprints)
+    if (String(doc?.status || '').toLowerCase() === 'completed' && doc?.id) {
+      try {
+        await downloadCompletionCertificate(doc.id);
+        return;
+      } catch (err) {
+        console.warn('Certificate download fallback:', err);
+      }
+    }
     generateCompletionCertificatePdf({
       documentName,
       docId,

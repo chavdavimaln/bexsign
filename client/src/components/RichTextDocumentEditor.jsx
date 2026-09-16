@@ -1,5 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { getLoggedInUser } from '../utils/currentUser';
 import {
   ArrowLeft,
   Sparkles,
@@ -210,7 +211,7 @@ export default function RichTextDocumentEditor({ onBack }) {
           documentName: fileName.endsWith('.pdf') ? fileName : `${fileName}.pdf`,
           htmlContent,
           status: 'Draft',
-          userId: 1
+          userId: getLoggedInUser()?.id || 1
         })
       });
       const data = await res.json();

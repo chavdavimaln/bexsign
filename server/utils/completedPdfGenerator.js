@@ -3,7 +3,29 @@
  * Builds, with pdfkit, the signed copy of every document in a request (each recipient's own
  * field values and signature image) and the Certificate of Completion with the audit trail.
  */
+const crypto = require('crypto');
 const PDFDocument = require('pdfkit');
+
+/**
+ * Signed documents and certificates are locked (AES-256): they open without a password and can be printed, but
+ * editing, annotating, filling forms, assembling pages and copying content are not permitted. The random owner
+ * password is never stored, so nobody (BexSign included) can unlock the permissions of an issued copy.
+ */
+function lockedPdfOptions() {
+  return {
+    pdfVersion: '1.7ext3',
+    ownerPassword: crypto.randomBytes(32).toString('hex'),
+    permissions: {
+      printing: 'highResolution',
+      modifying: false,
+      copying: false,
+      annotating: false,
+      fillingForms: false,
+      contentAccessibility: true,
+      documentAssembly: false
+    }
+  };
+}
 
 const COLORS = {
   brand: '#007355',
@@ -87,6 +109,7 @@ function ensureSpace(doc, height) {
 function renderPdf({ info, footer }, draw) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({
+      ...lockedPdfOptions(),
       size: 'A4',
       margins: { top: 56, bottom: 64, left: 56, right: 56 },
       bufferPages: true,
@@ -162,66 +185,137 @@ function fieldDisplayValue(field, recipient) {
     case 'Sign date':
     case 'Date':
       return isEmpty ? formatDate(recipient.signed_at) : String(raw);
-    case 'Stamp':
-      return isEmpty ? 'Company stamp applied' : String(raw);
     default:
       return isEmpty ? '-' : String(raw);
   }
 }
 
-function drawSignatureBox(doc, { label, image, fallbackText, caption, boxWidth = 210, boxHeight = 58 }) {
-  const left = doc.page.margins.left;
-  ensureSpace(doc, boxHeight + 40);
-  doc.font('Helvetica-Bold').fontSize(8).fillColor(COLORS.muted).text(String(label).toUpperCase(), left, doc.y);
-  const top = doc.y + 4;
-  doc.rect(left, top, boxWidth, boxHeight).strokeColor(COLORS.border).lineWidth(0.75).stroke();
-
-  let drawn = false;
-  if (image) {
-    try {
-      doc.image(image, left + 6, top + 4, { fit: [boxWidth - 12, boxHeight - 8], align: 'center', valign: 'center' });
-      drawn = true;
-    } catch (e) {
-      drawn = false;
-    }
-  }
-  if (!drawn) {
-    doc.font('Times-Italic').fontSize(20).fillColor('#0f172a').text(fallbackText || '', left + 8, top + boxHeight / 2 - 11, {
-      width: boxWidth - 16,
-      align: 'center',
-      lineBreak: false
-    });
-  }
-  doc.font('Helvetica').fontSize(7.5).fillColor(COLORS.muted).text(caption, left, top + boxHeight + 4, { width: contentWidth(doc) });
-  doc.x = left;
-  doc.moveDown(0.7);
-}
-
-function drawField(doc, field, recipient) {
-  const label = field.label || field.type || 'Field';
+/**
+ * Field block without any label (Zoho Sign style): only the signature, stamp, checkbox or value itself.
+ * Returns { full, height, draw(x, y, width) } or null when the field has nothing to render
+ * (e.g. a stamp field without an uploaded stamp image).
+ */
+function buildFieldBlock(doc, field, recipient, columnWidth) {
   const signerName = field.signerName || recipient.name || recipient.email;
 
   if (field.type === 'Signature' || field.type === 'Initial') {
     const isInitial = field.type === 'Initial';
-    drawSignatureBox(doc, {
-      label,
-      image: imageBufferFromDataUrl(field.signatureImage) || imageBufferFromDataUrl(field.value) || imageBufferFromDataUrl(recipient.signature_image),
-      fallbackText: isInitial ? initialsOf(signerName) : signerName,
-      caption: `Signed electronically by ${signerName} (${recipient.email}) on ${formatDateTime(field.signedAt || recipient.signed_at)}`,
-      boxWidth: isInitial ? 120 : 210
-    });
-    return;
+    const boxWidth = isInitial ? 120 : 210;
+    const boxHeight = 58;
+    const image = imageBufferFromDataUrl(field.signatureImage) || imageBufferFromDataUrl(field.value) || imageBufferFromDataUrl(recipient.signature_image);
+    const caption = `Signed electronically by ${signerName} (${recipient.email}) on ${formatDateTime(field.signedAt || recipient.signed_at)}`;
+    doc.font('Helvetica').fontSize(7.5);
+    const captionHeight = doc.heightOfString(caption, { width: contentWidth(doc) });
+    return {
+      full: true,
+      height: boxHeight + 4 + captionHeight,
+      draw: (x, y, width) => {
+        doc.rect(x, y, boxWidth, boxHeight).strokeColor(COLORS.border).lineWidth(0.75).stroke();
+        let drawn = false;
+        if (image) {
+          try {
+            doc.image(image, x + 6, y + 4, { fit: [boxWidth - 12, boxHeight - 8], align: 'center', valign: 'center' });
+            drawn = true;
+          } catch (e) {
+            drawn = false;
+          }
+        }
+        if (!drawn) {
+          doc.font('Times-Italic').fontSize(20).fillColor('#0f172a').text(isInitial ? initialsOf(signerName) : signerName, x + 8, y + boxHeight / 2 - 11, {
+            width: boxWidth - 16,
+            align: 'center',
+            lineBreak: false
+          });
+        }
+        doc.font('Helvetica').fontSize(7.5).fillColor(COLORS.muted).text(caption, x, y + boxHeight + 4, { width });
+      }
+    };
   }
 
   if (field.type === 'Stamp') {
-    const stampImage = imageBufferFromDataUrl(field.value) || imageBufferFromDataUrl(field.stampImage);
-    if (stampImage) {
-      drawSignatureBox(doc, { label, image: stampImage, caption: `Stamp applied by ${signerName}`, boxWidth: 130, boxHeight: 80 });
-      return;
-    }
+    // A stamp is rendered only when one was actually placed with an image; there is no default stamp
+    const stampImage = imageBufferFromDataUrl(field.stampImage) || imageBufferFromDataUrl(field.value);
+    if (!stampImage) return null;
+    return {
+      full: false,
+      height: 80,
+      draw: (x, y) => {
+        try {
+          doc.image(stampImage, x, y, { fit: [130, 80], valign: 'center' });
+        } catch (e) {}
+      }
+    };
   }
 
-  keyValueRow(doc, String(label).toUpperCase(), fieldDisplayValue(field, recipient), 150);
+  if (field.type === 'Checkbox') {
+    const checked = field.value === true || field.value === 'true' || field.checked === true;
+    return {
+      full: false,
+      height: 12,
+      draw: (x, y) => {
+        doc.rect(x, y, 11, 11).strokeColor(COLORS.muted).lineWidth(0.9).stroke();
+        if (checked) {
+          doc.moveTo(x + 2.5, y + 5.8).lineTo(x + 4.8, y + 8.4).lineTo(x + 9, y + 2.6).strokeColor(COLORS.brand).lineWidth(1.4).stroke();
+        }
+      }
+    };
+  }
+
+  const value = fieldDisplayValue(field, recipient);
+  const textWidth = columnWidth - 16;
+  doc.font('Helvetica').fontSize(10);
+  const textHeight = doc.heightOfString(value, { width: textWidth });
+  const boxHeight = Math.max(24, textHeight + 12);
+  return {
+    full: false,
+    height: boxHeight,
+    draw: (x, y, width) => {
+      doc.rect(x, y, width, boxHeight).strokeColor(COLORS.border).lineWidth(0.75).stroke();
+      doc.font('Helvetica').fontSize(10).fillColor(COLORS.text).text(value, x + 8, y + (boxHeight - textHeight) / 2, { width: width - 16 });
+    }
+  };
+}
+
+/** Lays out field blocks: signatures take a full row, other fields flow in two columns. */
+function drawFieldsGrid(doc, entries) {
+  const left = doc.page.margins.left;
+  const width = contentWidth(doc);
+  const gap = 18;
+  const columnWidth = (width - gap) / 2;
+  const pageBottom = () => doc.page.height - doc.page.margins.bottom;
+  let column = 0;
+  let rowTop = doc.y;
+  let rowHeight = 0;
+
+  const closeRow = () => {
+    if (column === 0) return;
+    doc.y = rowTop + rowHeight + 12;
+    column = 0;
+    rowHeight = 0;
+  };
+
+  entries.forEach(({ field, recipient }) => {
+    const block = buildFieldBlock(doc, field, recipient, columnWidth);
+    if (!block) return;
+    if (block.full) {
+      closeRow();
+      if (doc.y + block.height > pageBottom()) doc.addPage();
+      const top = doc.y;
+      block.draw(left, top, width);
+      doc.y = top + block.height + 14;
+      return;
+    }
+    if (column === 0) {
+      if (doc.y + block.height > pageBottom()) doc.addPage();
+      rowTop = doc.y;
+    }
+    block.draw(left + column * (columnWidth + gap), rowTop, columnWidth);
+    rowHeight = Math.max(rowHeight, block.height);
+    column += 1;
+    if (column === 2) closeRow();
+  });
+  closeRow();
+  doc.x = left;
 }
 
 /**
@@ -270,19 +364,12 @@ function generateSignedDocumentPdf({
       });
 
       if (sections.length > 0) {
-        sectionTitle(doc, 'Signatures and form fields');
-        sections.forEach(({ recipient, fields }) => {
-          ensureSpace(doc, 60);
-          doc.font('Helvetica-Bold').fontSize(10).fillColor(COLORS.text).text(recipient.name || recipient.email, left, doc.y, { width });
-          doc
-            .font('Helvetica')
-            .fontSize(8.5)
-            .fillColor(COLORS.muted)
-            .text(`${recipient.email}   |   ${recipient.role_label || 'Needs to sign'}   |   Completed ${formatDateTime(recipient.signed_at)}`, { width });
-          doc.moveDown(0.5);
-          fields.forEach((field) => drawField(doc, field, recipient));
-          doc.moveDown(0.2);
-        });
+        // Fields only (no field labels or headings), like the signed document in Zoho Sign
+        ensureSpace(doc, 60);
+        doc.moveDown(0.8);
+        doc.moveTo(left, doc.y).lineTo(left + width, doc.y).strokeColor(COLORS.border).lineWidth(0.75).stroke();
+        doc.moveDown(1);
+        drawFieldsGrid(doc, sections.flatMap(({ recipient, fields }) => fields.map((field) => ({ field, recipient }))));
       } else if (signerSummary.length > 0) {
         sectionTitle(doc, 'Signatures');
         doc
@@ -338,6 +425,23 @@ function generateCompletionCertificatePdf({
       keyValueRow(doc, 'Signing order', signingOrder === 'sequential' ? 'Sequential' : 'Parallel');
       keyValueRow(doc, 'Recipients', `${signers} signer(s), ${approvers} approver(s), ${copies} receive(s) a copy`);
       keyValueRow(doc, 'Documents', documents.length ? documents.map((d, i) => `${i + 1}. ${d.name}`).join('\n') : '-');
+
+      if (documents.some((d) => d.sha256)) {
+        sectionTitle(doc, 'Document fingerprints (SHA-256)');
+        doc
+          .font('Helvetica')
+          .fontSize(8.5)
+          .fillColor(COLORS.muted)
+          .text('Each signed PDF issued with this certificate is locked against editing and has the fingerprint below. Use "Verify document" in BexSign to check a copy: a file changed in any way no longer matches.', left, doc.y, { width });
+        doc.moveDown(0.5);
+        documents.filter((d) => d.sha256).forEach((d, i) => {
+          ensureSpace(doc, 30);
+          doc.font('Helvetica-Bold').fontSize(8.5).fillColor(COLORS.text).text(`${i + 1}. ${d.name}`, left, doc.y, { width });
+          doc.font('Courier').fontSize(8).fillColor(COLORS.text).text(d.sha256, left + 12, doc.y, { width: width - 12 });
+          doc.moveDown(0.35);
+        });
+        doc.x = left;
+      }
 
       sectionTitle(doc, 'Recipients');
       recipients.forEach((r, idx) => {
