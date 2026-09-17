@@ -22,8 +22,9 @@ const {
 } = require('../utils/emailService');
 const requestHelpers = require('../utils/requestHelpers');
 const { isUsableSignature } = require('../utils/signatureValidation');
-const { sha256, findFingerprint } = require('../utils/pdfFingerprints');
-const { buildCompletedRequestFiles, buildSignerCopy } = require('../utils/requestCompletion');
+const { sha256, findFingerprint, recordFingerprint } = require('../utils/pdfFingerprints');
+const { protectWithPassword } = require('../utils/pdfLock');
+const { getCompletedPdfFiles, buildProgressCopy } = require('../utils/requestCompletion');
 
 const EMPTY_SIGNATURE_ERROR = 'The signature is empty. Draw, type or upload a signature before saving.';
 
@@ -566,6 +567,9 @@ router.get('/:id', async (req, res) => {
                     const ownerEmail = String(f.assigneeEmail || '').trim().toLowerCase();
                     return !ownerEmail || ownerEmail === viewerEmail;
                 });
+            } else if (req.query.view === 'sender') {
+                // Sender view: every recipient's fields with the signatures collected so far
+                doc.fields = allFields;
             } else {
                 doc.fields = allFields.map(({ signatureImage, ...withoutImage }) => withoutImage);
             }
@@ -970,13 +974,14 @@ router.post('/:id/email-copy', async (req, res) => {
         const sender = await requestHelpers.getRequestSender(doc);
         const files = await requestHelpers.getDocumentFiles(id);
 
-        const attachments = files
-            .filter((f) => f.signed_file_path)
-            .map((f) => ({ filename: f.file_name, path: path.join(__dirname, '..', f.signed_file_path) }))
-            .filter((a) => fs.existsSync(a.path));
-        const certificatePath = path.join(__dirname, '..', 'uploads', 'completed', String(id), 'certificate-of-completion.pdf');
-        if (attachments.length > 0 && fs.existsSync(certificatePath)) {
-            attachments.push({ filename: 'Certificate of Completion.pdf', path: certificatePath });
+        // Completed requests attach the current locked signed PDFs (rebuilt first if issued with an older layout)
+        const attachments = [];
+        if (String(doc.status || '').toLowerCase() === 'completed' && files.length > 0) {
+            const completed = await completedPdfBuffers(id);
+            completed.documents.filter((d) => d.buffer).forEach((d) => attachments.push({ filename: d.name, content: d.buffer, contentType: 'application/pdf' }));
+            if (attachments.length > 0 && completed.certificate) {
+                attachments.push({ filename: 'Certificate of Completion.pdf', content: completed.certificate, contentType: 'application/pdf' });
+            }
         }
 
         const results = [];
@@ -1124,11 +1129,6 @@ router.post('/:id/clone', async (req, res) => {
     }
 });
 
-const pdfDownloadName = (name, fallback = 'Document') => {
-    const base = String(name || fallback).replace(/\.pdf$/i, '').replace(/[\\/:*?"<>|\r\n]+/g, '_').trim() || fallback;
-    return `${base}.pdf`;
-};
-
 function sendPdfDownload(res, buffer, fileName, hash) {
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${fileName.replace(/"/g, "'")}"; filename*=UTF-8''${encodeURIComponent(fileName)}`);
@@ -1137,40 +1137,38 @@ function sendPdfDownload(res, buffer, fileName, hash) {
     res.send(buffer);
 }
 
-// Signed PDFs of a completed request. Files missing on disk, or issued before signed PDFs were locked and
-// fingerprinted, are rebuilt (locked) first.
-async function completedPdfBuffers(documentId) {
-    const readPublic = (publicPath) => {
-        if (!publicPath) return null;
-        const abs = path.join(__dirname, '..', publicPath);
-        return fs.existsSync(abs) ? fs.readFileSync(abs) : null;
-    };
-    const files = await requestHelpers.getDocumentFiles(documentId);
-    const documents = files.map((f) => ({ name: pdfDownloadName(f.file_name), buffer: readPublic(f.signed_file_path) }));
-    const certificate = readPublic(`/uploads/completed/${documentId}/certificate-of-completion.pdf`);
-
-    const buffers = [...documents.map((d) => d.buffer), certificate];
-    let current = files.length > 0 && buffers.every(Boolean);
-    for (const buffer of buffers) {
-        if (!current) break;
-        if (!(await findFingerprint(sha256(buffer)))) current = false;
-    }
-    if (current) return { documents, certificate };
-
-    const bundle = await buildCompletedRequestFiles(documentId);
-    return {
-        documents: bundle.attachments.map((a) => ({ name: pdfDownloadName(a.filename), buffer: a.content })),
-        certificate: bundle.certificate.content
-    };
-}
+// Signed PDFs of a completed request (rebuilt first when missing or issued with an older layout)
+const completedPdfBuffers = getCompletedPdfFiles;
 
 // @route   GET /api/documents/:id/signed-pdf?index=<document index>[&email=<recipient>]
-// @desc    Download a locked signed PDF: the final document of a completed request, or (in progress) the
-//          requesting recipient's own signed copy after they have signed
-router.get('/:id/signed-pdf', async (req, res) => {
+//          POST /api/documents/:id/signed-pdf { index, email, password } (the copy also needs the password to open)
+// @desc    Download a locked PDF (flattened, encrypted, certified) of a sent request: the final signed document of a
+//          completed request; while in progress, a recipient's own copy (email) or the sender's copy with every
+//          signature collected so far. Drafts are not issued.
+router.get('/:id/signed-pdf', (req, res) => serveLockedPdf(req, res, req.query));
+router.post('/:id/signed-pdf', (req, res) => serveLockedPdf(req, res, req.body || {}));
+
+async function serveLockedPdf(req, res, params) {
     const { id } = req.params;
-    const index = Math.max(parseInt(req.query.index, 10) || 0, 0);
-    const email = String(req.query.email || '').trim();
+    const index = Math.max(parseInt(params.index, 10) || 0, 0);
+    const email = String(params.email || '').trim();
+    const password = typeof params.password === 'string' ? params.password : '';
+    if (password && (password.length < 4 || password.length > 64)) {
+        return res.status(400).json({ success: false, error: 'The password must be 4 to 64 characters long.' });
+    }
+    // Sends the issued file, or a password-protected copy of it (recorded so it can be verified as well)
+    const send = async (buffer, fileName, hash, kind) => {
+        if (!password) return sendPdfDownload(res, buffer, fileName, hash);
+        const protectedBuffer = await protectWithPassword(buffer, password, { Title: fileName.replace(/\.pdf$/i, '') });
+        const protectedHash = await recordFingerprint(protectedBuffer, {
+            documentId: id,
+            fileIndex: index,
+            kind: 'protected-copy',
+            fileName,
+            recipientEmail: email || null
+        });
+        return sendPdfDownload(res, protectedBuffer, fileName, protectedHash);
+    };
     try {
         const [docs] = await db.query('SELECT id, status FROM documents WHERE id = ?', [id]);
         if (docs.length === 0) {
@@ -1182,18 +1180,20 @@ router.get('/:id/signed-pdf', async (req, res) => {
             if (!item || !item.buffer) {
                 return res.status(404).json({ success: false, error: 'The signed document is not available.' });
             }
-            return sendPdfDownload(res, item.buffer, item.name, sha256(item.buffer));
+            return send(item.buffer, item.name, sha256(item.buffer));
         }
-        if (email) {
-            const copy = await buildSignerCopy(id, email, index);
-            if (copy) return sendPdfDownload(res, copy.buffer, copy.fileName, copy.sha256);
+        const status = String(docs[0].status || '').toLowerCase();
+        if (status === 'draft' || status === 'trashed') {
+            return res.status(409).json({ success: false, error: 'Send the document first: drafts are downloaded from the editor.' });
         }
-        res.status(409).json({ success: false, error: 'A signed copy can be downloaded after the document has been signed.' });
+        const copy = await buildProgressCopy(id, { email, fileIndex: index });
+        if (copy) return send(copy.buffer, copy.fileName, copy.sha256);
+        res.status(404).json({ success: false, error: 'This email address is not a recipient of the document.' });
     } catch (err) {
         console.error('Signed PDF download error:', err);
         res.status(500).json({ success: false, error: 'The signed document could not be prepared.' });
     }
-});
+}
 
 // @route   GET /api/documents/:id/certificate-pdf
 // @desc    Download the locked Certificate of Completion of a completed request

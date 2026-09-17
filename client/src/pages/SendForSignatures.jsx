@@ -212,7 +212,8 @@ export default function SendForSignatures() {
   const [showBulkModal, setShowBulkModal] = useState(false);
 
   // Recipient State
-  const [sendInOrder, setSendInOrder] = useState(true);
+  // Everyone is emailed at once unless the sender chooses "Send in order"
+  const [sendInOrder, setSendInOrder] = useState(false);
   const [recipients, setRecipients] = useState(() => [
     {
       id: 1,

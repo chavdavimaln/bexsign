@@ -420,8 +420,70 @@ async function sendRecipientSignedEmail({
   }, 'Recipient signed email');
 }
 
+/**
+ * 7. A recipient declined to sign: the sender is told who declined and why.
+ */
+async function sendDocumentDeclinedEmail({
+  to,
+  senderName = '',
+  documentName = 'Document',
+  signerName = 'Recipient',
+  signerEmail = '',
+  reason = '-'
+}) {
+  const mailHtml = getBexSignHtmlTemplate({
+    headerTitle: 'Document declined',
+    headerColor: '#dc2626',
+    mainMessage: `${senderName ? `Hello ${escapeHtml(senderName)},<br/><br/>` : ''}<strong>${escapeHtml(signerName)}</strong> (${escapeHtml(signerEmail)}) has declined to sign <strong>${escapeHtml(documentName)}</strong>.`,
+    details: [
+      { label: 'Reason', value: escapeHtml(reason || '-') },
+      { label: 'Declined by', value: escapeHtml(signerEmail) }
+    ],
+    footerNote: 'No further signatures can be collected for this request. Create a new request if you want to send it again.'
+  });
+
+  return deliverMail({
+    to,
+    subject: `${signerName} declined to sign ${documentName}`,
+    html: mailHtml
+  }, 'Declined email');
+}
+
+/**
+ * 8. A recipient assigned their signing to someone else: the sender is told who took over.
+ */
+async function sendSigningDelegatedEmail({
+  to,
+  senderName = '',
+  documentName = 'Document',
+  fromName = 'Recipient',
+  fromEmail = '',
+  toName = 'New signer',
+  toEmail = '',
+  reason = '-'
+}) {
+  const mailHtml = getBexSignHtmlTemplate({
+    headerTitle: 'Signing assigned to someone else',
+    headerColor: '#0284c7',
+    mainMessage: `${senderName ? `Hello ${escapeHtml(senderName)},<br/><br/>` : ''}<strong>${escapeHtml(fromName)}</strong> (${escapeHtml(fromEmail)}) has assigned the signing of <strong>${escapeHtml(documentName)}</strong> to <strong>${escapeHtml(toName)}</strong> (${escapeHtml(toEmail)}).`,
+    details: [
+      { label: 'Reason', value: escapeHtml(reason || '-') },
+      { label: 'New signer', value: escapeHtml(toEmail) }
+    ],
+    footerNote: 'The signature request has been emailed to the new signer.'
+  });
+
+  return deliverMail({
+    to,
+    subject: `${fromName} assigned ${documentName} to ${toName}`,
+    html: mailHtml
+  }, 'Assigned email');
+}
+
 module.exports = {
   sendSignatureRequestEmail,
+  sendDocumentDeclinedEmail,
+  sendSigningDelegatedEmail,
   sendReminderEmail,
   sendDocumentRecalledEmail,
   sendDocumentCompletedEmail,

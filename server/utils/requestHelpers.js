@@ -9,7 +9,7 @@ const db = require('../db');
 
 const SIGNING_ROLES = ['signer', 'approver'];
 const ROLE_LABELS = ['Needs to sign', 'In-person signer', 'Approver', 'Receives a copy'];
-const RECIPIENT_COLUMNS = 'id, document_id, name, email, role, role_label, delivery_mode, private_note, signing_order_index, status, sent_at, viewed_at, signed_at, signed_ip, signature_image';
+const RECIPIENT_COLUMNS = 'id, document_id, name, email, role, role_label, delivery_mode, private_note, signing_order_index, status, sent_at, viewed_at, signed_at, signed_ip, signature_image, declined_at, decline_reason, physical_copy_path, delegated_from, delegated_reason';
 
 function mapRecipientRole(label) {
   const low = String(label || '').toLowerCase();
@@ -72,6 +72,12 @@ function ensureRequestSchema() {
         ['document_recipients', 'signed_ip', 'VARCHAR(45) NULL'],
         ['document_recipients', 'signed_user_agent', 'VARCHAR(255) NULL'],
         ['document_recipients', 'signature_image', 'LONGTEXT NULL'],
+        // Actions a recipient can take while signing: decline, assign to someone else, sign on paper
+        ['document_recipients', 'declined_at', 'DATETIME NULL'],
+        ['document_recipients', 'decline_reason', 'TEXT NULL'],
+        ['document_recipients', 'physical_copy_path', 'VARCHAR(255) NULL'],
+        ['document_recipients', 'delegated_from', 'VARCHAR(255) NULL'],
+        ['document_recipients', 'delegated_reason', 'TEXT NULL'],
         ['document_files', 'document_text', 'LONGTEXT NULL'],
         ['document_files', 'signed_file_path', 'VARCHAR(255) NULL'],
         ['document_files', 'sort_order', 'INT DEFAULT 0']

@@ -30,6 +30,7 @@ import Settings from './pages/Settings';
 import SignaturesModule from './pages/SignaturesModule';
 import UserManagement from './pages/UserManagement';
 import VerifyDocument from './pages/VerifyDocument';
+import DocumentViewer from './pages/DocumentViewer';
 
 export default function App() {
   return (
@@ -62,6 +63,7 @@ export default function App() {
           <Route path="/documents/:id" element={<DocumentDetails />} />
           <Route path="/documents/:id/details" element={<DocumentDetails />} />
           <Route path="/documents/:id/edit" element={<DocumentEditor />} />
+          <Route path="/documents/:id/view" element={<DocumentViewer />} />
           <Route path="/documents/:id/send" element={<SendForSignatures />} />
           <Route path="/documents/:id/email-preview" element={<EmailInvitationPreview />} />
 

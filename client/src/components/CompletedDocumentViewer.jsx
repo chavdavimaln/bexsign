@@ -27,10 +27,34 @@ import BexDocumentSheet from './BexDocumentSheet';
 import { printDocumentSheet } from '../utils/documentPrinter';
 import { getDefaultDocContent } from '../utils/documentDefaults';
 import { getDocumentOwner } from '../utils/currentUser';
-import { downloadSignedDocument } from '../utils/signedPdf';
+import { downloadSignedDocument, printLockedDocument } from '../utils/signedPdf';
 import { showPopupAlert } from './GlobalAlertModal';
+import { recipientColorAt, fieldBelongsTo } from '../utils/recipientColors';
 
-export default function CompletedDocumentViewer({ doc, onClose, onBack }) {
+const SIGNING_ROLES = ['signer', 'approver'];
+
+// Where a recipient is in the signing process (shown in the recipients panel and the signature panel)
+function recipientState(r) {
+  const role = String(r.role || 'signer').toLowerCase();
+  if (r.status === 'signed') return { label: role === 'approver' ? 'Approved' : 'Signed', className: 'text-emerald-700 bg-emerald-50 border-emerald-200' };
+  if (r.status === 'declined') return { label: 'Declined', className: 'text-red-700 bg-red-50 border-red-200' };
+  if (!SIGNING_ROLES.includes(role)) return { label: 'Receives a copy', className: 'text-slate-600 bg-slate-50 border-slate-200' };
+  if (r.status === 'viewed') return { label: 'Viewed', className: 'text-blue-700 bg-blue-50 border-blue-200' };
+  if (r.sent_at) return { label: 'Email sent', className: 'text-amber-700 bg-amber-50 border-amber-200' };
+  return { label: 'Waiting for turn', className: 'text-slate-600 bg-slate-100 border-slate-200' };
+}
+
+const formatDateTime = (value) => {
+  if (!value) return '-';
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+};
+
+/**
+ * Document viewer. mode="completed" (default): a completed request. mode="sender": the sender's view of a request
+ * in any status, with every document, every recipient's fields and the signatures collected so far.
+ */
+export default function CompletedDocumentViewer({ doc, onClose, onBack, mode = 'completed' }) {
   const [currentPage, setCurrentPage] = useState(1);
   const [zoom, setZoom] = useState(100);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -105,28 +129,77 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack }) {
   const [serverBexsignId, setServerBexsignId] = useState('');
   const docId = doc?.bexsign_doc_id || serverBexsignId || placeholderBexsignId;
 
-  // The completed request's fields come from the server: each Signature field carries its own signer's
-  // signature, so every recipient's box shows their signature (cached editor fields have no signatures)
+  // Request data from the server: every document, every recipient and each recipient's fields with their own
+  // signature (cached editor fields have no signatures and belong to one browser)
+  const isSenderView = mode === 'sender';
+  const [serverRecipients, setServerRecipients] = useState([]);
+  const [serverStatus, setServerStatus] = useState(isSenderView ? '' : 'Completed');
+  const [loadError, setLoadError] = useState('');
   useEffect(() => {
     if (!doc?.id) return undefined;
     let cancelled = false;
-    fetch(`http://localhost:5000/api/documents/${doc.id}`)
+    fetch(`http://localhost:5000/api/documents/${doc.id}?view=sender`)
       .then((res) => res.json())
       .then((data) => {
         const serverDoc = data?.document;
-        if (cancelled || !serverDoc || String(serverDoc.status || '').toLowerCase() !== 'completed') return;
+        if (cancelled || !serverDoc) return;
+        const status = String(serverDoc.status || '');
+        if (!isSenderView && status.toLowerCase() !== 'completed') return;
+        setServerStatus(status);
         if (serverDoc.bexsign_doc_id) setServerBexsignId(serverDoc.bexsign_doc_id);
+        if (Array.isArray(serverDoc.files) && serverDoc.files.length > 0) {
+          setDocumentsList(serverDoc.files.map((f, i) => ({
+            id: f.id || i + 1,
+            name: f.file_name || `Document ${i + 1}.pdf`,
+            documentText: f.document_text || getDefaultDocContent(f.file_name, serverDoc.custom_message)
+          })));
+        }
         if (serverDoc.fieldsByDoc && Object.keys(serverDoc.fieldsByDoc).length > 0) {
           setFieldsByDoc(serverDoc.fieldsByDoc);
+        } else if (isSenderView) {
+          setFieldsByDoc({});
         }
+        setServerRecipients((serverDoc.recipients || []).filter((r) => !r.isFallback));
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled && isSenderView) setLoadError('Could not reach the BexSign server at http://localhost:5000.');
+      });
     return () => {
       cancelled = true;
     };
-  }, [doc?.id]);
-  const signerName = doc?.signer_name || 'Vimal Chavda';
-  const signerEmail = doc?.recipient_email || 'vimal@bexcodeservices.com';
+  }, [doc?.id, isSenderView]);
+  const isRequestCompleted = String(serverStatus).toLowerCase() === 'completed';
+
+  // Clicking a recipient highlights their fields in the document (click again, or Clear, to show everyone)
+  const [highlightEmail, setHighlightEmail] = useState('');
+  const coloredRecipients = serverRecipients.map((r, idx) => ({ ...r, color: recipientColorAt(idx) }));
+  const highlightRecipient = coloredRecipients.find((r) => String(r.email || '').toLowerCase() === highlightEmail) || null;
+  const fieldCountIn = (recipient, docIdx) => (fieldsByDoc[docIdx] || []).filter((f) => fieldBelongsTo(f, recipient)).length;
+  const toggleHighlight = (recipient) => {
+    const email = String(recipient.email || '').toLowerCase();
+    if (highlightEmail === email) {
+      setHighlightEmail('');
+      return;
+    }
+    setHighlightEmail(email);
+    // Open a document that has their fields when the current one has none
+    if (fieldCountIn(recipient, activeDocIndex) === 0) {
+      const withFields = documentsList.findIndex((_, idx) => fieldCountIn(recipient, idx) > 0);
+      if (withFields !== -1) setActiveDocIndex(withFields);
+    }
+  };
+  useEffect(() => {
+    if (!highlightEmail) return undefined;
+    const timer = setTimeout(() => {
+      const first = document.querySelector('#printable-document-sheet [data-highlighted="true"]');
+      if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 120);
+    return () => clearTimeout(timer);
+  }, [highlightEmail, activeDocIndex]);
+  const signingRecipients = serverRecipients.filter((r) => SIGNING_ROLES.includes(String(r.role || 'signer').toLowerCase()));
+  const signedCount = signingRecipients.filter((r) => r.status === 'signed').length;
+  const signerName = signingRecipients[0]?.name || doc?.signer_name || 'Vimal Chavda';
+  const signerEmail = signingRecipients[0]?.email || doc?.recipient_email || 'vimal@bexcodeservices.com';
   const owner = getDocumentOwner(doc);
   const ownerName = owner.name;
   const ownerEmail = owner.email;
@@ -154,16 +227,30 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack }) {
 
   const documentBodyText = activeDoc?.documentText || doc?.documentText || doc?.document_text || getDefaultDocContent(documentName, doc?.custom_message);
 
-  // The completed document is downloaded as the locked signed PDF issued by the server
+  const isDraftRequest = String(serverStatus || '').toLowerCase() === 'draft';
+
+  // Downloads the locked PDF issued by the server: the signed document once completed, before that a copy with the
+  // signatures collected so far. Neither can be edited.
   const handleDownload = async () => {
     try {
-      await downloadSignedDocument(doc?.id, { index: activeDocIndex });
+      const { fileName } = await downloadSignedDocument(doc?.id, { index: activeDocIndex });
+      if (!isRequestCompleted) {
+        showPopupAlert(`Downloaded "${fileName}" with the signatures collected so far (${signedCount} of ${signingRecipients.length} signed). The file is locked and cannot be edited.`, { title: 'In-progress copy downloaded', type: 'success' });
+      }
     } catch (err) {
       showPopupAlert(err instanceof TypeError ? 'Could not reach the BexSign server at http://localhost:5000.' : err.message, { title: 'Download failed', type: 'error' });
     }
   };
 
-  const handlePrint = () => {
+  const handlePrint = async () => {
+    if (!isDraftRequest && doc?.id) {
+      try {
+        await printLockedDocument(doc.id, { index: activeDocIndex });
+      } catch (err) {
+        showPopupAlert(err instanceof TypeError ? 'Could not reach the BexSign server at http://localhost:5000.' : err.message, { title: 'Print failed', type: 'error' });
+      }
+      return;
+    }
     const savedSig = doc?.signature_image || localStorage.getItem(`bexsign_doc_${doc?.id}_signature`) || '';
     const savedSigner = doc?.signer_name || localStorage.getItem(`bexsign_doc_${doc?.id}_signer`) || signerName;
     const docBexId = documentsList.length > 1 ? `${docId}-${activeDocIndex + 1}` : docId;
@@ -256,7 +343,7 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack }) {
           <button
             onClick={handleDownload}
             className="p-1.5 hover:bg-slate-100 rounded text-slate-600 hover:text-slate-900 transition"
-            title="Download signed PDF"
+            title={isRequestCompleted ? 'Download signed PDF (locked)' : 'Download a locked copy with the signatures collected so far'}
           >
             <Download size={16} />
           </button>
@@ -289,13 +376,17 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack }) {
       </header>
 
       {/* 2. DIGITALLY SIGNED BANNER (Yellow/Gold Notice Bar from Page 1 Reference) */}
-      <div className="bg-[#fffbeb] border-b border-[#fde68a] px-4 py-2 flex items-center justify-between text-xs text-[#92400e] shrink-0 z-10">
-        <div className="flex items-center gap-2.5">
-          <div className="w-5 h-5 rounded-full bg-[#fef3c7] flex items-center justify-center text-[#b45309] shrink-0">
-            <ShieldCheck size={16} className="stroke-[2.2]" />
+      <div className={`border-b px-4 py-2 flex items-center justify-between gap-3 text-xs shrink-0 z-10 ${isRequestCompleted || !isSenderView ? 'bg-[#fffbeb] border-[#fde68a] text-[#92400e]' : 'bg-sky-50 border-sky-200 text-sky-900'}`}>
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${isRequestCompleted || !isSenderView ? 'bg-[#fef3c7] text-[#b45309]' : 'bg-sky-100 text-sky-700'}`}>
+            {isRequestCompleted || !isSenderView ? <ShieldCheck size={16} className="stroke-[2.2]" /> : <Clock size={14} className="stroke-[2.2]" />}
           </div>
           <span className="font-semibold text-slate-800 text-[11px] sm:text-xs">
-            This document is digitally signed. Open the signature panel to verify its authenticity and view signer details.
+            {loadError
+              ? loadError
+              : (isRequestCompleted || !isSenderView
+                ? 'This document is digitally signed. Open the signature panel to verify its authenticity and view signer details.'
+                : `${serverStatus || 'Loading'}: ${signedCount} of ${signingRecipients.length} recipients have signed. Each recipient's fields appear here as they complete them.`)}
           </span>
         </div>
         <button
@@ -318,6 +409,7 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack }) {
           <div className="p-3 space-y-3">
             {documentsList.map((d, idx) => {
               const isSelected = activeDocIndex === idx;
+              const highlightedCount = highlightRecipient ? fieldCountIn(highlightRecipient, idx) : 0;
               return (
                 <div
                   key={d.id || idx}
@@ -335,6 +427,17 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack }) {
                     </span>
                     <span className="text-[10px] font-mono text-slate-400">{idx + 1}</span>
                   </div>
+                  {highlightRecipient && (
+                    <span
+                      className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-bold rounded-full px-1.5 py-0.5 border"
+                      style={highlightedCount > 0
+                        ? { color: highlightRecipient.color, borderColor: `${highlightRecipient.color}66`, backgroundColor: `${highlightRecipient.color}14` }
+                        : { color: '#94a3b8', borderColor: '#e2e8f0' }}
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: highlightedCount > 0 ? highlightRecipient.color : '#cbd5e1' }} />
+                      {highlightedCount > 0 ? `${highlightedCount} field${highlightedCount === 1 ? '' : 's'}` : 'No fields'}
+                    </span>
+                  )}
                   <p className="text-[9px] text-slate-500 line-clamp-2 mt-1 leading-relaxed">
                     {d.documentText || getDefaultDocContent(d.name)}
                   </p>
@@ -345,7 +448,27 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack }) {
         </aside>
 
         {/* CENTER CANVAS: Document Preview */}
-        <main className="flex-1 bg-slate-200/80 p-4 sm:p-8 overflow-auto flex justify-center items-start print:p-0 print:bg-white">
+        <main className="flex-1 bg-slate-200/80 p-4 sm:p-8 overflow-auto flex flex-col items-center justify-start print:p-0 print:bg-white">
+          {highlightRecipient && (
+            <div
+              className="sticky top-0 z-10 mb-3 flex items-center gap-2 rounded-full border bg-white/95 backdrop-blur px-3 py-1.5 text-xs shadow-sm print:hidden"
+              style={{ borderColor: `${highlightRecipient.color}66` }}
+            >
+              <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: highlightRecipient.color }} />
+              <span className="font-semibold text-slate-700">
+                {fieldCountIn(highlightRecipient, activeDocIndex) > 0
+                  ? <>Showing <strong style={{ color: highlightRecipient.color }}>{highlightRecipient.name || highlightRecipient.email}</strong>'s fields ({fieldCountIn(highlightRecipient, activeDocIndex)} in this document)</>
+                  : <><strong style={{ color: highlightRecipient.color }}>{highlightRecipient.name || highlightRecipient.email}</strong> has no fields in this document</>}
+              </span>
+              <button
+                type="button"
+                onClick={() => setHighlightEmail('')}
+                className="ml-1 inline-flex items-center gap-1 rounded-full bg-slate-100 hover:bg-slate-200 px-2 py-0.5 font-bold text-slate-600"
+              >
+                <X size={11} /> Clear
+              </button>
+            </div>
+          )}
           <div
             style={{
               transform: `scale(${zoom / 100})`,
@@ -363,6 +486,8 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack }) {
               signerEmail={signerEmail}
               signatureImage={doc?.signature_image || localStorage.getItem(`bexsign_doc_${doc?.id}_signature`) || ''}
               isCompleted={true}
+              showPending={isSenderView && !isRequestCompleted}
+              highlightRecipient={highlightRecipient}
               showTooltips={false}
               defaultSignature={!requestHasFields}
               placedFields={activeDocFields}
@@ -374,23 +499,51 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack }) {
         <aside className="w-64 bg-white border-l border-slate-200 flex flex-col shrink-0 overflow-y-auto hidden lg:flex">
           <div className="p-3 border-b border-slate-100">
             <h3 className="font-bold text-xs text-slate-800 uppercase tracking-wide">Recipients</h3>
+            {coloredRecipients.length > 0 && <p className="text-[10px] text-slate-400 mt-0.5">Click a recipient to highlight their fields</p>}
           </div>
-          <div className="p-3">
-            <div className="flex items-start gap-3 p-2.5 rounded-lg border border-slate-200 bg-slate-50/70 hover:bg-slate-50 transition">
-              <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-800 font-extrabold flex items-center justify-center text-xs shrink-0">
-                {signerName.charAt(0).toUpperCase()}
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="font-bold text-xs text-slate-900 truncate">{signerName}</p>
-                <p className="text-[11px] text-slate-500 truncate" title={signerEmail}>
-                  {signerEmail}
-                </p>
-                <div className="mt-1 flex items-center gap-1 text-[10px] text-emerald-700 font-bold">
-                  <CheckCircle2 size={12} />
-                  <span>Signed</span>
-                </div>
-              </div>
-            </div>
+          <div className="p-3 space-y-2">
+            {serverRecipients.length === 0 && (
+              <p className="text-[11px] text-slate-400">Loading recipients...</p>
+            )}
+            {coloredRecipients.map((r, idx) => {
+              const state = recipientState(r);
+              const isActive = highlightRecipient && highlightRecipient.email === r.email;
+              const inThisDoc = fieldCountIn(r, activeDocIndex);
+              const inAllDocs = documentsList.reduce((sum, _, docIdx) => sum + fieldCountIn(r, docIdx), 0);
+              return (
+                <button
+                  type="button"
+                  key={r.id || r.email}
+                  onClick={() => toggleHighlight(r)}
+                  aria-pressed={Boolean(isActive)}
+                  title={isActive ? 'Show every recipient\'s fields' : `Highlight ${r.name || r.email}'s fields in the document`}
+                  className={`w-full text-left flex items-start gap-3 p-2.5 rounded-lg border transition-all duration-200 ${isActive ? 'bg-white shadow-md' : 'border-slate-200 bg-slate-50/70 hover:bg-white hover:shadow-sm'} ${highlightRecipient && !isActive ? 'opacity-60 hover:opacity-100' : ''}`}
+                  style={isActive ? { borderColor: r.color, boxShadow: `0 0 0 2px ${r.color}33, 0 6px 16px -8px ${r.color}` } : { borderLeft: `3px solid ${r.color}` }}
+                >
+                  <div
+                    className="w-8 h-8 rounded-full font-extrabold flex items-center justify-center text-xs shrink-0 text-white"
+                    style={{ backgroundColor: r.color }}
+                    title={`Signing order ${r.signing_order_index || idx + 1}`}
+                  >
+                    {(r.name || r.email || '?').charAt(0).toUpperCase()}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-bold text-xs text-slate-900 truncate">{r.name || r.email}</p>
+                    <p className="text-[11px] text-slate-500 truncate" title={r.email}>{r.email}</p>
+                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                      <span className={`inline-flex items-center gap-1 text-[10px] font-bold border rounded px-1.5 py-0.5 ${state.className}`}>
+                        {r.status === 'signed' && <CheckCircle2 size={11} />}
+                        {state.label}
+                      </span>
+                      {r.signed_at && <span className="text-[10px] text-slate-400">{formatDateTime(r.signed_at)}</span>}
+                    </div>
+                    <p className="mt-1 text-[10px] font-semibold" style={{ color: inThisDoc > 0 ? r.color : '#94a3b8' }}>
+                      {inThisDoc} field{inThisDoc === 1 ? '' : 's'} in this document{documentsList.length > 1 ? ` · ${inAllDocs} in all` : ''}
+                    </p>
+                  </div>
+                </button>
+              );
+            })}
           </div>
         </aside>
       </div>
@@ -418,16 +571,26 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack }) {
 
             {/* Drawer Content */}
             <div className="flex-1 overflow-y-auto p-5 space-y-5 text-xs text-slate-700">
-              {/* Validity Card */}
-              <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl space-y-1">
-                <div className="flex items-center gap-2 text-emerald-800 font-bold text-sm">
-                  <CheckCircle2 size={16} />
-                  <span>Document Authenticity Verified</span>
+              {/* Status Card */}
+              {isRequestCompleted ? (
+                <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl space-y-1">
+                  <div className="flex items-center gap-2 text-emerald-800 font-bold text-sm">
+                    <CheckCircle2 size={16} />
+                    <span>Signed by every recipient</span>
+                  </div>
+                  <p className="text-[11px] text-emerald-700">
+                    The signed PDFs are locked against editing. Use "Verify document" to check that a downloaded copy is unchanged.
+                  </p>
                 </div>
-                <p className="text-[11px] text-emerald-700">
-                  This document has not been altered since it was signed. All cryptographic hashes match certified records.
-                </p>
-              </div>
+              ) : (
+                <div className="p-3.5 bg-sky-50 border border-sky-200 rounded-xl space-y-1">
+                  <div className="flex items-center gap-2 text-sky-900 font-bold text-sm">
+                    <Clock size={16} />
+                    <span>{signedCount} of {signingRecipients.length} recipients have signed</span>
+                  </div>
+                  <p className="text-[11px] text-sky-800">The request is {String(serverStatus || 'in progress').toLowerCase()}.</p>
+                </div>
+              )}
 
               {/* Document Identity */}
               <div className="space-y-2 border-b border-slate-100 pb-4">
@@ -437,31 +600,38 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack }) {
                 </div>
               </div>
 
-              {/* Signer Identity */}
+              {/* Signer Details: every recipient */}
               <div className="space-y-2 border-b border-slate-100 pb-4">
                 <h4 className="font-bold text-slate-800 uppercase tracking-wider text-[10px]">Signer Details</h4>
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-500 font-semibold">Signer Name:</span>
-                    <span className="font-bold text-slate-900">{signerName}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-500 font-semibold">Email:</span>
-                    <span className="font-mono text-slate-800">{signerEmail}</span>
-                  </div>
+                <div className="space-y-3">
+                  {serverRecipients.map((r) => {
+                    const state = recipientState(r);
+                    return (
+                      <div key={r.id || r.email} className="rounded-lg border border-slate-200 p-2.5 space-y-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-bold text-slate-900 truncate">{r.name || r.email}</span>
+                          <span className={`text-[10px] font-bold border rounded px-1.5 py-0.5 shrink-0 ${state.className}`}>{state.label}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-slate-500 font-semibold">Email:</span>
+                          <span className="font-mono text-slate-800 truncate">{r.email}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-slate-500 font-semibold">Signed on:</span>
+                          <span className="font-mono text-slate-800">{formatDateTime(r.signed_at)}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-slate-500 font-semibold">IP Address:</span>
+                          <span className="font-mono text-slate-800">{r.signed_ip ? String(r.signed_ip).replace(/^::ffff:/, '') : '-'}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
                   <div className="flex items-center justify-between">
                     <span className="text-slate-500 font-semibold">Signature Mode:</span>
                     <span className="font-semibold text-slate-800">
-                      {isPhysicallySigned ? 'Physical Upload' : 'Electronic Digital Seal'}
+                      {isPhysicallySigned ? 'Physical Upload' : 'Electronic Signature'}
                     </span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-500 font-semibold">Timestamp:</span>
-                    <span className="font-mono text-slate-800">{signedDate}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-500 font-semibold">IP Address:</span>
-                    <span className="font-mono text-slate-800">106.205.245.235</span>
                   </div>
                 </div>
               </div>

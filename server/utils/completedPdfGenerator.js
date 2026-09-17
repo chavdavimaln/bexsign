@@ -3,29 +3,9 @@
  * Builds, with pdfkit, the signed copy of every document in a request (each recipient's own
  * field values and signature image) and the Certificate of Completion with the audit trail.
  */
-const crypto = require('crypto');
 const PDFDocument = require('pdfkit');
-
-/**
- * Signed documents and certificates are locked (AES-256): they open without a password and can be printed, but
- * editing, annotating, filling forms, assembling pages and copying content are not permitted. The random owner
- * password is never stored, so nobody (BexSign included) can unlock the permissions of an issued copy.
- */
-function lockedPdfOptions() {
-  return {
-    pdfVersion: '1.7ext3',
-    ownerPassword: crypto.randomBytes(32).toString('hex'),
-    permissions: {
-      printing: 'highResolution',
-      modifying: false,
-      copying: false,
-      annotating: false,
-      fillingForms: false,
-      contentAccessibility: true,
-      documentAssembly: false
-    }
-  };
-}
+// Issued PDFs are flattened to page images, encrypted (printing only) and certified: see pdfLock.js
+const { lockPdf, lockedPdfOptions, certify } = require('./pdfLock');
 
 const COLORS = {
   brand: '#007355',
@@ -79,6 +59,114 @@ function imageBufferFromDataUrl(value) {
   }
 }
 
+const fs = require('fs');
+const path = require('path');
+
+// Handwriting font for typed signatures: a bundled server/assets/fonts/signature.ttf, else a script font installed on
+// the machine; PDF standard fonts are the last resort
+const SIGNATURE_FONT_CANDIDATES = [
+  path.join(__dirname, '..', 'assets', 'fonts', 'signature.ttf'),
+  'C:/Windows/Fonts/segoesc.ttf',
+  '/usr/share/fonts/truetype/dancing-script/DancingScript-Regular.ttf',
+  '/Library/Fonts/SnellRoundhand.ttc'
+];
+const SIGNATURE_FONT_FILE = SIGNATURE_FONT_CANDIDATES.find((file) => {
+  try {
+    return fs.existsSync(file) && !file.endsWith('.ttc');
+  } catch (e) {
+    return false;
+  }
+}) || null;
+
+function useSignatureFont(doc) {
+  if (SIGNATURE_FONT_FILE) {
+    try {
+      doc.font(SIGNATURE_FONT_FILE);
+      return;
+    } catch (e) {}
+  }
+  doc.font('Times-BoldItalic');
+}
+
+const STAMP_BLUE = '#1c4b82';
+
+/**
+ * Sign ID shown under a signature: "BEX-SIGN-<initials>-EMP001-<year>-<seq>" on the first line and the document's
+ * unique hash on the second, built from the BexSign Document ID (same format as the on-screen stamp).
+ */
+function signatureIdLines(bexsignDocId, signerName) {
+  const initials = signIdInitials(signerName);
+  // Documents of a multi-document request add "-<n>" to the request ID; the sign ID uses the request ID itself
+  const requestId = String(bexsignDocId || '').replace(/^(BEX-DOC-\d{4}-\d{4}-[A-Z0-9]+-[A-Z0-9]+)-\d+$/i, '$1');
+  const match = /^BEX-DOC-(\d{4})-(\d{4})-(.+)$/.exec(requestId);
+  if (match) return [`BEX-SIGN-${initials}-EMP001-${match[1]}-${match[2]}`, match[3]];
+  return [`BEX-SIGN-${initials}-EMP001`, requestId];
+}
+
+/** Two-letter signer initials for the sign ID: first and last name ("Vimal Chavda" -> "VC"). */
+function signIdInitials(name) {
+  const words = String(name || '').split(/[\s@._-]+/).filter((word) => /[a-z0-9]/i.test(word));
+  if (words.length === 0) return 'BS';
+  if (words.length === 1) return words[0].replace(/[^a-z0-9]/gi, '').slice(0, 2).toUpperCase();
+  return `${words[0][0]}${words[words.length - 1][0]}`.toUpperCase();
+}
+
+/**
+ * Draws the BexSign signature stamp: blue bracket, "Signed by: <name>", the signature (image or typed text in a
+ * handwriting font), a baseline, the two-line sign ID and "Digitally Certified & Verified". Returns its height.
+ */
+const SIGNATURE_STAMP_HEIGHT = 104;
+function drawSignatureStamp(doc, x, y, { signerName, image, typedText, bexsignDocId, isInitial = false }) {
+  const areaTop = y + 12;
+  const areaHeight = 50;
+  const baseY = areaTop + areaHeight;
+  const [idLine1, idLine2] = signatureIdLines(bexsignDocId, signerName);
+
+  doc.save();
+  doc.lineWidth(2).strokeColor(STAMP_BLUE).lineCap('round').lineJoin('round');
+  // Top bracket corner, left bar and bottom bracket corner
+  doc.moveTo(x + 13, y + 5).lineTo(x + 5, y + 5).quadraticCurveTo(x, y + 5, x, y + 10).lineTo(x, baseY + 6)
+    .quadraticCurveTo(x, baseY + 11, x + 5, baseY + 11).lineTo(x + 13, baseY + 11).stroke();
+  doc.restore();
+
+  doc.font('Helvetica-Bold').fontSize(8.5).fillColor(STAMP_BLUE).text('Signed by:', x + 17, y + 1, { lineBreak: false, continued: true })
+    .fillColor('#1e293b').text(` ${signerName || ''}`, { lineBreak: false });
+
+  let drawn = false;
+  if (image) {
+    try {
+      doc.image(image, x + 12, areaTop + 3, { fit: [isInitial ? 90 : 190, areaHeight - 6], valign: 'center' });
+      drawn = true;
+    } catch (e) {
+      drawn = false;
+    }
+  }
+  if (!drawn) {
+    const text = String(typedText || (isInitial ? initialsOf(signerName) : signerName) || '').slice(0, 60);
+    useSignatureFont(doc);
+    doc.fontSize(22).fillColor('#0f172a').text(text, x + 12, areaTop + 11, { width: 200, lineBreak: false, ellipsis: true });
+  }
+
+  // Baseline under the signature
+  doc.save();
+  doc.moveTo(x - 8, baseY).lineTo(x + 218, baseY).lineWidth(0.6).strokeColor('#475569').stroke();
+  doc.restore();
+
+  doc.font('Courier-Bold').fontSize(7.5).fillColor('#0f172a')
+    .text(idLine1, x + 17, baseY + 3, { width: 260, lineBreak: false })
+    .text(idLine2, x + 17, baseY + 11.5, { width: 260, lineBreak: false });
+
+  // "Digitally Certified & Verified" with a check-circle mark
+  const checkY = baseY + 28;
+  doc.save();
+  doc.circle(x + 4, checkY, 4).lineWidth(0.9).strokeColor('#047857').stroke();
+  doc.moveTo(x + 2.2, checkY + 0.1).lineTo(x + 3.6, checkY + 1.5).lineTo(x + 6, checkY - 1.4).lineWidth(0.9).strokeColor('#047857').stroke();
+  doc.restore();
+  doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#047857').text('Digitally Certified & Verified', x + 12, checkY - 3.5, { lineBreak: false });
+
+  return SIGNATURE_STAMP_HEIGHT;
+}
+
 function initialsOf(name) {
   return String(name || '')
     .split(/\s+/)
@@ -106,10 +194,21 @@ function ensureSpace(doc, height) {
   }
 }
 
-function renderPdf({ info, footer }, draw) {
+/**
+ * Builds a PDF with pdfkit and issues it locked. `locked` renders the encrypted, certified vector version, used only
+ * when this server cannot flatten pages into images.
+ */
+function renderPdf(meta, draw) {
+  return renderPdfBuffer(meta, draw).then((plain) => lockPdf(plain, {
+    info: meta.info,
+    renderVector: ({ locked }) => renderPdfBuffer(meta, draw, { locked })
+  }));
+}
+
+function renderPdfBuffer({ info, footer }, draw, { locked = false } = {}) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({
-      ...lockedPdfOptions(),
+      ...(locked ? lockedPdfOptions() : {}),
       size: 'A4',
       margins: { top: 56, bottom: 64, left: 56, right: 56 },
       bufferPages: true,
@@ -137,6 +236,10 @@ function renderPdf({ info, footer }, draw) {
             lineBreak: false
           });
         doc.page.margins.bottom = bottomMargin;
+      }
+      if (locked) {
+        doc.switchToPage(range.start);
+        certify(doc);
       }
       doc.end();
     } catch (err) {
@@ -195,39 +298,25 @@ function fieldDisplayValue(field, recipient) {
  * Returns { full, height, draw(x, y, width) } or null when the field has nothing to render
  * (e.g. a stamp field without an uploaded stamp image).
  */
-function buildFieldBlock(doc, field, recipient, columnWidth) {
+// A typed signature is stored as its text (older signings); anything else that is not an image is not a signature
+const typedSignatureText = (value, field) => (
+  typeof value === 'string' && value.trim() && !value.startsWith('data:') && value !== field.type && value !== field.label
+    ? value.trim()
+    : ''
+);
+
+function buildFieldBlock(doc, field, recipient, columnWidth, context = {}) {
   const signerName = field.signerName || recipient.name || recipient.email;
 
   if (field.type === 'Signature' || field.type === 'Initial') {
     const isInitial = field.type === 'Initial';
-    const boxWidth = isInitial ? 120 : 210;
-    const boxHeight = 58;
     const image = imageBufferFromDataUrl(field.signatureImage) || imageBufferFromDataUrl(field.value) || imageBufferFromDataUrl(recipient.signature_image);
-    const caption = `Signed electronically by ${signerName} (${recipient.email}) on ${formatDateTime(field.signedAt || recipient.signed_at)}`;
-    doc.font('Helvetica').fontSize(7.5);
-    const captionHeight = doc.heightOfString(caption, { width: contentWidth(doc) });
+    const typedText = typedSignatureText(field.signatureImage, field) || typedSignatureText(recipient.signature_image, field);
     return {
       full: true,
-      height: boxHeight + 4 + captionHeight,
-      draw: (x, y, width) => {
-        doc.rect(x, y, boxWidth, boxHeight).strokeColor(COLORS.border).lineWidth(0.75).stroke();
-        let drawn = false;
-        if (image) {
-          try {
-            doc.image(image, x + 6, y + 4, { fit: [boxWidth - 12, boxHeight - 8], align: 'center', valign: 'center' });
-            drawn = true;
-          } catch (e) {
-            drawn = false;
-          }
-        }
-        if (!drawn) {
-          doc.font('Times-Italic').fontSize(20).fillColor('#0f172a').text(isInitial ? initialsOf(signerName) : signerName, x + 8, y + boxHeight / 2 - 11, {
-            width: boxWidth - 16,
-            align: 'center',
-            lineBreak: false
-          });
-        }
-        doc.font('Helvetica').fontSize(7.5).fillColor(COLORS.muted).text(caption, x, y + boxHeight + 4, { width });
+      height: SIGNATURE_STAMP_HEIGHT,
+      draw: (x, y) => {
+        drawSignatureStamp(doc, x + 4, y, { signerName, image, typedText, bexsignDocId: context.bexsignDocId, isInitial });
       }
     };
   }
@@ -277,7 +366,7 @@ function buildFieldBlock(doc, field, recipient, columnWidth) {
 }
 
 /** Lays out field blocks: signatures take a full row, other fields flow in two columns. */
-function drawFieldsGrid(doc, entries) {
+function drawFieldsGrid(doc, entries, context = {}) {
   const left = doc.page.margins.left;
   const width = contentWidth(doc);
   const gap = 18;
@@ -295,7 +384,7 @@ function drawFieldsGrid(doc, entries) {
   };
 
   entries.forEach(({ field, recipient }) => {
-    const block = buildFieldBlock(doc, field, recipient, columnWidth);
+    const block = buildFieldBlock(doc, field, recipient, columnWidth, context);
     if (!block) return;
     if (block.full) {
       closeRow();
@@ -329,6 +418,7 @@ function generateSignedDocumentPdf({
   sections = [],
   signerSummary = [],
   completedAt = new Date(),
+  statusLine = '',
   sender = {}
 }) {
   const title = String(documentName || 'Document').replace(/\.pdf$/i, '');
@@ -342,7 +432,7 @@ function generateSignedDocumentPdf({
       const width = contentWidth(doc);
 
       doc.font('Helvetica').fontSize(8).fillColor(COLORS.muted).text(`BexSign Document ID: ${bexsignDocId}`, left, doc.y);
-      doc.text(`Completed on ${formatDateTime(completedAt)}`, { width, align: 'left' });
+      doc.text(statusLine || `Completed on ${formatDateTime(completedAt)}`, { width, align: 'left' });
       doc.moveDown(0.3);
       doc.moveTo(left, doc.y).lineTo(left + width, doc.y).strokeColor(COLORS.border).lineWidth(0.75).stroke();
       doc.moveDown(0.8);
@@ -369,7 +459,7 @@ function generateSignedDocumentPdf({
         doc.moveDown(0.8);
         doc.moveTo(left, doc.y).lineTo(left + width, doc.y).strokeColor(COLORS.border).lineWidth(0.75).stroke();
         doc.moveDown(1);
-        drawFieldsGrid(doc, sections.flatMap(({ recipient, fields }) => fields.map((field) => ({ field, recipient }))));
+        drawFieldsGrid(doc, sections.flatMap(({ recipient, fields }) => fields.map((field) => ({ field, recipient }))), { bexsignDocId });
       } else if (signerSummary.length > 0) {
         sectionTitle(doc, 'Signatures');
         doc
@@ -483,7 +573,9 @@ function generateCompletionCertificatePdf({
             }
           }
           if (!drawn && r.status === 'signed') {
-            doc.font('Times-Italic').fontSize(18).fillColor('#0f172a').text(r.name || '', boxX + 6, boxY + 20, { width: 168, align: 'center', lineBreak: false });
+            const typed = typeof r.signature_image === 'string' && r.signature_image && !r.signature_image.startsWith('data:') ? r.signature_image : (r.name || '');
+            useSignatureFont(doc);
+            doc.fontSize(18).fillColor('#0f172a').text(typed, boxX + 6, boxY + 20, { width: 168, align: 'center', lineBreak: false });
           }
         }
         doc.x = left;
@@ -523,6 +615,7 @@ function generateCompletionCertificatePdf({
 }
 
 module.exports = {
+  formatDateTime,
   generateSignedDocumentPdf,
   generateCompletionCertificatePdf,
   toPlainText

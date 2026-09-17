@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, FileText, Download, Eye, Clock, CheckCircle2 } from 'lucide-react';
 import { generateAndDownloadPdf } from '../utils/pdfGenerator';
+import { downloadAllSignedDocuments } from '../utils/signedPdf';
 import { generateBexsignId } from '../utils/documentId';
 import { getDocumentOwner } from '../utils/currentUser';
 
@@ -46,7 +47,16 @@ export default function DocumentVersionsModal({ doc, onClose, onViewVersion }) {
     fetchVersions();
   }, [doc?.id]);
 
-  const handleDownloadVersion = (ver) => {
+  const handleDownloadVersion = async (ver) => {
+    // A sent request downloads the locked PDFs issued by the server (not editable)
+    if (doc?.id && String(doc?.status || '').toLowerCase() !== 'draft') {
+      try {
+        await downloadAllSignedDocuments(doc.id);
+      } catch (err) {
+        window.alert(err instanceof TypeError ? 'Could not reach the BexSign server at http://localhost:5000.' : err.message);
+      }
+      return;
+    }
     const savedSig = doc?.signature_image || localStorage.getItem(`bexsign_doc_${doc?.id}_signature`) || '';
     const savedSigner = doc?.signer_name || localStorage.getItem(`bexsign_doc_${doc?.id}_signer`) || 'Vimal Chavda';
     const savedType = localStorage.getItem(`bexsign_doc_${doc?.id}_sigtype`) || (savedSig && savedSig.startsWith('data:') ? 'draw' : 'type');

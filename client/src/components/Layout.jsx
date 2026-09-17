@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Link, useNavigate, Outlet, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -11,11 +11,11 @@ import {
   Settings as SettingsIcon,
   PenTool,
   PlusCircle,
+  Plus,
   Bell,
   Search,
   LogOut,
   ChevronDown,
-  ChevronRight,
   Megaphone,
   Layers,
   User,
@@ -24,22 +24,160 @@ import {
   Code,
   ShieldCheck,
   History,
-  AlertOctagon
+  AlertOctagon,
+  FolderOpen,
+  PanelLeftClose,
+  PanelLeftOpen
 } from 'lucide-react';
+
+/**
+ * Sidebar menu. Groups open one at a time (opening a group closes the one that was open, at every level), and the
+ * group holding the current page opens by itself. `match` lists other paths that belong to an item; `count` is the
+ * document status whose number is shown next to it.
+ */
+const NAV_SECTIONS = [
+  {
+    title: 'Overview',
+    items: [
+      { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, to: '/dashboard', match: ['/'] },
+      { key: 'users', label: 'Users & Roles', icon: Users, to: '/users', match: ['/settings/users'] }
+    ]
+  },
+  {
+    title: 'Workspace',
+    items: [
+      {
+        key: 'documents',
+        label: 'Documents',
+        icon: FileText,
+        children: [
+          {
+            key: 'sent',
+            label: 'Sent Documents',
+            icon: Send,
+            children: [
+              { label: 'All Documents', to: '/documents/all', match: ['/documents'], icon: FolderOpen, count: 'all' },
+              { label: 'All Sent', to: '/documents/sent/all', icon: Send },
+              { label: 'Create Document', to: '/documents/create', icon: Plus, tone: 'accent' },
+              { label: 'Scheduled', to: '/documents/sent/scheduled', dot: '#0ea5e9', count: 'scheduled' },
+              { label: 'In Progress', to: '/documents/sent/in-progress', dot: '#f59e0b', count: 'in progress' },
+              { label: 'Completed', to: '/documents/sent/completed', dot: '#10b981', count: 'completed' },
+              { label: 'Declined', to: '/documents/sent/declined', dot: '#f43f5e', count: 'declined' },
+              { label: 'Expired', to: '/documents/sent/expired', dot: '#94a3b8', count: 'expired' },
+              { label: 'Recalled', to: '/documents/sent/recalled', dot: '#f97316', count: 'recalled' },
+              { label: 'Draft', to: '/documents/sent/draft', dot: '#64748b', count: 'draft' },
+              { label: 'Bulk Send', to: '/documents/sent/bulk', dot: '#6366f1' }
+            ]
+          },
+          {
+            key: 'received',
+            label: 'Received',
+            icon: Inbox,
+            children: [
+              { label: 'All Received', to: '/documents/received/all', match: ['/documents/received'], icon: Inbox },
+              { label: 'Needs Action', to: '/documents/received/action', dot: '#f59e0b', tone: 'warn' }
+            ]
+          }
+        ]
+      },
+      { key: 'templates', label: 'Templates', icon: FileBox, to: '/templates' },
+      {
+        key: 'reports',
+        label: 'Reports',
+        icon: BarChart3,
+        children: [
+          { label: 'All Reports', to: '/reports/all', match: ['/reports'], dot: '#6366f1' },
+          { label: 'Timeline', to: '/reports/timeline', dot: '#0ea5e9' },
+          { label: 'Scheduled Reports', to: '/reports/scheduled', dot: '#10b981' }
+        ]
+      }
+    ]
+  },
+  {
+    title: 'Manage',
+    items: [
+      {
+        key: 'others',
+        label: 'Others',
+        icon: Globe,
+        children: [
+          { label: 'Failed Access', to: '/others/failed-access', icon: AlertOctagon },
+          { label: 'Document Validity', to: '/others/document-validity', icon: ShieldCheck },
+          { label: 'Activity History', to: '/others/activity-history', icon: History },
+          { label: 'Developer API', to: '/others/api', icon: Code }
+        ]
+      },
+      {
+        key: 'settings',
+        label: 'Settings',
+        icon: SettingsIcon,
+        children: [
+          { label: 'General', to: '/settings/general', match: ['/settings'], icon: SettingsIcon },
+          { label: 'Users & Roles', to: '/settings/users', icon: Users },
+          { label: 'My Profile', to: '/settings/profile', icon: User },
+          { label: 'Integrations', to: '/settings/integrations', icon: Layers },
+          { label: 'My Notifications', to: '/settings/notifications', icon: Bell },
+          { label: 'Contacts', to: '/settings/contacts', icon: Users },
+          { label: 'Trash', to: '/settings/trash', icon: Trash2, tone: 'danger' },
+          { label: 'Developer Settings', to: '/settings/developer', icon: Code }
+        ]
+      },
+      {
+        key: 'signatures',
+        label: 'Signatures',
+        icon: PenTool,
+        children: [
+          { label: 'My Signatures', to: '/signatures', match: ['/settings/signatures'], icon: PenTool },
+          { label: 'Send for Signatures', to: '/send-for-signatures', icon: Send },
+          { label: 'Sign Yourself', to: '/sign-yourself', icon: Plus, tone: 'accent' },
+          { label: 'Use Template', to: '/templates', icon: FileBox }
+        ]
+      }
+    ]
+  }
+];
+
+const itemMatches = (item, pathname) => Boolean(item.to) && (pathname === item.to || (item.match || []).includes(pathname));
+
+/** Keys of the groups leading to the item of the current page, e.g. ['documents', 'sent']; null when none. */
+function findActivePath(pathname) {
+  const topItems = NAV_SECTIONS.flatMap((section) => section.items);
+  // A top-level page (e.g. Templates) wins over the same page listed inside a group
+  if (topItems.some((item) => !item.children && itemMatches(item, pathname))) return [];
+  const search = (items, trail) => {
+    for (const item of items) {
+      if (item.children) {
+        const found = search(item.children, [...trail, item.key]);
+        if (found) return found;
+      } else if (itemMatches(item, pathname)) {
+        return trail;
+      }
+    }
+    return null;
+  };
+  return search(topItems, []);
+}
+
+const groupContains = (group, pathname) => (group.children || []).some((child) => (child.children ? groupContains(child, pathname) : itemMatches(child, pathname)));
+
+/** Animated open/close: the grid row grows from 0fr to 1fr; closed content is inert (not focusable). */
+function Collapse({ open, id, children }) {
+  return (
+    <div
+      id={id}
+      className={`grid transition-[grid-template-rows,opacity] duration-300 ease-out ${open ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}
+      inert={open ? undefined : ''}
+    >
+      <div className="min-h-0 overflow-hidden">{children}</div>
+    </div>
+  );
+}
 
 export default function Layout() {
   // Desktop keeps the sidebar open; phones and tablets start with it closed (overlay drawer)
   const isDesktopWidth = () => typeof window === 'undefined' || window.innerWidth >= 1024;
   const [sidebarOpen, setSidebarOpen] = useState(isDesktopWidth);
   const [searchQuery, setSearchQuery] = useState('');
-  const [openSubmenu, setOpenSubmenu] = useState({
-    documents: true,
-    sent: false,
-    reports: false,
-    others: false,
-    settings: false,
-    signatures: false
-  });
 
   const currentUser = useMemo(() => {
     try {
@@ -55,6 +193,14 @@ export default function Layout() {
 
   const navigate = useNavigate();
   const location = useLocation();
+  const { pathname } = location;
+
+  // Open groups as a path of keys, one per level: ['documents', 'sent'] = Documents > Sent Documents
+  const [openPath, setOpenPath] = useState(() => {
+    const active = findActivePath(pathname);
+    return active && active.length > 0 ? active : ['documents'];
+  });
+  const navRef = useRef(null);
 
   const handleLogout = () => {
     localStorage.removeItem('token');
@@ -62,260 +208,284 @@ export default function Layout() {
     navigate('/login');
   };
 
-  const toggleSubmenu = (menuKey) => {
-    setOpenSubmenu(prev => ({ ...prev, [menuKey]: !prev[menuKey] }));
+  // Accordion: opening a group closes the other groups of the same level (and anything open below them)
+  const toggleGroup = (level, key) => {
+    setOpenPath((prev) => (prev[level] === key ? prev.slice(0, level) : [...prev.slice(0, level), key]));
+  };
+
+  // Collapsed desktop sidebar: a group icon expands the sidebar with that group open
+  const openGroupFromRail = (key) => {
+    setSidebarOpen(true);
+    setOpenPath([key]);
   };
 
   useEffect(() => {
     if (!isDesktopWidth()) setSidebarOpen(false);
-  }, [location.pathname]);
+    // The group of the page just opened opens by itself (closing the others) and its link scrolls into view
+    const active = findActivePath(pathname);
+    if (active && active.length > 0) setOpenPath(active);
+    const timer = setTimeout(() => {
+      const current = navRef.current?.querySelector('[aria-current="page"]');
+      if (current) current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }, 320);
+    return () => clearTimeout(timer);
+  }, [pathname]);
 
-  const isActive = (path) => location.pathname === path;
+  // Number of documents per status for the Sent Documents list (refreshed when the page changes)
+  const [statusCounts, setStatusCounts] = useState({});
+  useEffect(() => {
+    let cancelled = false;
+    fetch('http://localhost:5000/api/documents')
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled || !Array.isArray(data?.documents)) return;
+        const counts = { all: data.documents.length };
+        data.documents.forEach((doc) => {
+          let status = String(doc.status || 'Draft').toLowerCase();
+          if (status === 'in process') status = 'in progress';
+          counts[status] = (counts[status] || 0) + 1;
+        });
+        setStatusCounts(counts);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [pathname]);
+
+  const renderLeaf = (item) => {
+    const active = itemMatches(item, pathname);
+    const Icon = item.icon;
+    const count = item.count ? statusCounts[item.count] || 0 : 0;
+    const toneClass = active
+      ? 'bg-gradient-to-r from-red-50 to-rose-50/30 text-[#c81010] font-semibold'
+      : item.tone === 'accent'
+        ? 'text-[#E71414] font-semibold hover:bg-red-50'
+        : item.tone === 'warn'
+          ? 'text-amber-700 font-semibold hover:bg-amber-50'
+          : item.tone === 'danger'
+            ? 'text-rose-600 hover:bg-rose-50'
+            : 'text-slate-600 hover:bg-slate-100/80 hover:text-slate-900';
+    return (
+      <Link
+        key={item.to + item.label}
+        to={item.to}
+        aria-current={active ? 'page' : undefined}
+        className={`group/leaf relative flex items-center gap-2.5 rounded-lg px-2.5 py-[7px] text-[12.5px] transition-colors duration-150 ${toneClass}`}
+      >
+        {active && <span className="absolute -left-[11.5px] top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full bg-[#E71414]" aria-hidden="true" />}
+        {Icon ? (
+          <Icon size={13} className={`shrink-0 ${active ? 'text-[#E71414]' : item.tone ? '' : 'text-slate-400 group-hover/leaf:text-slate-600'}`} />
+        ) : (
+          <span
+            className={`h-2 w-2 shrink-0 rounded-full ring-2 ${active ? 'ring-red-100' : 'ring-transparent'}`}
+            style={{ backgroundColor: item.dot || '#cbd5e1' }}
+            aria-hidden="true"
+          />
+        )}
+        <span className="truncate">{item.label}</span>
+        {count > 0 && (
+          <span
+            className={`ml-auto min-w-[22px] rounded-full px-1.5 py-px text-center text-[10px] font-bold tabular-nums transition ${
+              active ? 'bg-[#E71414] text-white shadow-sm shadow-red-500/30' : 'bg-slate-100 text-slate-500 group-hover/leaf:bg-white group-hover/leaf:shadow-sm'
+            }`}
+          >
+            {count}
+          </span>
+        )}
+      </Link>
+    );
+  };
+
+  // Second level group (Sent Documents, Received) with its own accordion
+  const renderSubGroup = (group) => {
+    const open = openPath[1] === group.key;
+    const containsActive = groupContains(group, pathname);
+    const Icon = group.icon;
+    return (
+      <div key={group.key}>
+        <button
+          type="button"
+          onClick={() => toggleGroup(1, group.key)}
+          aria-expanded={open}
+          aria-controls={`sidebar-group-${group.key}`}
+          className={`group/sub flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-[12.5px] font-semibold transition-colors duration-150 ${
+            open ? 'bg-slate-100/80 text-slate-900' : containsActive ? 'text-[#c81010] hover:bg-red-50/60' : 'text-slate-600 hover:bg-slate-100/70 hover:text-slate-900'
+          }`}
+        >
+          <span
+            className={`grid h-6 w-6 shrink-0 place-items-center rounded-md transition ${
+              containsActive ? 'bg-red-100 text-[#E71414]' : open ? 'bg-white text-slate-700 shadow-sm ring-1 ring-slate-200' : 'bg-slate-100 text-slate-500 group-hover/sub:bg-white'
+            }`}
+          >
+            <Icon size={13} />
+          </span>
+          <span className="truncate">{group.label}</span>
+          <ChevronDown size={14} className={`ml-auto shrink-0 transition-transform duration-300 ${open ? 'rotate-180 text-slate-600' : 'text-slate-400'}`} />
+        </button>
+        <Collapse open={open} id={`sidebar-group-${group.key}`}>
+          <div className="relative mb-1.5 ml-[0.8rem] mt-1 space-y-px border-l border-slate-200 pl-2.5">
+            {group.children.map((child) => renderLeaf(child))}
+          </div>
+        </Collapse>
+      </div>
+    );
+  };
+
+  const renderTopItem = (item) => {
+    const Icon = item.icon;
+    const containsActive = item.children ? groupContains(item, pathname) : itemMatches(item, pathname);
+    const open = Boolean(item.children) && openPath[0] === item.key;
+    const tileClass = `grid h-8 w-8 shrink-0 place-items-center rounded-lg transition-all duration-200 ${
+      containsActive
+        ? 'bg-gradient-to-br from-[#f03030] to-[#c20f0f] text-white shadow-md shadow-red-500/30'
+        : open
+          ? 'bg-white text-slate-800 shadow-sm ring-1 ring-slate-200'
+          : 'bg-slate-100/90 text-slate-500 group-hover:bg-white group-hover:text-[#E71414] group-hover:shadow-sm group-hover:ring-1 group-hover:ring-slate-200'
+    }`;
+    const rowClass = `group relative flex w-full items-center gap-3 rounded-xl px-2 py-1.5 text-[13.5px] font-semibold transition-colors duration-200 ${
+      sidebarOpen ? '' : 'justify-center'
+    } ${
+      containsActive && !open
+        ? 'bg-gradient-to-r from-red-50 to-rose-50/20 text-[#c81010]'
+        : open
+          ? 'bg-slate-50 text-slate-900'
+          : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+    }`;
+    const accent = containsActive && <span className="absolute -left-3 top-1/2 h-6 w-1 -translate-y-1/2 rounded-r-full bg-[#E71414]" aria-hidden="true" />;
+
+    if (!item.children) {
+      return (
+        <Link key={item.key} to={item.to} title={sidebarOpen ? undefined : item.label} aria-current={containsActive ? 'page' : undefined} className={rowClass}>
+          {accent}
+          <span className={tileClass}><Icon size={17} /></span>
+          {sidebarOpen && <span className="truncate">{item.label}</span>}
+        </Link>
+      );
+    }
+
+    return (
+      <div key={item.key}>
+        <button
+          type="button"
+          onClick={() => (sidebarOpen ? toggleGroup(0, item.key) : openGroupFromRail(item.key))}
+          title={sidebarOpen ? undefined : item.label}
+          aria-expanded={sidebarOpen ? open : undefined}
+          aria-controls={`sidebar-group-${item.key}`}
+          className={rowClass}
+        >
+          {accent}
+          <span className={tileClass}><Icon size={17} /></span>
+          {sidebarOpen && (
+            <>
+              <span className="truncate">{item.label}</span>
+              <ChevronDown size={16} className={`ml-auto shrink-0 transition-transform duration-300 ${open ? 'rotate-180 text-slate-700' : 'text-slate-400 group-hover:text-slate-600'}`} />
+            </>
+          )}
+        </button>
+        {sidebarOpen && (
+          <Collapse open={open} id={`sidebar-group-${item.key}`}>
+            <div className="relative mb-2 ml-[1.35rem] mt-1 space-y-0.5 border-l border-slate-200 pl-2.5">
+              {item.children.map((child) => (child.children ? renderSubGroup(child) : renderLeaf(child)))}
+            </div>
+          </Collapse>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="flex h-screen bg-slate-50 text-slate-900 overflow-hidden font-sans">
       {/* Sidebar Navigation */}
-      <aside className={`${sidebarOpen ? 'fixed inset-y-0 left-0 w-64 lg:static' : 'hidden lg:w-20'} lg:flex bg-white border-r border-slate-200 transition-all duration-300 flex flex-col justify-between shrink-0 z-40 lg:z-20 shadow-sm`}>
-        <div className="flex flex-col h-full overflow-y-auto">
-          {/* Logo & Brand */}
-          <div className="flex items-center justify-between p-4 border-b border-slate-100 sticky top-0 bg-white z-10">
-            <Link to="/dashboard" className="flex items-center gap-2">
-              <div className="bg-[#E71414] text-white p-1.5 rounded-lg font-black text-lg tracking-wider">
-                BS
-              </div>
-              {sidebarOpen && (
-                <span className="font-extrabold text-xl tracking-tight text-slate-900">
+      <aside className={`${sidebarOpen ? 'fixed inset-y-0 left-0 w-64 lg:static' : 'hidden lg:w-20'} lg:flex bg-gradient-to-b from-white via-white to-slate-50 border-r border-slate-200/80 transition-all duration-300 flex flex-col shrink-0 z-40 lg:z-20 shadow-[4px_0_24px_-12px_rgba(15,23,42,0.12)]`}>
+        {/* Logo & Brand */}
+        <div className={`flex h-16 shrink-0 items-center border-b border-slate-100 ${sidebarOpen ? 'justify-between px-4' : 'justify-center px-2'}`}>
+          <Link to="/dashboard" className="flex min-w-0 items-center gap-2.5" title="BexSign dashboard">
+            <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-[#ff3d3d] via-[#E71414] to-[#b30c0c] text-[15px] font-black tracking-wider text-white shadow-lg shadow-red-500/30 ring-1 ring-white/40">
+              BS
+            </div>
+            {sidebarOpen && (
+              <div className="min-w-0 leading-tight">
+                <p className="text-[19px] font-extrabold tracking-tight text-slate-900">
                   BEX<span className="text-[#E71414]">SIGN</span>
-                </span>
-              )}
-            </Link>
-            <button 
-              onClick={() => setSidebarOpen(!sidebarOpen)} 
-              className="p-1.5 rounded-md hover:bg-slate-100 text-slate-500 transition"
-              title="Toggle Menu"
+                </p>
+                <p className="text-[9.5px] font-bold uppercase tracking-[0.2em] text-slate-400">e-Signature suite</p>
+              </div>
+            )}
+          </Link>
+          {sidebarOpen && (
+            <button
+              type="button"
+              onClick={() => setSidebarOpen(false)}
+              className="rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+              title="Collapse menu"
+              aria-label="Collapse menu"
             >
-              ☰
+              <PanelLeftClose size={18} />
+            </button>
+          )}
+        </div>
+
+        {/* Navigation Items */}
+        <nav ref={navRef} className="sidebar-scroll flex-1 overflow-y-auto overflow-x-hidden px-3 pb-4" aria-label="Main navigation">
+          {!sidebarOpen && (
+            <button
+              type="button"
+              onClick={() => setSidebarOpen(true)}
+              className="mx-auto mt-3 grid h-8 w-8 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+              title="Expand menu"
+              aria-label="Expand menu"
+            >
+              <PanelLeftOpen size={18} />
+            </button>
+          )}
+          {NAV_SECTIONS.map((section) => (
+            <div key={section.title}>
+              {sidebarOpen ? (
+                <p className="px-2.5 pb-1.5 pt-4 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">{section.title}</p>
+              ) : (
+                <div className="mx-auto my-3 h-px w-8 bg-slate-200" aria-hidden="true" />
+              )}
+              <div className="space-y-1">{section.items.map((item) => renderTopItem(item))}</div>
+            </div>
+          ))}
+        </nav>
+
+        {/* Announcements, portals and quick create */}
+        <div className="shrink-0 space-y-2.5 border-t border-slate-100 bg-white/90 p-3 backdrop-blur">
+          <div className={sidebarOpen ? 'space-y-1' : 'flex flex-col items-center gap-1.5'}>
+            <button
+              type="button"
+              onClick={() => setShowAnnouncementsModal(true)}
+              title="Announcements"
+              className={`group relative flex items-center gap-2.5 rounded-xl text-[12px] font-semibold text-slate-600 transition hover:bg-amber-50 hover:text-amber-800 ${sidebarOpen ? 'w-full px-2 py-1.5' : 'h-9 w-9 justify-center'}`}
+            >
+              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-amber-50 text-amber-500 ring-1 ring-amber-100 transition group-hover:bg-white">
+                <Megaphone size={14} />
+              </span>
+              {sidebarOpen && <span className="truncate">Announcements</span>}
+              {sidebarOpen && <span className="ml-auto rounded-full bg-[#E71414] px-1.5 py-px text-[9px] font-bold uppercase tracking-wide text-white">New</span>}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowPortalsModal(true)}
+              title="My Portals"
+              className={`group flex items-center gap-2.5 rounded-xl text-[12px] font-semibold text-slate-600 transition hover:bg-indigo-50 hover:text-indigo-800 ${sidebarOpen ? 'w-full px-2 py-1.5' : 'h-9 w-9 justify-center'}`}
+            >
+              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-indigo-50 text-indigo-500 ring-1 ring-indigo-100 transition group-hover:bg-white">
+                <Layers size={14} />
+              </span>
+              {sidebarOpen && <span className="truncate">My Portals</span>}
             </button>
           </div>
-
-          {/* Navigation Items */}
-          <nav className="mt-3 px-3 space-y-1">
-            {/* Dashboard */}
-            <Link
-              to="/dashboard"
-              className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition font-medium text-sm ${
-                isActive('/dashboard')
-                  ? 'bg-red-50 text-[#E71414] font-semibold'
-                  : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900'
-              }`}
-            >
-              <LayoutDashboard size={18} className={isActive('/dashboard') ? 'text-[#E71414]' : 'text-slate-500'} />
-              {sidebarOpen && <span>Dashboard</span>}
-            </Link>
-
-            {/* Users & Access (Zoho Sign Style) */}
-            <Link
-              to="/users"
-              className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition font-medium text-sm ${
-                isActive('/users') || isActive('/settings/users')
-                  ? 'bg-purple-50 text-purple-700 font-semibold'
-                  : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900'
-              }`}
-            >
-              <Users size={18} className={isActive('/users') || isActive('/settings/users') ? 'text-purple-600' : 'text-slate-500'} />
-              {sidebarOpen && <span>Users & Roles</span>}
-            </Link>
-
-            {/* Documents Collapsible Header */}
-            <div>
-              <button
-                onClick={() => toggleSubmenu('documents')}
-                className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-slate-700 hover:bg-slate-100 transition text-sm font-medium"
-              >
-                <div className="flex items-center gap-3">
-                  <FileText size={18} className="text-slate-500" />
-                  {sidebarOpen && <span>Documents</span>}
-                </div>
-                {sidebarOpen && (openSubmenu.documents ? <ChevronDown size={16} /> : <ChevronRight size={16} />)}
-              </button>
-
-              {sidebarOpen && openSubmenu.documents && (
-                <div className="ml-6 pl-2 border-l border-slate-200 space-y-1 my-1">
-                  {/* Sent Submenu */}
-                  <div>
-                    <button
-                      onClick={() => toggleSubmenu('sent')}
-                      className="w-full flex items-center justify-between py-1.5 px-2 text-xs font-semibold text-slate-600 hover:text-[#E71414] transition"
-                    >
-                      <div className="flex items-center gap-2">
-                        <Send size={14} />
-                        <span>Sent Documents</span>
-                      </div>
-                      {openSubmenu.sent ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                    </button>
-                    {openSubmenu.sent && (
-                      <div className="ml-4 space-y-1 text-xs text-slate-500 py-1">
-                        <Link to="/documents/all" className="block py-1.5 px-2 font-extrabold text-slate-900 hover:text-[#E71414] bg-slate-100/80 rounded mb-1">📁 All Documents</Link>
-                        <Link to="/documents/sent/all" className="block py-1 px-2 hover:text-[#E71414] rounded">All Sent</Link>
-                        <Link to="/documents/create" className="block py-1 px-2 hover:text-[#E71414] rounded font-medium text-[#E71414]">+ Create Document</Link>
-                        <Link to="/documents/sent/scheduled" className="block py-1 px-2 hover:text-[#E71414] rounded">Scheduled</Link>
-                        <Link to="/documents/sent/in-progress" className="block py-1 px-2 hover:text-[#E71414] rounded">In Progress</Link>
-                        <Link to="/documents/sent/completed" className="block py-1 px-2 hover:text-[#E71414] rounded">Completed</Link>
-                        <Link to="/documents/sent/declined" className="block py-1 px-2 hover:text-[#E71414] rounded">Declined</Link>
-                        <Link to="/documents/sent/expired" className="block py-1 px-2 hover:text-[#E71414] rounded">Expired</Link>
-                        <Link to="/documents/sent/recalled" className="block py-1 px-2 hover:text-[#E71414] rounded">Recalled</Link>
-                        <Link to="/documents/sent/draft" className="block py-1 px-2 hover:text-[#E71414] rounded">Draft</Link>
-                        <Link to="/documents/sent/bulk" className="block py-1 px-2 hover:text-[#E71414] rounded">Bulk Send</Link>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Received Submenu */}
-                  <div className="pt-1">
-                    <Link to="/documents/received" className="flex items-center gap-2 py-1.5 px-2 text-xs font-semibold text-slate-600 hover:text-[#E71414]">
-                      <Inbox size={14} />
-                      <span>Received</span>
-                    </Link>
-                    <div className="ml-4 space-y-1 text-xs text-slate-500 py-1">
-                      <Link to="/documents/received/all" className="block py-1 px-2 hover:text-[#E71414] rounded">All Received</Link>
-                      <Link to="/documents/received/action" className="block py-1 px-2 text-amber-600 font-semibold hover:text-[#E71414] rounded">Needs Action</Link>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Templates */}
-            <Link
-              to="/templates"
-              className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition font-medium text-sm ${
-                isActive('/templates') ? 'bg-red-50 text-[#E71414] font-semibold' : 'text-slate-700 hover:bg-slate-100'
-              }`}
-            >
-              <FileBox size={18} className={isActive('/templates') ? 'text-[#E71414]' : 'text-slate-500'} />
-              {sidebarOpen && <span>Templates</span>}
-            </Link>
-
-            {/* Reports */}
-            <div>
-              <button
-                onClick={() => toggleSubmenu('reports')}
-                className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-slate-700 hover:bg-slate-100 transition text-sm font-medium"
-              >
-                <div className="flex items-center gap-3">
-                  <BarChart3 size={18} className="text-slate-500" />
-                  {sidebarOpen && <span>Reports</span>}
-                </div>
-                {sidebarOpen && (openSubmenu.reports ? <ChevronDown size={16} /> : <ChevronRight size={16} />)}
-              </button>
-              {sidebarOpen && openSubmenu.reports && (
-                <div className="ml-6 pl-2 border-l border-slate-200 space-y-1 my-1 text-xs text-slate-600">
-                  <Link to="/reports/all" className="block py-1.5 px-2 hover:text-[#E71414]">All Reports</Link>
-                  <Link to="/reports/timeline" className="block py-1.5 px-2 hover:text-[#E71414]">Timeline</Link>
-                  <Link to="/reports/scheduled" className="block py-1.5 px-2 hover:text-[#E71414]">Scheduled Reports</Link>
-                </div>
-              )}
-            </div>
-
-            {/* Others */}
-            <div>
-              <button
-                onClick={() => toggleSubmenu('others')}
-                className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-slate-700 hover:bg-slate-100 transition text-sm font-medium"
-              >
-                <div className="flex items-center gap-3">
-                  <Globe size={18} className="text-slate-500" />
-                  {sidebarOpen && <span>Others</span>}
-                </div>
-                {sidebarOpen && (openSubmenu.others ? <ChevronDown size={16} /> : <ChevronRight size={16} />)}
-              </button>
-              {sidebarOpen && openSubmenu.others && (
-                <div className="ml-6 pl-2 border-l border-slate-200 space-y-1 my-1 text-xs text-slate-600">
-                  <Link to="/others/failed-access" className="flex items-center gap-1.5 py-1.5 px-2 hover:text-[#E71414]"><AlertOctagon size={13}/> Failed Access</Link>
-                  <Link to="/others/document-validity" className="flex items-center gap-1.5 py-1.5 px-2 hover:text-[#E71414]"><ShieldCheck size={13}/> Document Validity</Link>
-                  <Link to="/others/activity-history" className="flex items-center gap-1.5 py-1.5 px-2 hover:text-[#E71414]"><History size={13}/> Activity History</Link>
-                  <Link to="/others/api" className="flex items-center gap-1.5 py-1.5 px-2 hover:text-[#E71414]"><Code size={13}/> Developer API</Link>
-                </div>
-              )}
-            </div>
-
-            {/* Settings */}
-            <div>
-              <button
-                onClick={() => toggleSubmenu('settings')}
-                className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-slate-700 hover:bg-slate-100 transition text-sm font-medium"
-              >
-                <div className="flex items-center gap-3">
-                  <SettingsIcon size={18} className="text-slate-500" />
-                  {sidebarOpen && <span>Settings</span>}
-                </div>
-                {sidebarOpen && (openSubmenu.settings ? <ChevronDown size={16} /> : <ChevronRight size={16} />)}
-              </button>
-              {sidebarOpen && openSubmenu.settings && (
-                <div className="ml-6 pl-2 border-l border-slate-200 space-y-1 my-1 text-xs text-slate-600">
-                  <Link to="/settings/general" className="block py-1.5 px-2 hover:text-[#E71414]">General</Link>
-                  <Link to="/settings/users" className="flex items-center gap-1.5 py-1.5 px-2 hover:text-[#E71414] font-semibold text-purple-700"><Users size={13}/> Users & Roles</Link>
-                  <Link to="/settings/profile" className="flex items-center gap-1.5 py-1.5 px-2 hover:text-[#E71414]"><User size={13}/> My Profile</Link>
-                  <Link to="/settings/integrations" className="block py-1.5 px-2 hover:text-[#E71414]">Integrations</Link>
-                  <Link to="/settings/notifications" className="block py-1.5 px-2 hover:text-[#E71414]">My Notifications</Link>
-                  <Link to="/settings/contacts" className="flex items-center gap-1.5 py-1.5 px-2 hover:text-[#E71414]"><Users size={13}/> Contacts</Link>
-                  <Link to="/settings/trash" className="flex items-center gap-1.5 py-1.5 px-2 hover:text-[#E71414] text-red-600"><Trash2 size={13}/> Trash</Link>
-                  <Link to="/settings/developer" className="block py-1.5 px-2 hover:text-[#E71414]">Developer Settings</Link>
-                </div>
-              )}
-            </div>
-
-            {/* Signatures */}
-            <div>
-              <button
-                onClick={() => toggleSubmenu('signatures')}
-                className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-slate-700 hover:bg-slate-100 transition text-sm font-medium"
-              >
-                <div className="flex items-center gap-3">
-                  <PenTool size={18} className="text-slate-500" />
-                  {sidebarOpen && <span>Signatures</span>}
-                </div>
-                {sidebarOpen && (openSubmenu.signatures ? <ChevronDown size={16} /> : <ChevronRight size={16} />)}
-              </button>
-              {sidebarOpen && openSubmenu.signatures && (
-                <div className="ml-6 pl-2 border-l border-slate-200 space-y-1 my-1 text-xs text-slate-600">
-                  <Link to="/signatures" className="block py-1.5 px-2 hover:text-[#E71414]">My Signatures</Link>
-                  <Link to="/send-for-signatures" className="block py-1.5 px-2 hover:text-[#E71414]">Send for Signatures</Link>
-                  <Link to="/sign-yourself" className="block py-1.5 px-2 hover:text-[#E71414] font-medium text-[#E71414]">Sign Yourself</Link>
-                  <Link to="/templates" className="block py-1.5 px-2 hover:text-[#E71414]">Use Template</Link>
-                </div>
-              )}
-            </div>
-
-            {/* Sidebar Popup Actions */}
-            <div className="pt-4 border-t border-slate-200 mt-2 space-y-1">
-              <button
-                onClick={() => setShowAnnouncementsModal(true)}
-                className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-slate-600 hover:bg-red-50 hover:text-[#E71414] text-xs font-semibold transition"
-              >
-                <Megaphone size={16} className="text-amber-500" />
-                {sidebarOpen && <span>Announcements</span>}
-              </button>
-              <button
-                onClick={() => setShowPortalsModal(true)}
-                className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-slate-600 hover:bg-red-50 hover:text-[#E71414] text-xs font-semibold transition"
-              >
-                <Layers size={16} className="text-indigo-500" />
-                {sidebarOpen && <span>My Portals</span>}
-              </button>
-            </div>
-          </nav>
-
-          {/* Quick Create CTA at Bottom */}
-          <div className="p-3 mt-auto border-t border-slate-100 sticky bottom-0 bg-white">
-            <Link
-              to="/documents/create"
-              className="w-full bg-[#E71414] hover:bg-[#c40f0f] text-white py-2.5 px-3 rounded-lg font-semibold flex items-center justify-center gap-2 transition text-sm shadow-md"
-            >
-              <PlusCircle size={18} />
-              {sidebarOpen && <span>Create Document</span>}
-            </Link>
-          </div>
+          <Link
+            to="/documents/create"
+            title="Create Document"
+            className={`group flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#f02b2b] to-[#c20f0f] font-bold text-white shadow-lg shadow-red-500/30 transition hover:-translate-y-0.5 hover:shadow-xl hover:shadow-red-500/40 ${sidebarOpen ? 'w-full px-3 py-2.5 text-sm' : 'mx-auto h-10 w-10'}`}
+          >
+            <PlusCircle size={18} className="transition-transform duration-300 group-hover:rotate-90" />
+            {sidebarOpen && <span>Create Document</span>}
+          </Link>
         </div>
       </aside>
 

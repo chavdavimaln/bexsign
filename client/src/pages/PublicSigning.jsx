@@ -4,15 +4,24 @@ import { PenTool, CheckCircle2, ShieldCheck, AlertCircle, X, Download, ArrowLeft
 import { generateBexsignId } from '../utils/documentId';
 import SignatureStamp from '../components/SignatureStamp';
 import { showPopupAlert } from '../components/GlobalAlertModal';
-import { generateAndDownloadPdf, generatePdfBase64 } from '../utils/pdfGenerator';
+import { generatePdfBase64 } from '../utils/pdfGenerator';
 import { fetchSignatureForEmail } from '../utils/signatureDirectory';
 import CompletedDocumentViewer from '../components/CompletedDocumentViewer';
 import BexDocumentSheet from '../components/BexDocumentSheet';
-import { printDocumentSheet } from '../utils/documentPrinter';
 import { getDefaultDocContent } from '../utils/documentDefaults';
 import { applySignerDefaults } from '../utils/documentFields';
-import { canvasHasInk, isTypedSignatureValid } from '../utils/signatureInk';
-import { downloadSignedDocument } from '../utils/signedPdf';
+import { canvasHasInk, isTypedSignatureValid, typedSignatureImage } from '../utils/signatureInk';
+import { downloadSignedDocument, printLockedDocument } from '../utils/signedPdf';
+import {
+  TermsModal,
+  QuickFillModal,
+  AssignModal,
+  PhysicalSignModal,
+  DeclineModal,
+  SkipModal,
+  HistoryModal,
+  SigningOutcomeScreen
+} from '../components/SigningActionModals';
 
 export default function PublicSigning() {
   const { token, id } = useParams();
@@ -119,6 +128,22 @@ export default function PublicSigning() {
     }
   };
 
+  // Actions a recipient can take while signing ("More actions"), plus the disclosure and the guided fields
+  const [showTermsModal, setShowTermsModal] = useState(false);
+  const [showQuickFillModal, setShowQuickFillModal] = useState(false);
+  const [showAssignModal, setShowAssignModal] = useState(false);
+  const [showPhysicalModal, setShowPhysicalModal] = useState(false);
+  const [showDeclineModal, setShowDeclineModal] = useState(false);
+  const [showSkipModal, setShowSkipModal] = useState(false);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [actionBusy, setActionBusy] = useState('');
+  const [actionError, setActionError] = useState('');
+  // Set once the recipient declined, assigned the signing or skipped: the final screen is shown instead
+  const [outcome, setOutcome] = useState(null);
+  const [guideFieldId, setGuideFieldId] = useState(null);
+  const moreActionsRef = useRef(null);
+  const finishRef = useRef(null);
+
   // Canvas drawing ref
   const canvasRef = useRef(null);
   const [isDrawing, setIsDrawing] = useState(false);
@@ -126,6 +151,16 @@ export default function PublicSigning() {
   useEffect(() => {
     fetchDocumentDetails();
   }, [docId]);
+
+  // The "More actions" menu closes when clicking anywhere else
+  useEffect(() => {
+    if (!showMoreActions) return undefined;
+    const onPointerDown = (event) => {
+      if (moreActionsRef.current && !moreActionsRef.current.contains(event.target)) setShowMoreActions(false);
+    };
+    window.addEventListener('mousedown', onPointerDown);
+    return () => window.removeEventListener('mousedown', onPointerDown);
+  }, [showMoreActions]);
 
   const fetchDocumentDetails = async () => {
     try {
@@ -528,71 +563,28 @@ export default function PublicSigning() {
   };
 
   const handleDownloadSignedPdf = async (pass = '') => {
-    // Once this recipient has signed, their copy is the locked PDF issued by the server
-    if (isCompleted || signerContext?.alreadySigned) {
-      try {
-        const { fileName } = await downloadSignedDocument(docId, { index: activeDocIndex, email: documentDetails.recipient });
-        showPopupAlert(`Downloaded "${fileName}". Signed PDFs are locked and cannot be edited.`, { title: 'Download Complete', type: 'success' });
-      } catch (err) {
-        showPopupAlert(err instanceof TypeError ? 'Could not reach the BexSign server at http://localhost:5000.' : err.message, { title: 'Download Error', type: 'error' });
-      }
-      return;
-    }
+    // Every copy is the locked PDF issued by the server: the signed copy once this recipient has signed, before that
+    // the document for review (without the values being entered here). Neither can be edited.
+    const password = typeof pass === 'string' ? pass : '';
     try {
-      const activeDoc = documentsList[activeDocIndex] || {};
-      const docTitle = activeDoc.name || documentDetails.title || `Document 1.pdf`;
-      const docMsg = activeDoc.customMessage || documentDetails.message || 'check the document for signature';
-      const docBexId = documentsList.length > 1 ? `${fullBexsignId}-${activeDocIndex + 1}` : fullBexsignId;
-      const currentFields = getOutputFields(activeDocIndex);
-
-      const activeText = activeDoc.documentText || getDefaultDocContent(docTitle, docMsg);
-
-      await generateAndDownloadPdf({
-        defaultSignature: !requestHasFields,
-        documentName: docTitle,
-        documentText: activeText,
-        docId: docBexId || docId,
-        signerName: typedName || 'Vimal Chavda',
-        signerEmail: documentDetails.recipient || 'vimal@bexcodeservices.com',
-        date: new Date().toLocaleString(),
-        status: isCompleted ? 'Completed' : 'In Progress',
-        signatureImage: signatureData,
-        signatureType: signatureType,
-        password: pass,
-        fields: currentFields
-      });
-      showPopupAlert(`Downloaded "${docTitle}" successfully with official electronic signature.`, {
-        title: 'Download Complete',
-        type: 'success'
-      });
+      const { fileName } = await downloadSignedDocument(docId, { index: activeDocIndex, email: documentDetails.recipient, password });
+      const signed = isCompleted || signerContext?.alreadySigned;
+      showPopupAlert(
+        `Downloaded "${fileName}"${signed ? '' : ' for review'}. The PDF is locked and cannot be edited${password ? '; it opens with the password you set' : ''}.`,
+        { title: 'Download Complete', type: 'success' }
+      );
     } catch (err) {
-      console.error('Download error:', err);
-      showPopupAlert('Failed to generate PDF. Please try again.', {
-        title: 'Download Error',
-        type: 'error'
-      });
+      showPopupAlert(err instanceof TypeError ? 'Could not reach the BexSign server at http://localhost:5000.' : err.message, { title: 'Download Error', type: 'error' });
     }
   };
 
-  const handlePrintSignedPdf = () => {
-    const activeDoc = documentsList[activeDocIndex] || {};
-    const docTitle = activeDoc.name || documentDetails.title || 'Document 1.pdf';
-    const docMsg = activeDoc.customMessage || documentDetails.message || 'check the document for signature';
-    const docBexId = documentsList.length > 1 ? `${fullBexsignId}-${activeDocIndex + 1}` : fullBexsignId;
-    const activeText = activeDoc.documentText || getDefaultDocContent(docTitle, docMsg);
-    const currentFields = getOutputFields(activeDocIndex);
-
-    printDocumentSheet({
-      defaultSignature: !requestHasFields,
-      documentName: docTitle,
-      documentText: activeText,
-      docId: docBexId || docId,
-      signerName: typedName || 'Vimal Chavda',
-      signerEmail: documentDetails.recipient || 'vimal@bexcodeservices.com',
-      signatureImage: signatureData,
-      signatureStyle: selectedStyle,
-      placedFields: currentFields
-    });
+  const handlePrintSignedPdf = async () => {
+    // Prints the locked PDF, so the print dialog's "Save as PDF" cannot create an editable copy
+    try {
+      await printLockedDocument(docId, { index: activeDocIndex, email: documentDetails.recipient });
+    } catch (err) {
+      showPopupAlert(err instanceof TypeError ? 'Could not reach the BexSign server at http://localhost:5000.' : err.message, { title: 'Print failed', type: 'error' });
+    }
   };
 
   const handleAgreeAndContinue = () => {
@@ -630,9 +622,6 @@ export default function PublicSigning() {
     return !f.assigneeEmail || !me || f.assigneeEmail.toLowerCase() === me;
   };
   const requestHasFields = requestFieldCount > 0 || Object.values(fieldsByDoc).some((list) => (list || []).length > 0);
-  // A recipient's own copy (download/print from the signing page, also after Finish) holds only their fields and
-  // signature box; the completed request with every recipient's signature is shown by CompletedDocumentViewer
-  const getOutputFields = (docIdx) => (fieldsByDoc[docIdx] || []).filter(isMyField);
 
   const getDocumentStatus = (docIdx) => {
     const docFields = (fieldsByDoc[docIdx] || []).filter(isMyField);
@@ -726,6 +715,10 @@ export default function PublicSigning() {
         localStorage.setItem(sigKey('sigstyle'), selectedStyle);
       }
 
+      // A typed signature is issued as an image in the chosen handwriting style, so every signed copy looks the same
+      const isTypedText = typeof signatureData === 'string' && signatureData && !/^(data:|https?:|\/)/.test(signatureData);
+      const submittedSignature = isTypedText ? ((await typedSignatureImage(signatureData, selectedStyle)) || signatureData) : signatureData;
+
       // Generate certified base64 PDF for EVERY document in documentsList
       const completedPdfs = [];
       for (let i = 0; i < documentsList.length; i++) {
@@ -746,7 +739,7 @@ export default function PublicSigning() {
             signerEmail: documentDetails.recipient || 'vimal@bexcodeservices.com',
             date: new Date().toLocaleString(),
             status: 'Completed',
-            signatureImage: signatureData,
+            signatureImage: submittedSignature,
             signatureType: signatureType,
             fields: currentFields
           });
@@ -765,7 +758,7 @@ export default function PublicSigning() {
         body: JSON.stringify({
           documentId: docId,
           token: docId,
-          signatureData,
+          signatureData: submittedSignature,
           signerName: typedName,
           signerEmail: documentDetails.recipient,
           signatureStyle: selectedStyle,
@@ -787,6 +780,277 @@ export default function PublicSigning() {
       setIsSubmitting(false);
     }
   };
+
+  finishRef.current = handleFinishSigning;
+
+  // ---- Guided fields: the callout walks the signer through their own fields, one at a time ----
+  const GUIDE_TEXT = {
+    Signature: 'Enter your signature.',
+    Initial: 'Enter your initials.',
+    Stamp: 'Add your stamp.',
+    Company: 'Enter the company name.',
+    'Full name': 'Enter your name.',
+    Email: 'Enter your email address.',
+    'Sign date': 'Enter the date.',
+    Checkbox: 'Select the checkbox.',
+    'Split text': 'Enter the characters.',
+    'Job title': 'Enter your job title.',
+    Text: 'Enter the text.'
+  };
+  const guideFields = (fieldsByDoc[activeDocIndex] || []).filter(isMyField);
+  const guideIndex = guideFields.findIndex((f) => f.id === guideFieldId);
+  const guideField = guideIndex === -1 ? null : guideFields[guideIndex];
+  const guideText = guideField ? (GUIDE_TEXT[guideField.type] || `Enter ${String(guideField.label || guideField.type || 'the value').toLowerCase()}.`) : '';
+  const guidePosition = guideField && guideFields.length > 1 ? `Field ${guideIndex + 1} of ${guideFields.length}` : '';
+
+  const focusGuideField = (field) => {
+    if (!field) return;
+    setGuideFieldId(field.id);
+    setTimeout(() => {
+      const el = document.getElementById(`doc-field-${field.id}`);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 60);
+  };
+
+  // Previous/Next move through this document's own fields; from the last one they continue in the next document
+  const stepGuideField = (delta) => {
+    if (guideFields.length === 0) return;
+    const next = guideIndex === -1 ? (delta > 0 ? 0 : guideFields.length - 1) : guideIndex + delta;
+    if (next >= 0 && next < guideFields.length) {
+      focusGuideField(guideFields[next]);
+      return;
+    }
+    if (documentsList.length > 1) {
+      const nextDoc = (activeDocIndex + (delta > 0 ? 1 : -1) + documentsList.length) % documentsList.length;
+      setActiveDocIndex(nextDoc);
+      const list = (fieldsByDoc[nextDoc] || []).filter(isMyField);
+      if (list.length > 0) focusGuideField(delta > 0 ? list[0] : list[list.length - 1]);
+      return;
+    }
+    focusGuideField(guideFields[delta > 0 ? 0 : guideFields.length - 1]);
+  };
+
+  // The first field that still needs an entry is highlighted once signing starts and when the document changes
+  useEffect(() => {
+    if (!agreedConsent || isCompleted) return;
+    const list = (fieldsByDoc[activeDocIndex] || []).filter(isMyField);
+    if (list.length === 0) {
+      setGuideFieldId(null);
+      return;
+    }
+    setGuideFieldId((prev) => (list.some((f) => f.id === prev) ? prev : (list.find(isFieldMissing) || list[0]).id));
+  }, [agreedConsent, activeDocIndex, isCompleted, fieldsByDoc]);
+
+  // ---- "More actions": decline, assign, sign on paper, quick fill, skip, history ----
+  const signingActionEmail = documentDetails.recipient || signerEmailParam;
+
+  const callSigningAction = async (path, body) => {
+    const res = await fetch(`http://localhost:5000/api/signatures/${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ documentId: docId, token: docId, signerEmail: signingActionEmail, ...body })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success === false) throw new Error(data.error || `The request failed (HTTP ${res.status}).`);
+    return data;
+  };
+
+  const actionErrorText = (err) => (err instanceof TypeError ? 'Could not reach the BexSign server at http://localhost:5000.' : err.message);
+
+  const handleDeclineDocument = async (reason) => {
+    setActionBusy('decline');
+    setActionError('');
+    try {
+      const data = await callSigningAction('decline', { reason });
+      setShowDeclineModal(false);
+      setOutcome({ type: 'declined', message: data.message });
+    } catch (err) {
+      setActionError(actionErrorText(err));
+    } finally {
+      setActionBusy('');
+    }
+  };
+
+  const handleAssignDocument = async ({ email, name, reason }) => {
+    setActionBusy('assign');
+    setActionError('');
+    try {
+      const data = await callSigningAction('assign', { newEmail: email, newName: name, reason });
+      setShowAssignModal(false);
+      setOutcome({ type: 'assigned', message: data.message });
+    } catch (err) {
+      setActionError(actionErrorText(err));
+    } finally {
+      setActionBusy('');
+    }
+  };
+
+  const handleUploadPhysicalCopy = async (file) => {
+    if (!file) return;
+    setActionBusy('physical');
+    setActionError('');
+    try {
+      const form = new FormData();
+      form.append('signedDocument', file);
+      form.append('documentId', docId);
+      form.append('signerEmail', signingActionEmail || '');
+      form.append('signerName', typedName || '');
+      form.append('fields', JSON.stringify(Object.values(fieldsByDoc).flat().filter(isMyField)));
+      const res = await fetch('http://localhost:5000/api/signatures/physical-copy', { method: 'POST', body: form });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success === false) throw new Error(data.error || `The upload failed (HTTP ${res.status}).`);
+      setShowPhysicalModal(false);
+      setCompletionInfo(data);
+      setIsCompleted(true);
+    } catch (err) {
+      setActionError(actionErrorText(err));
+    } finally {
+      setActionBusy('');
+    }
+  };
+
+  // Quickly fill and sign: the profile signature plus the values BexSign knows (name, email, company, date)
+  const handleQuickFillAndSign = ({ finishWhenFilled }) => {
+    if (!signatureData) return;
+    setSignaturePlaced(true);
+    setSignatureType(/^(data:|https?:|\/)/.test(signatureData) ? 'draw' : 'type');
+    const defaults = {
+      signerName: typedName,
+      signerEmail: signingActionEmail,
+      signDate: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    };
+    setFieldsByDoc((prev) => Object.fromEntries(
+      Object.entries(prev).map(([idx, list]) => [idx, (list || []).map((f) => (isMyField(f) ? applySignerDefaults([f], defaults)[0] : f))])
+    ));
+    setShowQuickFillModal(false);
+    setValidationError('');
+    if (finishWhenFilled) setTimeout(() => finishRef.current && finishRef.current(), 220);
+  };
+
+  const handleSkipSigning = () => {
+    setShowSkipModal(false);
+    setOutcome({
+      type: 'skipped',
+      message: `You left "${documentDetails.title}" without signing. Nothing has been saved.`
+    });
+  };
+
+  const moreActionsMenu = (
+    <div className="relative" ref={moreActionsRef}>
+      <button
+        type="button"
+        onClick={() => setShowMoreActions(!showMoreActions)}
+        aria-expanded={showMoreActions}
+        className="px-3 py-1.5 border border-slate-300 rounded text-xs font-semibold text-slate-700 hover:bg-slate-50 flex items-center gap-1.5 transition bg-white cursor-pointer"
+      >
+        <span>More actions</span>
+        <ChevronDown size={14} className={`transition-transform duration-200 ${showMoreActions ? 'rotate-180' : ''}`} />
+      </button>
+      {showMoreActions && (
+        <div className="absolute right-0 mt-1 w-56 bg-white border border-slate-200 rounded-md shadow-xl py-1 z-40 text-xs font-medium overflow-hidden">
+          {[
+            { label: 'Quickly fill and sign', onClick: () => setShowQuickFillModal(true) },
+            { label: 'Assign to someone else', onClick: () => setShowAssignModal(true) },
+            { label: 'Print and physically sign', onClick: () => setShowPhysicalModal(true) },
+            { label: 'Document history', onClick: () => setShowHistoryModal(true) },
+            { label: 'Decline', onClick: () => setShowDeclineModal(true), tone: 'text-red-600 hover:bg-red-50' },
+            { label: 'Skip signing', onClick: () => setShowSkipModal(true), tone: 'text-slate-500' }
+          ].map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              onClick={() => {
+                setShowMoreActions(false);
+                setActionError('');
+                item.onClick();
+              }}
+              className={`w-full text-left px-4 py-2 transition cursor-pointer ${item.tone || 'text-slate-700'} hover:bg-slate-50`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  const signingActionModals = (
+    <>
+      {showTermsModal && (
+        <TermsModal
+          senderName={String(documentDetails.sender || '').split('<')[0].trim()}
+          senderEmail={(/<([^>]+)>/.exec(documentDetails.sender || '') || [])[1] || documentDetails.sender}
+          orgName={documentDetails.org}
+          onAgree={() => {
+            setAgreedConsent(true);
+            setValidationError('');
+            setShowTermsModal(false);
+          }}
+          onClose={() => setShowTermsModal(false)}
+        />
+      )}
+      {showQuickFillModal && (
+        <QuickFillModal
+          email={signingActionEmail}
+          signature={signatureData}
+          signatureStyle={selectedStyle}
+          signerName={typedName}
+          busy={actionBusy === 'quick'}
+          onRemoveSignature={() => {
+            setSignatureData('');
+            setSignaturePlaced(false);
+          }}
+          onAddSignature={() => {
+            setShowQuickFillModal(false);
+            setShowSignatureModal(true);
+          }}
+          onConfirm={handleQuickFillAndSign}
+          onClose={() => setShowQuickFillModal(false)}
+        />
+      )}
+      {showAssignModal && (
+        <AssignModal
+          busy={actionBusy === 'assign'}
+          error={actionError}
+          onAssign={handleAssignDocument}
+          onClose={() => setShowAssignModal(false)}
+        />
+      )}
+      {showPhysicalModal && (
+        <PhysicalSignModal
+          busy={actionBusy === 'physical'}
+          error={actionError}
+          onDownload={() => handleDownloadSignedPdf('')}
+          onPrint={handlePrintSignedPdf}
+          onUpload={handleUploadPhysicalCopy}
+          onClose={() => setShowPhysicalModal(false)}
+        />
+      )}
+      {showDeclineModal && (
+        <DeclineModal
+          busy={actionBusy === 'decline'}
+          error={actionError}
+          onDecline={handleDeclineDocument}
+          onClose={() => setShowDeclineModal(false)}
+        />
+      )}
+      {showSkipModal && <SkipModal onSkip={handleSkipSigning} onClose={() => setShowSkipModal(false)} />}
+      {showHistoryModal && (
+        <HistoryModal documentId={docId} signerEmail={signingActionEmail} onClose={() => setShowHistoryModal(false)} />
+      )}
+    </>
+  );
+
+  // The recipient declined, assigned the signing to someone else or skipped it
+  if (outcome) {
+    return (
+      <SigningOutcomeScreen
+        outcome={outcome}
+        documentName={documentDetails.title}
+        onBack={() => navigate('/documents')}
+      />
+    );
+  }
 
   // If document is already Completed, display dedicated CompletedDocumentViewer (PDF 4 Page 1)
   if (documentDetails.status === 'Completed') {
@@ -1028,12 +1292,30 @@ export default function PublicSigning() {
               className="accent-[#007355] h-4 w-4"
             />
             <span>
-              I confirm that I have read and understood the <strong className="underline text-slate-900 font-bold">"Electronic Record and Signature Disclosure"</strong> and consent to use electronic records and signatures.
+              I confirm that I have read and understood the{' '}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setShowTermsModal(true);
+                }}
+                className="underline text-[#007355] font-bold hover:text-[#005c44] cursor-pointer"
+              >
+                "Electronic Record and Signature Disclosure"
+              </button>{' '}
+              and consent to use electronic records and signatures.
             </span>
           </label>
+
+          {!agreedConsent && (
+            <span className="hidden lg:flex items-center gap-1.5 rounded bg-slate-900 px-2.5 py-1 text-[11px] font-semibold text-white shadow-md">
+              Check this and click <strong className="font-bold">Agree &amp; Continue</strong> to start signing
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-3 ml-auto">
+          {!agreedConsent && moreActionsMenu}
           <button
             onClick={handleAgreeAndContinue}
             className={`px-4 py-1.5 rounded font-bold text-xs transition shadow-xs ${
@@ -1043,56 +1325,6 @@ export default function PublicSigning() {
             Agree & Continue
           </button>
 
-          {/* More actions dropdown (Page 8) */}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setShowMoreActions(!showMoreActions)}
-              className="px-3 py-1.5 border border-slate-300 rounded text-xs font-semibold text-slate-700 hover:bg-slate-50 flex items-center gap-1.5 transition bg-white"
-            >
-              <span>More actions</span>
-              <ChevronDown size={14} />
-            </button>
-            {showMoreActions && (
-              <div className="absolute right-0 mt-1 w-48 bg-white border border-slate-200 rounded-md shadow-xl py-1 z-40 text-xs font-medium">
-                <button
-                  type="button"
-                  onClick={() => { setShowMoreActions(false); showPopupAlert('Quickly fill and sign enabled.', { title: 'Quick Sign', type: 'info' }); }}
-                  className="w-full text-left px-4 py-2 hover:bg-slate-50 text-slate-700"
-                >
-                  Quickly fill and sign
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setShowMoreActions(false); showPopupAlert('Document delegated to collaborator.', { title: 'Assignee', type: 'info' }); }}
-                  className="w-full text-left px-4 py-2 hover:bg-slate-50 text-slate-700"
-                >
-                  Assign to someone else
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setShowMoreActions(false); window.print(); }}
-                  className="w-full text-left px-4 py-2 hover:bg-slate-50 text-slate-700"
-                >
-                  Print and physically sign
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setShowMoreActions(false); navigate('/documents'); }}
-                  className="w-full text-left px-4 py-2 hover:bg-slate-50 text-red-600"
-                >
-                  Decline
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setShowMoreActions(false); navigate('/documents'); }}
-                  className="w-full text-left px-4 py-2 hover:bg-slate-50 text-slate-500"
-                >
-                  Skip signing
-                </button>
-              </div>
-            )}
-          </div>
         </div>
       </div>
 
@@ -1133,6 +1365,8 @@ export default function PublicSigning() {
               <button onClick={handlePrintSignedPdf} className="p-1 hover:text-slate-900" title="Print"><Printer size={15} /></button>
               <button onClick={() => showPopupAlert(`Document dispatched to ${documentDetails.recipient}`, { title: 'Mail', type: 'info' })} className="p-1 hover:text-slate-900" title="Email"><Mail size={15} /></button>
             </div>
+
+            {moreActionsMenu}
 
             <button
               onClick={handleFinishSigning}
@@ -1266,9 +1500,15 @@ export default function PublicSigning() {
           signaturePlaced={signaturePlaced}
           onOpenSignatureModal={handleOpenSignatureModal}
           isCompleted={isCompleted}
-          showTooltips={true}
+          showTooltips={!agreedConsent}
           allFieldsComplete={isAllDocsComplete}
           defaultSignature={!requestHasFields}
+          guideFieldId={agreedConsent && !isCompleted ? guideFieldId : null}
+          guideText={guideText}
+          guidePosition={guidePosition}
+          onGuidePrevious={() => stepGuideField(-1)}
+          onGuideNext={() => stepGuideField(1)}
+          onGuideClose={() => setGuideFieldId(null)}
           copiedId={copiedId}
           onCopyId={handleCopyId}
           placedFields={fieldsByDoc[activeDocIndex] || []}
@@ -1495,6 +1735,8 @@ export default function PublicSigning() {
           </div>
         </div>
       )}
+
+      {signingActionModals}
     </div>
   );
 }

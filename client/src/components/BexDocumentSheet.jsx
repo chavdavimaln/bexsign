@@ -1,9 +1,10 @@
 import React from 'react';
-import { Copy, PenTool, CheckCircle2, Calendar, Check } from 'lucide-react';
+import { Copy, PenTool, CheckCircle2, Calendar, Check, Clock, X } from 'lucide-react';
 import SignatureStamp from './SignatureStamp';
 import { generateBexsignId } from '../utils/documentId';
 import { getDefaultDocContent } from '../utils/documentDefaults';
 import { getStampImage, DEFAULT_COMPANY_NAME } from '../utils/documentFields';
+import { fieldBelongsTo } from '../utils/recipientColors';
 
 /**
  * Canonical BexDocumentSheet Component
@@ -53,6 +54,17 @@ export default function BexDocumentSheet({
   allFieldsComplete = true,
   // Show a signature block when the document has no placed fields at all
   defaultSignature = true,
+  // Sender view of a request in progress: fields a recipient has not completed yet show who they are waiting for
+  showPending = false,
+  // { email, id, name, color }: that recipient's fields are outlined in their colour, the other fields fade
+  highlightRecipient = null,
+  // Guided signing: the field being filled is outlined and carries a callout with Previous/Next
+  guideFieldId = null,
+  guideText = '',
+  guidePosition = '',
+  onGuidePrevious = null,
+  onGuideNext = null,
+  onGuideClose = null,
   copiedId = false,
   onCopyId = null,
   placedFields = null,
@@ -69,6 +81,63 @@ export default function BexDocumentSheet({
 
   const inputClass = (paddingLeft = 'pl-3') => `w-full py-2.5 ${paddingLeft} pr-7 text-xs border border-dashed border-emerald-500 rounded-lg bg-emerald-50/40 hover:bg-emerald-50 focus:bg-white focus:border-solid focus:border-[#007355] focus:ring-2 focus:ring-emerald-100 outline-none font-semibold text-slate-800 placeholder:text-slate-400 placeholder:font-medium transition shadow-2xs`;
   const valueClass = 'text-xs font-semibold text-slate-800 px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg min-h-[38px] break-words';
+
+  // Outlines the highlighted recipient's fields (their colour, soft tint) and fades everyone else's
+  const withHighlight = (field, element) => {
+    if (!element || !highlightRecipient) return element;
+    const isTheirs = fieldBelongsTo(field, highlightRecipient);
+    const color = highlightRecipient.color || '#00a884';
+    // Full-row fields shrink to their content so the outline hugs the field
+    const rawClass = String(element.props.className || '');
+    const baseClass = rawClass.includes('col-span-2') ? rawClass.replace(/(^|\s)w-full(?=\s|$)/, '$1w-full sm:w-fit') : rawClass;
+    return React.cloneElement(element, {
+      'data-highlighted': isTheirs ? 'true' : undefined,
+      className: `${baseClass} justify-self-start rounded-lg transition-all duration-300 ${isTheirs ? 'relative z-[1]' : 'opacity-30 saturate-50'}`,
+      style: {
+        ...element.props.style,
+        ...(isTheirs ? { boxShadow: `0 0 0 3px #ffffff, 0 0 0 5px ${color}, 0 8px 22px -6px ${color}66`, backgroundColor: `${color}12` } : {})
+      }
+    });
+  };
+
+  // Outlines the field the signer is on and shows the callout that explains what to enter
+  const withGuide = (field, element) => {
+    if (!element || !guideFieldId || field?.id !== guideFieldId) return element;
+    const callout = (
+      <div key="bex-guide" className="absolute left-full top-0 z-30 ml-5 hidden w-60 sm:block print:hidden">
+        <span className="absolute -left-5 top-5 h-px w-5 bg-[#007355]" aria-hidden="true" />
+        <div className="relative rounded-md border border-[#007355] bg-emerald-50 p-3 shadow-lg">
+          {onGuideClose && (
+            <button
+              type="button"
+              onClick={onGuideClose}
+              className="absolute -right-2 -top-2 grid h-5 w-5 place-items-center rounded-sm bg-[#007355] text-white transition hover:bg-[#005c44]"
+              aria-label="Hide this hint"
+            >
+              <X size={11} />
+            </button>
+          )}
+          <p className="text-[11.5px] font-semibold text-slate-800">{guideText}</p>
+          {guidePosition && <p className="mt-0.5 text-[10px] font-semibold text-emerald-700">{guidePosition}</p>}
+          <div className="mt-2 flex items-center justify-end gap-3 text-[11px] font-bold">
+            <button type="button" onClick={onGuidePrevious} className="text-slate-600 underline underline-offset-2 transition hover:text-slate-900">Previous</button>
+            <button type="button" onClick={onGuideNext} className="text-[#007355] underline underline-offset-2 transition hover:text-[#005c44]">Next</button>
+          </div>
+        </div>
+      </div>
+    );
+    // Full-row fields shrink to their content so the callout sits right next to the field
+    const rawClass = String(element.props.className || '');
+    const baseClass = rawClass.includes('col-span-2') ? rawClass.replace(/(^|s)w-full(?=s|$)/, '$1w-full sm:w-fit') : rawClass;
+    return React.cloneElement(
+      element,
+      {
+        className: `${baseClass} relative justify-self-start rounded-lg ring-2 ring-[#007355] ring-offset-2 ring-offset-white transition`
+      },
+      ...React.Children.toArray(element.props.children),
+      callout
+    );
+  };
 
   const renderSignature = (field, { key, id, fieldSignature = '', fieldSigner = signerName, hint = 'Signature', required = true }) => (
     <div key={key} id={id} className="relative sm:col-span-2" title={hint}>
@@ -194,10 +263,24 @@ export default function BexDocumentSheet({
         {visibleFields.length > 0 ? (
           <div className="pt-8 border-t border-slate-200 print:border-slate-300">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5 items-start">
-              {visibleFields.map((field) => {
+              {visibleFields.map((field) => withGuide(field, withHighlight(field, (() => {
                 const hint = fieldHint(field);
                 const key = field.id;
                 const id = `doc-field-${field.id}`;
+
+                if (showPending && !field.signedAt && field.type !== 'Stamp') {
+                  const isSignatureType = field.type === 'Signature' || field.type === 'Initial';
+                  return (
+                    <div key={key} id={id} className={isSignatureType ? 'sm:col-span-2' : 'w-full sm:w-64'} title={`${hint}: waiting for ${field.assignee || 'the recipient'}`}>
+                      <div className={`flex items-center gap-2 px-3 border border-dashed border-slate-300 rounded-lg bg-slate-50 text-slate-500 ${isSignatureType ? 'h-16 w-64 max-w-full' : 'py-2.5 min-h-[38px]'}`}>
+                        {isSignatureType ? <PenTool size={15} className="shrink-0 text-slate-400" /> : <Clock size={13} className="shrink-0 text-slate-400" />}
+                        <span className="text-[11px] font-semibold truncate">
+                          {isSignatureType ? 'Awaiting signature' : hint} · {field.assignee || 'recipient'}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                }
 
                 if (field.type === 'Signature' || field.type === 'Initial') {
                   // Placeholder values from the editor ("Signature"/"Initial") are not signatures
@@ -412,7 +495,7 @@ export default function BexDocumentSheet({
                     )}
                   </div>
                 );
-              })}
+              })())))}
             </div>
           </div>
         ) : defaultSignature ? (

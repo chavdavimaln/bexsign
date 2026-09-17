@@ -5,6 +5,7 @@ require('dotenv').config();
 
 const db = require('./db');
 const { verifySmtpConnection } = require('./utils/emailService');
+const { refreshOutdatedCompletedPdfs } = require('./utils/requestCompletion');
 const authRoutes = require('./routes/auth');
 const documentRoutes = require('./routes/documents');
 const signingRoutes = require('./routes/signing');
@@ -52,6 +53,10 @@ app.use('/api/users', userRoutes);
 const server = app.listen(PORT, () => {
     console.log(`Bexsign Backend Server listening on http://localhost:${PORT}`);
     console.log(`Connected to MySQL Database: ${process.env.DB_NAME || 'db_bex_sign'}`);
+    // Signed documents issued with an older layout get the current signature stamp and lock (no emails are sent)
+    setTimeout(() => {
+        refreshOutdatedCompletedPdfs().catch((err) => console.warn('[Signed PDFs] refresh skipped:', err.message));
+    }, 3000);
     verifySmtpConnection().then((smtp) => {
         if (smtp.dryRun) console.log('[SMTP] EMAIL_DRY_RUN=true: emails are written to server/email_outbox instead of being sent');
         else if (smtp.success) console.log('[SMTP] Mail server connection verified');

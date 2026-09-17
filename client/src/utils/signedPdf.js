@@ -1,12 +1,13 @@
 /**
- * Locked signed PDFs are produced by the server (signed documents, certificates, a signer's own copy): they open
- * normally but cannot be edited, and their SHA-256 fingerprint is recorded for "Verify document".
+ * Every PDF of a sent request is produced by the server: signed documents, certificates and in-progress copies.
+ * Their pages are flattened into images, the file is encrypted (printing only) and certified, and its SHA-256
+ * fingerprint is recorded for "Verify document", so a downloaded or printed copy cannot be edited.
  */
 
 const API_BASE = 'http://localhost:5000/api';
 
-async function downloadFromServer(url, fallbackName) {
-  const res = await fetch(url);
+async function fetchLockedPdf(url, options) {
+  const res = await fetch(url, options);
   if (!res.ok) {
     const isJson = (res.headers.get('Content-Type') || '').includes('application/json');
     const data = isJson ? await res.json().catch(() => ({})) : {};
@@ -16,6 +17,11 @@ async function downloadFromServer(url, fallbackName) {
     }
     throw new Error(data.error || `The PDF could not be downloaded (HTTP ${res.status}).`);
   }
+  return res;
+}
+
+async function downloadFromServer(url, fallbackName, options) {
+  const res = await fetchLockedPdf(url, options);
   const blob = await res.blob();
   const disposition = res.headers.get('Content-Disposition') || '';
   const encoded = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
@@ -33,17 +39,73 @@ async function downloadFromServer(url, fallbackName) {
   return { fileName, sha256: res.headers.get('X-BexSign-SHA256') || '' };
 }
 
-/** Final signed document of a completed request, or (with email, in progress) that recipient's signed copy. */
-export function downloadSignedDocument(documentId, { index = 0, email = '' } = {}) {
-  const query = `index=${index}${email ? `&email=${encodeURIComponent(email)}` : ''}`;
-  return downloadFromServer(`${API_BASE}/documents/${documentId}/signed-pdf?${query}`, 'Signed document.pdf');
+const signedPdfUrl = (documentId, { index = 0, email = '' } = {}) => (
+  `${API_BASE}/documents/${documentId}/signed-pdf?index=${index}${email ? `&email=${encodeURIComponent(email)}` : ''}`
+);
+
+/**
+ * Final signed document of a completed request; while in progress, the recipient's own copy (email) or the
+ * sender's copy with the signatures collected so far. A password is sent in the request body, never in the URL,
+ * and is then needed to open the file.
+ */
+export function downloadSignedDocument(documentId, { index = 0, email = '', password = '' } = {}) {
+  if (password) {
+    return downloadFromServer(`${API_BASE}/documents/${documentId}/signed-pdf`, 'Signed document.pdf', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ index, email, password })
+    });
+  }
+  return downloadFromServer(signedPdfUrl(documentId, { index, email }), 'Signed document.pdf');
+}
+
+/**
+ * Prints the locked PDF (the same file as the download) instead of the web page, so printing to "Save as PDF"
+ * never produces an editable copy.
+ */
+export async function printLockedDocument(documentId, { index = 0, email = '' } = {}) {
+  const res = await fetchLockedPdf(signedPdfUrl(documentId, { index, email }));
+  const href = URL.createObjectURL(new Blob([await res.blob()], { type: 'application/pdf' }));
+  await new Promise((resolve) => {
+    const frame = document.createElement('iframe');
+    frame.title = 'Print document';
+    frame.style.cssText = 'position:fixed;right:0;bottom:0;width:1px;height:1px;border:0;opacity:0;';
+    frame.onload = () => {
+      setTimeout(() => {
+        try {
+          frame.contentWindow.focus();
+          frame.contentWindow.print();
+        } catch (e) {
+          window.open(href, '_blank', 'noopener');
+        }
+        resolve();
+      }, 400);
+    };
+    frame.src = href;
+    document.body.appendChild(frame);
+    setTimeout(() => {
+      frame.remove();
+      URL.revokeObjectURL(href);
+    }, 120000);
+  });
+}
+
+/** Prints every document of a request (locked PDFs), one after another. */
+export async function printAllLockedDocuments(documentId) {
+  const res = await fetch(`${API_BASE}/documents/${documentId}`);
+  const data = await res.json().catch(() => ({}));
+  const count = Math.max(1, (data.document?.files || []).length);
+  for (let index = 0; index < count; index++) {
+    await printLockedDocument(documentId, { index });
+  }
+  return count;
 }
 
 export function downloadCompletionCertificate(documentId) {
   return downloadFromServer(`${API_BASE}/documents/${documentId}/certificate-pdf`, 'Certificate of Completion.pdf');
 }
 
-/** Every signed document of a completed request, one after another. Returns the downloaded file names. */
+/** Every document of a sent request (signed PDFs, or in-progress copies), one after another. Returns the file names. */
 export async function downloadAllSignedDocuments(documentId) {
   const res = await fetch(`${API_BASE}/documents/${documentId}`);
   const data = await res.json().catch(() => ({}));

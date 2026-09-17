@@ -1,4 +1,4 @@
-import { generateBexsignId } from './documentId';
+import { generateBexsignId, signatureIdLines } from './documentId';
 import { getDefaultDocContent } from './documentDefaults';
 import {
   isSignatureField,
@@ -35,9 +35,6 @@ export function printDocumentSheet({
     ? documentText
     : getDefaultDocContent(docTitle, documentText);
 
-  let sigIdLine1 = 'BEX-SIGN-VC-EMP001-2026';
-  let sigIdLine2 = typeof fullDocId === 'string' ? fullDocId.replace('BEX-DOC-', '').substring(0, 24) : '361682B4-ERZWA2U19FQKOU0L';
-
   const signatureHtml = (name, image) => {
     const imageHtml = image && image.startsWith('data:')
       ? `<img src="${escapeHtml(image)}" alt="Signature" style="max-height: 48px; max-width: 200px; object-fit: contain; margin: 4px 0; display: block;" />`
@@ -48,9 +45,10 @@ export function printDocumentSheet({
         ${imageHtml}
         <div class="sig-line"></div>
         <div class="sig-ids">
-          ${escapeHtml(sigIdLine1)}<br />
-          ${escapeHtml(sigIdLine2)}
+          ${escapeHtml(signatureIdLines(fullDocId, name)[0])}<br />
+          ${escapeHtml(signatureIdLines(fullDocId, name)[1])}
         </div>
+        <div class="sig-certified">&#10003; Digitally Certified &amp; Verified</div>
       </div>
     `;
   };
@@ -205,6 +203,12 @@ export function printDocumentSheet({
             font-size: 9px;
             color: #64748b;
             line-height: 1.4;
+          }
+          .sig-certified {
+            font-size: 10px;
+            font-weight: 800;
+            color: #047857;
+            margin-top: 6px;
           }
           .email-text {
             font-size: 12px;

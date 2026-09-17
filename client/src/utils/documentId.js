@@ -1,6 +1,6 @@
 /**
  * BexSign Unique Document ID Generator
- * 
+ *
  * Generates meaningful, standardized unique IDs for the BexSign project.
  * Structure: BEX-DOC-[YEAR]-[DOC_SEQ_ID]-[SECURITY_CHECKSUM_HASH]
  * - BEX: BexSign Platform Identifier
@@ -13,7 +13,7 @@
 export function generateBexsignId(docId = 1) {
   const year = 2026;
   const seq = String(docId).padStart(4, '0');
-  
+
   // Deterministic seed hash table for demo document IDs, fallback to generated hex
   const deterministicHashes = {
     1: '361682B4-ERZWVA2U19FQKOU0LTHEPYMCRKHTZR2MFDEBT65NAG',
@@ -31,6 +31,29 @@ export function formatBexsignIdShort(docId = 1) {
   const year = 2026;
   const seq = String(docId).padStart(4, '0');
   return `BEX-DOC-${year}-${seq}`;
+}
+
+/**
+ * Sign ID shown under a signature, split in two lines: "BEX-SIGN-<initials>-EMP001-<year>-<seq>" and the
+ * document's unique hash. Same format as the signed PDFs issued by the server.
+ */
+export function signatureIdLines(docId, signerName = '') {
+  const initials = signIdInitials(signerName);
+  // Documents of a multi-document request add "-<n>" to the request ID; the sign ID uses the request ID itself
+  const id = String(docId || '').replace(/^(BEX-DOC-\d{4}-\d{4}-[A-Z0-9]+-[A-Z0-9]+)-\d+$/i, '$1');
+  const docMatch = /^BEX-DOC-(\d{4})-(\d{4})-(.+)$/.exec(id);
+  if (docMatch) return [`BEX-SIGN-${initials}-EMP001-${docMatch[1]}-${docMatch[2]}`, docMatch[3]];
+  const signMatch = /^(BEX-SIGN-.+?-\d{4}-\d{4})-(.+)$/.exec(id);
+  if (signMatch) return [signMatch[1], signMatch[2]];
+  return [`BEX-SIGN-${initials}-EMP001`, id];
+}
+
+/** Two-letter signer initials for the sign ID: first and last name ("Vimal Chavda" -> "VC"). */
+export function signIdInitials(name) {
+  const words = String(name || '').split(/[\s@._-]+/).filter((word) => /[a-z0-9]/i.test(word));
+  if (words.length === 0) return 'BS';
+  if (words.length === 1) return words[0].replace(/[^a-z0-9]/gi, '').slice(0, 2).toUpperCase();
+  return `${words[0][0]}${words[words.length - 1][0]}`.toUpperCase();
 }
 
 export function generateEmployeeSignatureId(employeeId = 'EMP001', signerName = 'Vimal Chavda') {

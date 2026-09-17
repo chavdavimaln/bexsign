@@ -1132,6 +1132,38 @@ export default function DocumentEditor() {
     const value = typeof next === 'function' ? next(activeField) : next;
     setActiveFieldId(value ? value.id : null);
   };
+
+  // A field that was just added pops in and glows once in its recipient's colour
+  const knownFieldIdsRef = useRef({ docIndex: null, ids: new Set() });
+  const [recentlyAddedFieldId, setRecentlyAddedFieldId] = useState(null);
+  useEffect(() => {
+    const known = knownFieldIdsRef.current;
+    if (known.docIndex === activeDocIndex) {
+      const added = fieldsOnDoc.filter((f) => !known.ids.has(f.id));
+      if (added.length === 1) setRecentlyAddedFieldId(added[0].id);
+    }
+    knownFieldIdsRef.current = { docIndex: activeDocIndex, ids: new Set(fieldsOnDoc.map((f) => f.id)) };
+  }, [fieldsOnDoc, activeDocIndex]);
+  useEffect(() => {
+    if (recentlyAddedFieldId === null) return undefined;
+    const timer = setTimeout(() => setRecentlyAddedFieldId(null), 1800);
+    return () => clearTimeout(timer);
+  }, [recentlyAddedFieldId]);
+
+  // Selected field: outlined in its recipient's colour over a soft tint; the selected recipient's fields are tinted
+  const fieldEmphasisStyle = (field, rec, isSelected) => {
+    if (isSelected) {
+      return {
+        boxShadow: `0 0 0 3px #ffffff, 0 0 0 5px ${rec.color}, 0 16px 32px -14px ${rec.color}`,
+        backgroundColor: `color-mix(in srgb, ${rec.color} 10%, #ffffff)`,
+        '--bex-field-color': rec.color
+      };
+    }
+    if (selectedRecipient && fieldBelongsTo(field, selectedRecipient)) {
+      return { backgroundColor: `color-mix(in srgb, ${rec.color} 5%, #ffffff)`, '--bex-field-color': rec.color };
+    }
+    return { '--bex-field-color': rec.color };
+  };
   const [showCustomDateInput, setShowCustomDateInput] = useState(false);
   const [customDateInput, setCustomDateInput] = useState('');
   const [showCreateCustomFieldModal, setShowCreateCustomFieldModal] = useState(false);
@@ -2482,6 +2514,8 @@ export default function DocumentEditor() {
                     const isSelected = activeField?.id === field.id;
                     const isDragging = draggingFieldId === field.id;
                     const fieldZIndex = isDragging ? 50 : (isSelected ? 40 : 25);
+                    const fieldOfSelectedRecipient = Boolean(selectedRecipient && fieldBelongsTo(field, selectedRecipient));
+                    const addedClass = recentlyAddedFieldId === field.id ? 'bex-field-added ' : '';
 
                     // 1. Split Text Character Cells (Pages 15, 17 PDF: Direct Alphanumeric Cell Writing)
                     if (field.type === 'Split text') {
@@ -2498,10 +2532,11 @@ export default function DocumentEditor() {
                             left: `${field.x}px`,
                             zIndex: fieldZIndex,
                             borderColor: rec.color,
-                            touchAction: 'none'
+                            touchAction: 'none',
+                            ...fieldEmphasisStyle(field, rec, isSelected)
                           }}
-                          className={`absolute cursor-move p-1.5 bg-white border-2 rounded-lg shadow-md transition ${
-                            isSelected ? 'border-solid ring-2 ring-offset-1 shadow-xl' : 'border-dashed hover:border-solid hover:shadow-lg'
+                          className={`${addedClass}absolute cursor-move p-1.5 bg-white border-2 rounded-lg shadow-md transition ${
+                            isSelected ? 'border-solid ring-2 ring-offset-1 shadow-xl' : `${fieldOfSelectedRecipient ? 'border-solid' : 'border-dashed'} hover:border-solid hover:shadow-lg`
                           }`}
                         >
                           <div className="flex border bg-white text-xs font-mono font-bold" style={{ gap: `${field.charSpace || 0}px`, borderColor: rec.color, color: rec.color }}>
@@ -2534,10 +2569,11 @@ export default function DocumentEditor() {
                             left: `${field.x}px`,
                             zIndex: fieldZIndex,
                             borderColor: rec.color,
-                            touchAction: 'none'
+                            touchAction: 'none',
+                            ...fieldEmphasisStyle(field, rec, isSelected)
                           }}
-                          className={`absolute cursor-move p-1.5 bg-white border-2 rounded-lg shadow-md transition ${
-                            isSelected ? 'border-solid ring-2 ring-offset-1 shadow-xl' : 'border-dashed hover:border-solid hover:shadow-lg'
+                          className={`${addedClass}absolute cursor-move p-1.5 bg-white border-2 rounded-lg shadow-md transition ${
+                            isSelected ? 'border-solid ring-2 ring-offset-1 shadow-xl' : `${fieldOfSelectedRecipient ? 'border-solid' : 'border-dashed'} hover:border-solid hover:shadow-lg`
                           }`}
                         >
                           <button
@@ -2568,11 +2604,12 @@ export default function DocumentEditor() {
                             zIndex: fieldZIndex,
                             borderColor: rec.color,
                             color: rec.color,
-                            touchAction: 'none'
+                            touchAction: 'none',
+                            ...fieldEmphasisStyle(field, rec, isSelected)
                           }}
-                          className={`absolute p-2 border-2 bg-white shadow-md cursor-move transition flex flex-col items-center justify-center font-bold text-xs overflow-hidden ${
+                          className={`${addedClass}absolute p-2 border-2 bg-white shadow-md cursor-move transition flex flex-col items-center justify-center font-bold text-xs overflow-hidden ${
                             field.stampShape === 'oval' ? 'rounded-full h-20 w-20' : 'rounded-lg h-20 w-28'
-                          } ${isSelected ? 'border-solid ring-2 ring-offset-1 shadow-xl' : 'border-dashed hover:border-solid hover:shadow-lg'}`}
+                          } ${isSelected ? 'border-solid ring-2 ring-offset-1 shadow-xl' : `${fieldOfSelectedRecipient ? 'border-solid' : 'border-dashed'} hover:border-solid hover:shadow-lg`}`}
                         >
                           {field.stampImage ? (
                             <img
@@ -2605,10 +2642,11 @@ export default function DocumentEditor() {
                           borderColor: rec.color,
                           backgroundColor: '#ffffff',
                           zIndex: fieldZIndex,
-                          touchAction: 'none'
+                          touchAction: 'none',
+                          ...fieldEmphasisStyle(field, rec, isSelected)
                         }}
-                        className={`absolute p-2 border-2 rounded-lg shadow-md cursor-move transition flex items-center gap-2 min-w-[150px] max-w-[260px] bg-white ${
-                          isSelected ? 'ring-2 ring-offset-1 scale-105 border-solid shadow-xl' : 'border-dashed hover:border-solid hover:shadow-lg'
+                        className={`${addedClass}absolute p-2 border-2 rounded-lg shadow-md cursor-move transition flex items-center gap-2 min-w-[150px] max-w-[260px] bg-white ${
+                          isSelected ? 'ring-2 ring-offset-1 scale-105 border-solid shadow-xl' : `${fieldOfSelectedRecipient ? 'border-solid' : 'border-dashed'} hover:border-solid hover:shadow-lg`
                         }`}
                       >
                         <Move size={12} className="opacity-60 shrink-0" style={{ color: rec.color }} />
@@ -2634,6 +2672,25 @@ export default function DocumentEditor() {
                       </div>
                     );
                   })}
+
+                  {/* Selected field tag: field name and its recipient, in the recipient's colour */}
+                  {activeField && draggingFieldId !== activeField.id && fieldsForThisPage.some((f) => f.id === activeField.id) && (() => {
+                    const tagRecipient = recipientForField(activeField);
+                    return (
+                      <div
+                        className="absolute pointer-events-none z-[45] -translate-y-full pb-2"
+                        style={{ top: `${activeField.y}px`, left: `${activeField.x}px` }}
+                      >
+                        <span
+                          className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-0.5 text-[10px] font-bold text-white shadow-lg"
+                          style={{ backgroundColor: tagRecipient.color }}
+                        >
+                          <span className="w-1.5 h-1.5 rounded-full bg-white/90" />
+                          {activeField.label || activeField.type} · {tagRecipient.name}
+                        </span>
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
             );

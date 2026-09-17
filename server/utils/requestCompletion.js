@@ -8,10 +8,10 @@ const fs = require('fs');
 const path = require('path');
 const db = require('../db');
 const helpers = require('./requestHelpers');
-const { generateSignedDocumentPdf, generateCompletionCertificatePdf } = require('./completedPdfGenerator');
+const { generateSignedDocumentPdf, generateCompletionCertificatePdf, formatDateTime } = require('./completedPdfGenerator');
 const { sendDocumentCompletedEmail } = require('./emailService');
 const { getOrCreateDocumentIdentifier } = require('./documentIdentifier');
-const { recordFingerprint } = require('./pdfFingerprints');
+const { recordFingerprint, isCurrentIssuedPdf } = require('./pdfFingerprints');
 
 function safeFileName(name, fallback) {
   const base = String(name || fallback).replace(/\.pdf$/i, '').replace(/[\\/:*?"<>|]+/g, '_').trim() || fallback;
@@ -197,17 +197,72 @@ async function finalizeCompletedRequest(documentId, { fallbackAttachments = [] }
   };
 }
 
+const downloadName = (name, fallback = 'Document') => {
+  const text = String(name || fallback).replace(/\.pdf$/i, '').replace(/[\\/:*?"<>|\r\n]+/g, '_').trim() || fallback;
+  return `${text}.pdf`;
+};
+
 /**
- * A recipient's own signed copy of one document while the request is still in progress (only their fields).
- * Locked like the final documents and recorded so it can be verified. Returns null when they have not signed.
+ * Signed PDFs of a completed request: { documents: [{ name, buffer }], certificate }. The stored files are used
+ * unless one is missing, unregistered or was issued with an older PDF layout; then all of them are rebuilt
+ * (the original completion date is kept, nothing is emailed).
  */
-async function buildSignerCopy(documentId, email, fileIndex = 0) {
+async function getCompletedPdfFiles(documentId) {
+  const readPublic = (publicPath) => {
+    if (!publicPath) return null;
+    const abs = path.join(__dirname, '..', publicPath);
+    return fs.existsSync(abs) ? fs.readFileSync(abs) : null;
+  };
+  const files = await helpers.getDocumentFiles(documentId);
+  const documents = files.map((f) => ({ name: downloadName(f.file_name), buffer: readPublic(f.signed_file_path) }));
+  const certificate = readPublic(`/uploads/completed/${documentId}/certificate-of-completion.pdf`);
+
+  const buffers = [...documents.map((d) => d.buffer), certificate];
+  let current = files.length > 0 && buffers.every(Boolean);
+  for (const buffer of buffers) {
+    if (!current) break;
+    if (!(await isCurrentIssuedPdf(buffer))) current = false;
+  }
+  if (current) return { documents, certificate, rebuilt: false };
+
+  const bundle = await buildCompletedRequestFiles(documentId);
+  return {
+    documents: bundle.attachments.map((a) => ({ name: downloadName(a.filename), buffer: a.content })),
+    certificate: bundle.certificate.content,
+    rebuilt: true
+  };
+}
+
+/** Rebuilds, in the background, the stored PDFs of completed requests issued with an older layout. */
+async function refreshOutdatedCompletedPdfs() {
+  const [rows] = await db.query("SELECT id FROM documents WHERE LOWER(COALESCE(status, '')) = 'completed' ORDER BY id ASC");
+  let rebuilt = 0;
+  for (const { id } of rows) {
+    try {
+      if ((await getCompletedPdfFiles(id)).rebuilt) rebuilt += 1;
+    } catch (err) {
+      console.warn(`[Signed PDFs] request ${id} could not be rebuilt:`, err.message);
+    }
+  }
+  if (rebuilt > 0) console.log(`[Signed PDFs] Rebuilt the signed documents of ${rebuilt} completed request(s) with the current signature stamp and lock`);
+  return rebuilt;
+}
+
+/**
+ * Locked copy of one document of a request that is still in progress, recorded so it can be verified:
+ *  - a recipient (email) who has signed: the document with their own fields and signature;
+ *  - a recipient who has not signed yet: the document without any fields;
+ *  - the sender (no email): the document with the fields of every recipient who has signed so far.
+ * Returns null for an unknown recipient or request.
+ */
+async function buildProgressCopy(documentId, { email = '', fileIndex = 0 } = {}) {
   const [docs] = await db.query('SELECT * FROM documents WHERE id = ?', [documentId]);
   const doc = docs[0];
   if (!doc) return null;
   const recipients = await helpers.getRecipients(documentId);
-  const recipient = recipients.find((r) => String(r.email || '').toLowerCase() === String(email || '').trim().toLowerCase());
-  if (!recipient || recipient.status !== 'signed') return null;
+  const wanted = String(email || '').trim().toLowerCase();
+  const recipient = wanted ? recipients.find((r) => String(r.email || '').toLowerCase() === wanted) : null;
+  if (wanted && !recipient) return null;
 
   const files = await helpers.getDocumentFiles(documentId);
   const documents = files.length > 0
@@ -217,10 +272,32 @@ async function buildSignerCopy(documentId, email, fileIndex = 0) {
   const target = documents[index];
 
   const signingRecipients = recipients.filter((r) => helpers.isSigningRole(r.role));
+  const signedRecipients = signingRecipients.filter((r) => r.status === 'signed');
   const [fieldRows] = await db.query('SELECT * FROM document_fields WHERE document_id = ? ORDER BY id ASC', [documentId]);
   const allFields = fieldRows.map(helpers.parseFieldRow);
-  let fields = allFields.filter((f) => f.docIndex === index && helpers.fieldBelongsToRecipient(f, recipient, signingRecipients));
-  if (allFields.length === 0) fields = [{ type: 'Signature', label: 'Signature' }];
+  // Whose fields this copy shows: the recipient's own once signed, nobody's before; the sender sees every signer so far
+  const shownRecipients = recipient ? (recipient.status === 'signed' ? [recipient] : []) : signedRecipients;
+  const sections = shownRecipients
+    .map((r) => ({
+      recipient: r,
+      fields: allFields.length === 0
+        ? [{ type: 'Signature', label: 'Signature' }]
+        : allFields.filter((f) => f.docIndex === index && helpers.fieldBelongsToRecipient(f, r, signingRecipients))
+    }))
+    .filter((s) => s.fields.length > 0);
+
+  let statusLine;
+  let kind;
+  if (recipient && recipient.status === 'signed') {
+    statusLine = `Signed by ${recipient.name || recipient.email} on ${formatDateTime(recipient.signed_at)}`;
+    kind = 'signer-copy';
+  } else if (recipient) {
+    statusLine = `Copy for review, not signed yet (downloaded on ${formatDateTime(new Date())})`;
+    kind = 'recipient-copy';
+  } else {
+    statusLine = `In progress: ${signedRecipients.length} of ${signingRecipients.length} recipients signed (as of ${formatDateTime(new Date())})`;
+    kind = 'progress-copy';
+  }
 
   const identifier = await getOrCreateDocumentIdentifier(documentId);
   const bexId = identifier?.bexsign_doc_id || `BEX-DOC-${documentId}`;
@@ -228,24 +305,29 @@ async function buildSignerCopy(documentId, email, fileIndex = 0) {
     documentName: target.name,
     documentText: target.text,
     bexsignDocId: documents.length > 1 ? `${bexId}-${index + 1}` : bexId,
-    sections: fields.length > 0 ? [{ recipient, fields }] : [],
-    signerSummary: [recipient.name || recipient.email],
-    completedAt: recipient.signed_at || new Date(),
+    sections,
+    statusLine,
     sender: await helpers.getRequestSender(doc)
   });
   const fileName = safeFileName(target.name, `Document ${index + 1}`);
   const hash = await recordFingerprint(buffer, {
     documentId,
     fileIndex: index,
-    kind: 'signer-copy',
+    kind,
     fileName,
-    recipientEmail: recipient.email
+    recipientEmail: recipient ? recipient.email : null
   });
   return { buffer, fileName, sha256: hash };
 }
 
+// Previous name: a signed recipient's own copy
+const buildSignerCopy = (documentId, email, fileIndex = 0) => buildProgressCopy(documentId, { email, fileIndex });
+
 module.exports = {
   buildCompletedRequestFiles,
   finalizeCompletedRequest,
+  getCompletedPdfFiles,
+  refreshOutdatedCompletedPdfs,
+  buildProgressCopy,
   buildSignerCopy
 };

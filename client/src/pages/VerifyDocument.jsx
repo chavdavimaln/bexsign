@@ -9,7 +9,10 @@ const API_BASE = 'http://localhost:5000/api';
 const KIND_LABELS = {
   signed: 'Signed document',
   certificate: 'Certificate of completion',
-  'signer-copy': "Signer's copy"
+  'signer-copy': "Signer's copy",
+  'recipient-copy': "Recipient's copy for review",
+  'progress-copy': 'In-progress copy',
+  'protected-copy': 'Password-protected copy'
 };
 
 const formatDateTime = (value) => {

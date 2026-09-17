@@ -1,4 +1,4 @@
-import { generateBexsignId, generateEmployeeSignatureId } from './documentId';
+import { generateBexsignId, signatureIdLines } from './documentId';
 import { getDefaultDocContent } from './documentDefaults';
 import {
   isSignatureField,
@@ -194,21 +194,7 @@ export async function generatePdfBlob({
   defaultSignature = true
 }) {
   const cleanFileName = documentName.endsWith('.pdf') ? documentName : `${documentName}.pdf`;
-  const fullSignatureId = typeof docId === 'string' && (docId.startsWith('BEX-SIGN') || docId.startsWith('BEX-DOC'))
-    ? (docId.startsWith('BEX-SIGN') ? docId : docId.replace('BEX-DOC', 'BEX-SIGN-VC-EMP001'))
-    : generateEmployeeSignatureId(employeeId, signerName);
   const fullBexsignId = typeof docId === 'string' && docId.startsWith('BEX-') ? docId : generateBexsignId(docId);
-
-  // Split Doc ID cleanly into two visible lines without truncation
-  let docIdLine1 = 'BEX-SIGN-VC-EMP001-2026';
-  let docIdLine2 = typeof docId === 'string' ? docId.replace('BEX-DOC-', '').substring(0, 24) : '361682B4-ERZWA2U19FQKOU0L';
-  if (fullSignatureId.length > 25) {
-    const splitIndex = fullSignatureId.lastIndexOf('-', 28);
-    if (splitIndex !== -1 && splitIndex > 15) {
-      docIdLine1 = fullSignatureId.substring(0, splitIndex);
-      docIdLine2 = fullSignatureId.substring(splitIndex + 1);
-    }
-  }
 
   const cleanDocTitle = (documentName || 'Document 1.pdf').replace(/\.pdf$/i, '');
   const cleanDocBody = (documentText && documentText.trim() && documentText !== 'check the document for signature')
@@ -367,9 +353,9 @@ BT
 /F1 7.5 Tf
 0.35 0.4 0.45 rg
 58 ${top - 92} Td
-(${pdfText(docIdLine1)}) Tj
+(${pdfText(signatureIdLines(fullBexsignId, name)[0])}) Tj
 0 -10 Td
-(${pdfText(docIdLine2)}) Tj
+(${pdfText(signatureIdLines(fullBexsignId, name)[1])}) Tj
 ET`;
     return out;
   };

@@ -12,7 +12,7 @@ import BexDocumentSheet from '../components/BexDocumentSheet';
 import { getDefaultDocContent } from '../utils/documentDefaults';
 import { getDocumentOwner } from '../utils/currentUser';
 import EditCopyModal from '../components/EditCopyModal';
-import { downloadAllSignedDocuments } from '../utils/signedPdf';
+import { downloadAllSignedDocuments, printAllLockedDocuments } from '../utils/signedPdf';
 import {
   FileText,
   Plus,
@@ -223,7 +223,7 @@ export default function DocumentsList() {
     const viewportHeight = window.innerHeight;
     const spaceBelow = viewportHeight - rect.bottom - 16;
     const spaceAbove = rect.top - 16;
-    
+
     // Check if opening upwards is better suited
     const openUpwards = spaceBelow < 300 && spaceAbove > spaceBelow;
     const availableHeight = openUpwards ? spaceAbove : spaceBelow;
@@ -275,12 +275,14 @@ export default function DocumentsList() {
   };
 
   const handleDownloadDocument = async (doc) => {
-    // Completed requests download the locked signed PDFs issued by the server (they cannot be edited)
-    if (String(doc.status || '').toLowerCase() === 'completed') {
+    // Sent requests download the locked PDFs issued by the server (flattened, encrypted and certified: not editable);
+    // completed requests get the signed documents, others a copy with the signatures collected so far
+    if (String(doc.status || '').toLowerCase() !== 'draft') {
+      const completed = String(doc.status || '').toLowerCase() === 'completed';
       try {
-        handleActionToast('Preparing the signed documents...');
+        handleActionToast(completed ? 'Preparing the signed documents...' : 'Preparing a locked copy of the documents...');
         const names = await downloadAllSignedDocuments(doc.id);
-        handleActionToast(`Downloaded ${names.length === 1 ? `"${names[0]}"` : `${names.length} signed documents`} (locked PDF).`);
+        handleActionToast(`Downloaded ${names.length === 1 ? `"${names[0]}"` : `${names.length} documents`} (locked PDF, cannot be edited).`);
       } catch (err) {
         showPopupAlert(err instanceof TypeError ? 'Could not reach the BexSign server at http://localhost:5000.' : err.message, { title: 'Download failed', type: 'error' });
       }
@@ -348,7 +350,17 @@ export default function DocumentsList() {
     handleActionToast(`Downloaded "${docName}" successfully.`);
   };
 
-  const handlePrintDocument = (doc) => {
+  const handlePrintDocument = async (doc) => {
+    // Sent requests print the locked PDF, so "Save as PDF" in the print dialog cannot create an editable copy
+    if (String(doc.status || '').toLowerCase() !== 'draft') {
+      try {
+        handleActionToast('Preparing the document for printing...');
+        await printAllLockedDocuments(doc.id);
+      } catch (err) {
+        showPopupAlert(err instanceof TypeError ? 'Could not reach the BexSign server at http://localhost:5000.' : err.message, { title: 'Print failed', type: 'error' });
+      }
+      return;
+    }
     const docName = doc.document_name || doc.name || 'Document 1.pdf';
     const savedSig = doc.signature_image || localStorage.getItem(`bexsign_doc_${doc.id}_signature`) || '';
     const savedSigner = doc.signer_name || localStorage.getItem(`bexsign_doc_${doc.id}_signer`) || doc.owner || 'Vimal Chavda';
@@ -1247,9 +1259,9 @@ export default function DocumentsList() {
         {activeMenuDoc && menuPosition && (
           <>
             {/* Backdrop to close on tap/click outside */}
-            <div 
-              className="fixed inset-0 z-[9998]" 
-              onClick={() => { setActiveMenuDoc(null); setMenuPosition(null); }} 
+            <div
+              className="fixed inset-0 z-[9998]"
+              onClick={() => { setActiveMenuDoc(null); setMenuPosition(null); }}
             />
 
             <div
@@ -1280,7 +1292,7 @@ export default function DocumentsList() {
                   {(activeMenuDoc.status === 'In Progress' || !activeMenuDoc.status) && (
                     <>
                       <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><UserCheck size={15} /> Recipient status</button>
-                      <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/sign/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Eye size={15} /> View document</button>
+                      <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/view`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Eye size={15} /> View document</button>
                       <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); setEditCopyDoc(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Edit size={15} /> Edit</button>
                       <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/send`); handleActionToast('Document in correction state.'); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><FileCheck size={15} /> Correct document</button>
                       <button onClick={() => triggerModal('extend', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Clock size={15} /> Extend</button>
@@ -1306,7 +1318,7 @@ export default function DocumentsList() {
                   {activeMenuDoc.status === 'Completed' && (
                     <>
                       <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><UserCheck size={15} /> Recipient status</button>
-                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); setSelectedDoc(d); setActiveModal('viewCompleted'); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Eye size={15} /> View document</button>
+                      <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/view`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Eye size={15} /> View document</button>
                       <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); setEditCopyDoc(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Edit size={15} /> Edit</button>
                       <button onClick={() => triggerModal('certificate', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><FileCheck size={15} /> Completion certificate</button>
                       <button onClick={() => triggerModal('email', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Mail size={15} /> Email document</button>
@@ -1330,7 +1342,7 @@ export default function DocumentsList() {
                       <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-800"><UserCheck size={15} /> Recipient status</button>
                       <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/edit`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Edit size={15} /> Edit document</button>
                       <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/send`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><ArrowRight size={15} /> Continue</button>
-                      <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/sign/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Eye size={15} /> View document</button>
+                      <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/view`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Eye size={15} /> View document</button>
                       <button onClick={() => triggerModal('saveCloud', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Cloud size={15} /> Save to cloud</button>
                       <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleDownloadDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Download size={15} className="text-[#00a884]" /> Download</button>
                       <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleEditAsNew(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Copy size={15} /> Edit as new</button>
@@ -1347,7 +1359,7 @@ export default function DocumentsList() {
                   {!['in progress', 'completed', 'draft'].includes((activeMenuDoc.status || '').toLowerCase()) && (
                     <>
                       <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><UserCheck size={15} /> Recipient status</button>
-                      <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/sign/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Eye size={15} /> View document</button>
+                      <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/view`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Eye size={15} /> View document</button>
                       <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleDownloadDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Download size={15} className="text-[#00a884]" /> Download</button>
                       <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleEditAsNew(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Copy size={15} /> Edit as new</button>
                       <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handlePrintDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Printer size={15} /> Print</button>
