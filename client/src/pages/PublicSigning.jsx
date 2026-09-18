@@ -38,6 +38,8 @@ export default function PublicSigning() {
 
   const [showMoreActions, setShowMoreActions] = useState(false);
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
+  // Document the "You have signed" screen prints/downloads: a document index, or 'all' for every document
+  const [outputDocIndex, setOutputDocIndex] = useState(0);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [downloadPassword, setDownloadPassword] = useState('');
   const [zoomLevel, setZoomLevel] = useState(100);
@@ -263,7 +265,8 @@ export default function PublicSigning() {
           sentOn: doc.sent_at || doc.created_at || null
         });
 
-        // Recipient context: role, signing order turn and whether this recipient already signed
+        // Recipient context: role and whether this recipient already signed. Every signer can sign as soon as they
+        // receive the email; "Send in order" only sets the order the emails go out in, not a wait between signers.
         const realRecipients = (doc.recipients || []).filter((r) => !r.isFallback);
         const matched = realRecipients.find((r) => r.email && r.email.toLowerCase() === currentSignerEmail.toLowerCase());
         if (matched && matched.name) {
@@ -272,19 +275,11 @@ export default function PublicSigning() {
         if (matched) {
           const signingRoles = ['signer', 'approver'];
           const pending = realRecipients.filter((r) => signingRoles.includes(r.role || 'signer') && !['signed', 'declined'].includes(r.status));
-          let waitingFor = [];
-          if (doc.signing_order === 'sequential' && pending.length > 0 && matched.status !== 'signed') {
-            const minOrder = Math.min(...pending.map((r) => r.signing_order_index || 1));
-            if ((matched.signing_order_index || 1) > minOrder) {
-              waitingFor = pending.filter((r) => (r.signing_order_index || 1) === minOrder).map((r) => r.name || r.email);
-            }
-          }
           setSignerContext({
             recipientId: matched.id,
             role: matched.role_label || matched.role,
             isCopy: !signingRoles.includes(matched.role || 'signer'),
             alreadySigned: matched.status === 'signed',
-            waitingFor,
             remaining: pending.filter((r) => r.id !== matched.id).map((r) => r.name || r.email)
           });
           if (doc.status !== 'Completed') {
@@ -562,15 +557,23 @@ export default function PublicSigning() {
     }
   };
 
-  const handleDownloadSignedPdf = async (pass = '') => {
+  // Document indexes to print/download: the given list, otherwise the document on screen (a click event is ignored)
+  const docIndexesFrom = (indexes) => (Array.isArray(indexes) && indexes.length > 0 ? indexes : [activeDocIndex]);
+
+  const handleDownloadSignedPdf = async (pass = '', indexes = null) => {
     // Every copy is the locked PDF issued by the server: the signed copy once this recipient has signed, before that
     // the document for review (without the values being entered here). Neither can be edited.
     const password = typeof pass === 'string' ? pass : '';
     try {
-      const { fileName } = await downloadSignedDocument(docId, { index: activeDocIndex, email: documentDetails.recipient, password });
+      const fileNames = [];
+      for (const index of docIndexesFrom(indexes)) {
+        const { fileName } = await downloadSignedDocument(docId, { index, email: documentDetails.recipient, password });
+        fileNames.push(`"${fileName}"`);
+      }
       const signed = isCompleted || signerContext?.alreadySigned;
+      const several = fileNames.length > 1;
       showPopupAlert(
-        `Downloaded "${fileName}"${signed ? '' : ' for review'}. The PDF is locked and cannot be edited${password ? '; it opens with the password you set' : ''}.`,
+        `Downloaded ${fileNames.join(', ')}${signed ? '' : ' for review'}. ${several ? 'The PDFs are' : 'The PDF is'} locked and cannot be edited${password ? `; ${several ? 'they open' : 'it opens'} with the password you set` : ''}.`,
         { title: 'Download Complete', type: 'success' }
       );
     } catch (err) {
@@ -578,10 +581,12 @@ export default function PublicSigning() {
     }
   };
 
-  const handlePrintSignedPdf = async () => {
+  const handlePrintSignedPdf = async (indexes = null) => {
     // Prints the locked PDF, so the print dialog's "Save as PDF" cannot create an editable copy
     try {
-      await printLockedDocument(docId, { index: activeDocIndex, email: documentDetails.recipient });
+      for (const index of docIndexesFrom(indexes)) {
+        await printLockedDocument(docId, { index, email: documentDetails.recipient });
+      }
     } catch (err) {
       showPopupAlert(err instanceof TypeError ? 'Could not reach the BexSign server at http://localhost:5000.' : err.message, { title: 'Print failed', type: 'error' });
     }
@@ -656,10 +661,6 @@ export default function PublicSigning() {
     }
     if (signerContext?.alreadySigned) {
       showPopupAlert('You have already signed this document.', { title: 'Already signed', type: 'info' });
-      return;
-    }
-    if (signerContext?.waitingFor?.length) {
-      showPopupAlert(`Waiting for ${signerContext.waitingFor.join(', ')} to sign first. You will receive an email when it is your turn.`, { title: 'Not your turn yet', type: 'warning' });
       return;
     }
     if (!agreedConsent) {
@@ -1123,6 +1124,33 @@ export default function PublicSigning() {
 
   // 2. Signer Completion Screen (Page 11 bottom)
   if (isCompleted) {
+    const hasSeveralDocs = documentsList.length > 1;
+    const selectedOutput = hasSeveralDocs && (outputDocIndex === 'all' || outputDocIndex < documentsList.length) ? outputDocIndex : 0;
+    const outputIndexes = selectedOutput === 'all' ? documentsList.map((_, idx) => idx) : [selectedOutput];
+    const outputLabel = selectedOutput === 'all'
+      ? `All ${documentsList.length} documents`
+      : (documentsList[selectedOutput]?.name || `Document ${selectedOutput + 1}`);
+    // Which of the request's documents Print and Download use (shown only when there is more than one)
+    const documentPicker = (id) => hasSeveralDocs && (
+      <div className="w-full sm:w-auto flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-2 text-left">
+        <label htmlFor={id} className="text-xs font-bold text-slate-600 shrink-0">Document</label>
+        <div className="relative w-full sm:w-auto sm:min-w-64">
+          <select
+            id={id}
+            value={String(selectedOutput)}
+            onChange={(e) => setOutputDocIndex(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+            className="w-full appearance-none bg-white border border-slate-300 rounded pl-3 pr-8 py-2 text-xs font-semibold text-slate-800 shadow-xs focus:outline-none focus:border-[#007355] cursor-pointer"
+          >
+            {documentsList.map((d, idx) => (
+              <option key={d.id || idx} value={idx}>{idx + 1}. {d.name || `Document ${idx + 1}`}</option>
+            ))}
+            <option value="all">All documents ({documentsList.length})</option>
+          </select>
+          <ChevronDown size={14} className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
+        </div>
+      </div>
+    );
+
     return (
       <div className="min-h-screen bg-slate-100 text-slate-900 flex flex-col items-center justify-center p-6 font-sans">
         <div className="max-w-xl w-full text-center space-y-8">
@@ -1138,6 +1166,10 @@ export default function PublicSigning() {
                   : 'You will receive the completed documents by email once everyone has signed.')}
             </p>
           </div>
+
+          {hasSeveralDocs && (
+            <div className="flex justify-center">{documentPicker('completion-document-picker')}</div>
+          )}
 
           {/* Action Buttons matching Page 11 */}
           <div className="flex flex-wrap items-center justify-center gap-4 pt-2 relative">
@@ -1163,7 +1195,8 @@ export default function PublicSigning() {
             </button>
 
             <button
-              onClick={handlePrintSignedPdf}
+              onClick={() => handlePrintSignedPdf(outputIndexes)}
+              title={hasSeveralDocs ? `Print ${outputLabel}` : 'Print'}
               className="px-5 py-2.5 bg-white border border-slate-300 hover:bg-slate-50 rounded text-xs font-bold text-slate-800 shadow-xs flex items-center gap-2 cursor-pointer"
             >
               <Printer size={16} /> Print
@@ -1172,7 +1205,8 @@ export default function PublicSigning() {
             {/* Split Download Button (Direct Download + Download with password) */}
             <div className="relative inline-flex rounded shadow-xs">
               <button
-                onClick={() => handleDownloadSignedPdf('')}
+                onClick={() => handleDownloadSignedPdf('', outputIndexes)}
+                title={hasSeveralDocs ? `Download ${outputLabel}` : 'Download'}
                 className="px-5 py-2.5 bg-white border border-slate-300 hover:bg-slate-50 rounded-l text-xs font-bold text-slate-800 flex items-center gap-2 cursor-pointer"
               >
                 <Download size={16} className="text-[#007355]" /> Download
@@ -1228,8 +1262,9 @@ export default function PublicSigning() {
                 </button>
               </div>
               <p className="text-xs text-slate-600">
-                Set an optional password to encrypt and secure this signed document.
+                Set an optional password to encrypt and secure {selectedOutput === 'all' ? 'these signed documents' : 'this signed document'}.
               </p>
+              {documentPicker('password-document-picker')}
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">Password</label>
                 <input
@@ -1252,7 +1287,7 @@ export default function PublicSigning() {
                   type="button"
                   onClick={() => {
                     setShowPasswordModal(false);
-                    handleDownloadSignedPdf(downloadPassword);
+                    handleDownloadSignedPdf(downloadPassword, outputIndexes);
                   }}
                   className="bg-[#007355] hover:bg-[#005c44] text-white px-4 py-1.5 rounded text-xs font-bold"
                 >
@@ -1370,7 +1405,7 @@ export default function PublicSigning() {
 
             <button
               onClick={handleFinishSigning}
-              disabled={isSubmitting || Boolean(signerContext && (signerContext.isCopy || signerContext.alreadySigned || signerContext.waitingFor?.length))}
+              disabled={isSubmitting || Boolean(signerContext && (signerContext.isCopy || signerContext.alreadySigned))}
               className="bg-[#007355] hover:bg-[#005c44] disabled:opacity-60 text-white px-6 py-1.5 rounded font-bold text-xs shadow-xs transition cursor-pointer flex items-center gap-1.5"
             >
               {isSubmitting ? (
@@ -1466,15 +1501,13 @@ export default function PublicSigning() {
         return null;
       })()}
 
-      {signerContext && (signerContext.isCopy || signerContext.alreadySigned || signerContext.waitingFor?.length > 0) && (
+      {signerContext && (signerContext.isCopy || signerContext.alreadySigned) && (
         <div className="bg-sky-50 border-b border-sky-200 text-sky-900 px-4 sm:px-6 py-2 text-center text-xs font-semibold flex items-center justify-center gap-2">
           <AlertCircle size={15} className="text-sky-600 shrink-0" />
           <span>
             {signerContext.isCopy
               ? 'You receive a copy of this document. No signature is needed - the completed document will be emailed to you.'
-              : signerContext.alreadySigned
-                ? `You have already signed this document.${signerContext.remaining?.length ? ` Waiting for ${signerContext.remaining.join(', ')}.` : ''}`
-                : `Waiting for ${signerContext.waitingFor.join(', ')} to sign first. You will get an email when it is your turn.`}
+              : `You have already signed this document.${signerContext.remaining?.length ? ` Waiting for ${signerContext.remaining.join(', ')}.` : ''}`}
           </span>
         </div>
       )}

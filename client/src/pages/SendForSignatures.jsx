@@ -31,6 +31,8 @@ import {
 } from 'lucide-react';
 import { showPopupAlert } from '../components/GlobalAlertModal';
 import { getDefaultDocContent, DEFAULT_DOCUMENT_TEXTS } from '../utils/documentDefaults';
+import TemplatePickerModal from '../components/templates/TemplatePickerModal';
+import { templatesToDocuments, countTemplateUse, countPlaceholders } from '../components/templates/templateUi';
 
 const API_BASE = 'http://localhost:5000/api';
 // Zoho Sign limits
@@ -67,6 +69,12 @@ function newUploadKey(seed) {
 // Zoho Sign: a request has no default document. The only document created without "Add document" is one the
 // user already chose on another screen (written in the rich-text editor, or "Edit as new" of a document).
 function documentsFromNavigationState(state) {
+  if (Array.isArray(state?.templates) && state.templates.length > 0) {
+    return templatesToDocuments(state.templates.slice(0, MAX_DOCUMENTS)).map((d) => ({
+      ...d,
+      customMessage: 'check the document for signature'
+    }));
+  }
   const name = String(state?.docName || state?.documentName || '').trim();
   if (!name) return [];
   const fileName = /\.pdf$/i.test(name) ? name : `${name}.pdf`;
@@ -82,14 +90,6 @@ function documentsFromNavigationState(state) {
     }
   ];
 }
-
-// Built-in agreement templates offered by "Add document > Template(s)"
-const BUILT_IN_TEMPLATES = [
-  { name: 'Standard Employment Agreement 2026.pdf', description: 'Appointment, duties, compensation and confidentiality' },
-  { name: 'Mutual Non-Disclosure Agreement (NDA).pdf', description: 'Protect confidential information shared by both parties' },
-  { name: 'Vendor Service Contract.pdf', description: 'Scope of services, service levels and payment terms' },
-  { name: 'Consultancy Agreement Template.pdf', description: 'Engagement terms for independent consultants' }
-];
 
 // Signing order ("Send in order"): a recipient's step number; recipients sharing a step are emailed at the same time
 function stepOf(recipient, index) {
@@ -197,10 +197,10 @@ export default function SendForSignatures() {
   // Set once the user removes documents, so an emptied draft is saved without documents
   const documentsRemovedRef = useRef(false);
   const [isDraggingFiles, setIsDraggingFiles] = useState(false);
-  const [savedTemplates, setSavedTemplates] = useState({ status: 'idle', items: [] });
   const [activeDocIndex, setActiveDocIndex] = useState(0);
   const [activeCardMenuIndex, setActiveCardMenuIndex] = useState(null);
-  const [isCustomTextOpen, setIsCustomTextOpen] = useState(false);
+  // The text of a document added from a template is shown for editing straight away
+  const [isCustomTextOpen, setIsCustomTextOpen] = useState(() => Array.isArray(location.state?.templates) && location.state.templates.length > 0);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const dropdownRef = useRef(null);
   const replaceFileInputRef = useRef(null);
@@ -209,6 +209,8 @@ export default function SendForSignatures() {
   // Modals for dropdown items
   const [showCloudModal, setShowCloudModal] = useState(false);
   const [showTemplateModal, setShowTemplateModal] = useState(false);
+  // 'add': chosen templates become new documents; 'replace': one template replaces the selected document's text
+  const [templatePickerMode, setTemplatePickerMode] = useState('add');
   const [showBulkModal, setShowBulkModal] = useState(false);
 
   // Recipient State
@@ -301,16 +303,6 @@ export default function SendForSignatures() {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
-
-  // Saved templates listed in "Add document > Template(s)" (loaded the first time the picker opens)
-  useEffect(() => {
-    if (!showTemplateModal || savedTemplates.status !== 'idle') return;
-    setSavedTemplates({ status: 'loading', items: [] });
-    fetch(`${API_BASE}/templates`)
-      .then((res) => res.json())
-      .then((data) => setSavedTemplates({ status: 'ready', items: Array.isArray(data.templates) ? data.templates : [] }))
-      .catch(() => setSavedTemplates({ status: 'ready', items: [] }));
-  }, [showTemplateModal]);
 
   const fetchDraftData = async () => {
     try {
@@ -646,10 +638,50 @@ export default function SendForSignatures() {
     addFilesToDocuments(Array.from(e.dataTransfer.files || []));
   };
 
-  const handleAddTemplateDocument = (templateName, extra = {}) => {
-    const fileName = /\.pdf$/i.test(templateName) ? templateName : `${templateName}.pdf`;
+  const openTemplatePicker = (mode = 'add') => {
+    setTemplatePickerMode(mode);
+    setShowTemplateModal(true);
+    setIsDropdownOpen(false);
+  };
+
+  // Chosen templates are added as documents; their text opens for editing so the [placeholders] can be filled in
+  const handleTemplatesChosen = (templates) => {
     setShowTemplateModal(false);
-    handleAddNewDoc(fileName, extra);
+    if (templatePickerMode === 'replace') {
+      const [template] = templates;
+      if (!template) return;
+      setDocumentsList((prev) => {
+        const copy = [...prev];
+        const current = copy[activeDocIndex];
+        if (!current) return prev;
+        // A document still carrying a default name takes the template's name
+        const renamed = /^Document \d+\.pdf$/i.test(current.name || '') ? `${template.name}.pdf` : current.name;
+        copy[activeDocIndex] = { ...current, name: renamed, documentText: template.content || current.documentText, fromTemplate: template.id };
+        const activeId = draftIdRef.current || id || currentCreatedId;
+        if (activeId) localStorage.setItem(`bexsign_doc_${activeId}_documents`, JSON.stringify(copy));
+        return copy;
+      });
+      countTemplateUse(template);
+      setIsCustomTextOpen(true);
+      return;
+    }
+    const room = MAX_DOCUMENTS - documentsList.length;
+    if (room <= 0) {
+      showPopupAlert(`A request can contain at most ${MAX_DOCUMENTS} documents.`, { title: 'Document limit', type: 'warning' });
+      return;
+    }
+    const chosen = templates.slice(0, room);
+    const newDocs = templatesToDocuments(chosen).map((d) => ({ ...d, customMessage: noteToAll || 'check the document for signature' }));
+    setDocumentsList((prev) => {
+      setActiveDocIndex(prev.length);
+      return [...prev, ...newDocs];
+    });
+    chosen.forEach(countTemplateUse);
+    setIsCustomTextOpen(true);
+    if (templates.length > chosen.length) {
+      showPopupAlert(`Only ${chosen.length} of the ${templates.length} templates were added: a request can contain at most ${MAX_DOCUMENTS} documents.`, { title: 'Document limit', type: 'warning' });
+    }
+    setTimeout(() => document.getElementById('document-text-textarea')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 150);
   };
 
   const handleAddNewDoc = (customTitle = '', extra = {}) => {
@@ -1114,7 +1146,7 @@ export default function SendForSignatures() {
   const addDocumentOptions = [
     { key: 'desktop', icon: HardDrive, title: 'Desktop', description: 'Upload files from this computer', onSelect: () => fileInputRef.current?.click() },
     { key: 'cloud', icon: Cloud, title: 'Cloud', description: 'Google Drive, Dropbox, OneDrive or Box', onSelect: () => setShowCloudModal(true) },
-    { key: 'templates', icon: FileBox, title: 'Template(s)', description: 'Start from an agreement template', onSelect: () => setShowTemplateModal(true) },
+    { key: 'templates', icon: FileBox, title: 'Template(s)', description: 'Start from an agreement template', onSelect: () => openTemplatePicker('add') },
     { key: 'mail-merge', icon: Layers, title: 'Mail merge template', description: 'Personalize one template for many recipients', onSelect: () => handleAddNewDoc('Customer Service Agreement.pdf') },
     { key: 'create', icon: FileEdit, title: 'Create', description: 'Write a new document in the editor', badge: 'Opens editor', onSelect: () => handleCreateInEditor() }
   ];
@@ -1441,82 +1473,107 @@ export default function SendForSignatures() {
                 </p>
               </div>
 
-              {/* Optional Document Text / Agreement Data Collapsible Section */}
-              <div className="border border-slate-200 rounded-lg p-3 bg-white space-y-2 max-w-md shadow-2xs">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs font-semibold text-slate-800">
-                      Document text / agreement data
-                    </span>
-                    <span className="text-[10px] text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded font-medium">
-                      Optional
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setIsCustomTextOpen(!isCustomTextOpen)}
-                    className="text-xs text-[#007355] hover:text-[#005c44] font-bold flex items-center gap-1 transition cursor-pointer"
-                  >
-                    <span>{isCustomTextOpen ? 'Collapse' : 'Customize text'}</span>
-                    <ChevronDown size={14} className={`transform transition-transform ${isCustomTextOpen ? 'rotate-180' : ''}`} />
-                  </button>
-                </div>
-
-                {!isCustomTextOpen ? (
-                  <p className="text-[11px] text-slate-500 leading-relaxed">
-                    Standard document agreement content is applied by default. If you do not wish to edit or create custom clauses, you can leave this as-is and proceed.
-                  </p>
-                ) : (
-                  <div className="pt-2 border-t border-slate-100 space-y-2">
-                    <textarea
-                      id="document-text-textarea"
-                      rows={6}
-                      value={documentsList[activeDocIndex]?.documentText || getDefaultDocContent(documentsList[activeDocIndex]?.name, documentsList[activeDocIndex]?.customMessage)}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setDocumentsList((prev) => {
-                          const copy = [...prev];
-                          if (copy[activeDocIndex]) {
-                            copy[activeDocIndex] = { ...copy[activeDocIndex], documentText: val };
-                          }
-                          const activeId = id || currentCreatedId;
-                          if (activeId) {
-                            localStorage.setItem(`bexsign_doc_${activeId}_documents`, JSON.stringify(copy));
-                          }
-                          return copy;
-                        });
-                      }}
-                      placeholder="Enter agreement terms, clauses, or text that will appear on this document..."
-                      className="w-full p-2.5 text-[11px] border border-slate-300 rounded bg-white focus:border-[#007355] focus:ring-1 focus:ring-[#007355] outline-none transition font-sans text-slate-800 leading-relaxed resize-y"
-                    />
-                    <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                      <span className="text-[10px] text-slate-400 font-semibold">Presets:</span>
-                      {['employment', 'nda', 'service', 'standard'].map((preset) => (
+              {/* Document text: template or custom text, editable before sending */}
+              {(() => {
+                const activeDoc = documentsList[activeDocIndex];
+                const activeText = activeDoc?.documentText || getDefaultDocContent(activeDoc?.name, activeDoc?.customMessage);
+                const placeholders = countPlaceholders(activeText);
+                const isFormatted = /<[a-z][\s\S]*>/i.test(activeText || '');
+                const updateActiveText = (val) => {
+                  setDocumentsList((prev) => {
+                    const copy = [...prev];
+                    if (copy[activeDocIndex]) {
+                      copy[activeDocIndex] = { ...copy[activeDocIndex], documentText: val };
+                    }
+                    const activeId = id || currentCreatedId;
+                    if (activeId) {
+                      localStorage.setItem(`bexsign_doc_${activeId}_documents`, JSON.stringify(copy));
+                    }
+                    return copy;
+                  });
+                };
+                return (
+                  <div className="border border-slate-200 rounded-lg p-3 bg-white space-y-2 w-full max-w-2xl shadow-2xs">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="text-xs font-semibold text-slate-800">Document text</span>
+                        {activeDoc?.fromTemplate ? (
+                          <span className="text-[10px] text-[#007355] bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded font-bold">From template</span>
+                        ) : (
+                          <span className="text-[10px] text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded font-medium">Optional</span>
+                        )}
+                        {placeholders > 0 && (
+                          <span className="text-[10px] text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded font-bold">
+                            {placeholders} to fill in
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-3">
                         <button
-                          key={preset}
                           type="button"
-                          onClick={() => {
-                            setDocumentsList((prev) => {
-                              const copy = [...prev];
-                              if (copy[activeDocIndex]) {
-                                copy[activeDocIndex] = { ...copy[activeDocIndex], documentText: DEFAULT_DOCUMENT_TEXTS[preset] };
-                              }
-                              const activeId = id || currentCreatedId;
-                              if (activeId) {
-                                localStorage.setItem(`bexsign_doc_${activeId}_documents`, JSON.stringify(copy));
-                              }
-                              return copy;
-                            });
-                          }}
-                          className="text-[10px] px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 transition font-medium capitalize cursor-pointer"
+                          onClick={() => openTemplatePicker('replace')}
+                          className="text-xs text-slate-600 hover:text-[#007355] font-semibold flex items-center gap-1 transition cursor-pointer"
                         >
-                          {preset}
+                          <FileBox size={13} />
+                          <span>Replace with a template</span>
                         </button>
-                      ))}
+                        <button
+                          type="button"
+                          onClick={() => setIsCustomTextOpen(!isCustomTextOpen)}
+                          aria-expanded={isCustomTextOpen}
+                          className="text-xs text-[#007355] hover:text-[#005c44] font-bold flex items-center gap-1 transition cursor-pointer"
+                        >
+                          <span>{isCustomTextOpen ? 'Collapse' : 'Edit text'}</span>
+                          <ChevronDown size={14} className={`transform transition-transform ${isCustomTextOpen ? 'rotate-180' : ''}`} />
+                        </button>
+                      </div>
                     </div>
+
+                    {!isCustomTextOpen ? (
+                      <p className="text-[11px] text-slate-500 leading-relaxed">
+                        {activeDoc?.fromTemplate
+                          ? `This document uses template text${placeholders > 0 ? ` with ${placeholders} [placeholders] to replace` : ''}. Click "Edit text" to change it before sending.`
+                          : 'Standard document agreement content is applied by default. If you do not wish to edit or create custom clauses, you can leave this as-is and proceed.'}
+                      </p>
+                    ) : (
+                      <div className="pt-2 border-t border-slate-100 space-y-2">
+                        {isFormatted && (
+                          <p className="text-[11px] text-sky-800 bg-sky-50 border border-sky-200 rounded px-2 py-1.5">
+                            This text was formatted in the document editor. To keep its formatting, edit it with "Edit Content" in the next step.
+                          </p>
+                        )}
+                        <textarea
+                          id="document-text-textarea"
+                          rows={activeDoc?.fromTemplate || String(activeText || '').length > 600 ? 16 : 8}
+                          value={activeText}
+                          onChange={(e) => updateActiveText(e.target.value)}
+                          placeholder="Enter agreement terms, clauses, or text that will appear on this document..."
+                          aria-label={`Text of ${activeDoc?.name || 'the document'}`}
+                          className="w-full p-3 text-xs border border-slate-300 rounded bg-white focus:border-[#007355] focus:ring-1 focus:ring-[#007355] outline-none transition font-sans text-slate-800 leading-relaxed resize-y"
+                        />
+                        <p className={`text-[11px] ${placeholders > 0 ? 'text-amber-700' : 'text-slate-400'}`}>
+                          {placeholders > 0
+                            ? `Replace the ${placeholders} [bracketed] placeholders with the real names, dates and amounts before sending.`
+                            : 'You can also format this text (fonts, tables, clauses) with "Edit Content" in the next step.'}
+                        </p>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-[10px] text-slate-400 font-semibold">Quick presets:</span>
+                          {['employment', 'nda', 'service', 'standard'].map((preset) => (
+                            <button
+                              key={preset}
+                              type="button"
+                              onClick={() => updateActiveText(DEFAULT_DOCUMENT_TEXTS[preset])}
+                              className="text-[10px] px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 transition font-medium capitalize cursor-pointer"
+                            >
+                              {preset}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+                );
+              })()}
             </div>
           </div>
           )}
@@ -2086,88 +2143,13 @@ export default function SendForSignatures() {
       {/* ========================================================
           MODAL: TEMPLATES PICKER
       ======================================================== */}
-      {showTemplateModal && (
-        <div
-          className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center z-50 p-4"
-          onClick={() => setShowTemplateModal(false)}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="template-picker-title"
-            onClick={(e) => e.stopPropagation()}
-            className="bg-white rounded-xl shadow-2xl max-w-lg w-full p-6 space-y-4"
-          >
-            <div className="flex items-start justify-between gap-3 border-b pb-3">
-              <div>
-                <h3 id="template-picker-title" className="text-sm font-bold text-slate-800 flex items-center gap-2">
-                  <FileBox size={18} className="text-[#007355]" />
-                  Select a template
-                </h3>
-                <p className="text-[11px] text-slate-500 mt-0.5">The template is added to this request as a new document.</p>
-              </div>
-              <button
-                type="button"
-                aria-label="Close"
-                onClick={() => setShowTemplateModal(false)}
-                className="text-slate-400 hover:text-slate-600 p-1 rounded hover:bg-slate-100 cursor-pointer"
-              >
-                <X size={18} />
-              </button>
-            </div>
-            <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-1">
-              {[
-                savedTemplates.items.length > 0 && {
-                  heading: 'Your templates',
-                  items: savedTemplates.items.map((t) => ({
-                    key: `saved-${t.id}`,
-                    name: t.title || 'Untitled template',
-                    description: t.description || 'Saved template',
-                    onSelect: () => handleAddTemplateDocument(t.title || 'Untitled template', { filePath: t.file_path || null })
-                  }))
-                },
-                {
-                  heading: 'Agreement templates',
-                  items: BUILT_IN_TEMPLATES.map((t) => ({
-                    key: t.name,
-                    name: t.name.replace(/\.pdf$/i, ''),
-                    description: t.description,
-                    onSelect: () => handleAddTemplateDocument(t.name)
-                  }))
-                }
-              ].filter(Boolean).map((group) => (
-                <section key={group.heading}>
-                  <h4 className="text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-2">{group.heading}</h4>
-                  <div className="space-y-2">
-                    {group.items.map((item) => (
-                      <button
-                        key={item.key}
-                        type="button"
-                        onClick={item.onSelect}
-                        className="w-full p-3 border border-slate-200 hover:border-[#007355] rounded-lg hover:bg-emerald-50/40 transition flex items-center gap-3 text-left group cursor-pointer"
-                      >
-                        <span className="w-9 h-9 rounded-lg bg-emerald-50 text-[#007355] flex items-center justify-center shrink-0">
-                          <FileText size={16} />
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block text-xs font-bold text-slate-800 truncate">{item.name}</span>
-                          <span className="block text-[11px] text-slate-500 truncate">{item.description}</span>
-                        </span>
-                        <ChevronRight size={14} className="text-slate-400 group-hover:text-[#007355] shrink-0" />
-                      </button>
-                    ))}
-                  </div>
-                </section>
-              ))}
-              {savedTemplates.status === 'loading' && (
-                <p className="text-[11px] text-slate-400 flex items-center gap-1.5">
-                  <Loader2 size={12} className="animate-spin" /> Loading your templates...
-                </p>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      <TemplatePickerModal
+        open={showTemplateModal}
+        mode={templatePickerMode}
+        maxSelect={Math.max(1, MAX_DOCUMENTS - documentsList.length)}
+        onClose={() => setShowTemplateModal(false)}
+        onConfirm={handleTemplatesChosen}
+      />
 
       {/* ========================================================
           MODAL: BULK RECIPIENTS

@@ -468,7 +468,7 @@ export function HistoryModal({ documentId, signerEmail, onClose }) {
                             ? `Viewed on ${formatDateTime(r.viewedAt)}`
                             : r.sentAt
                               ? `Received on ${formatDateTime(r.sentAt)}`
-                              : 'Waiting for their turn'}
+                              : 'Not emailed yet'}
                     </p>
                   </div>
                 </div>

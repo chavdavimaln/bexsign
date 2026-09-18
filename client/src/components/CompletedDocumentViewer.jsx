@@ -41,7 +41,7 @@ function recipientState(r) {
   if (!SIGNING_ROLES.includes(role)) return { label: 'Receives a copy', className: 'text-slate-600 bg-slate-50 border-slate-200' };
   if (r.status === 'viewed') return { label: 'Viewed', className: 'text-blue-700 bg-blue-50 border-blue-200' };
   if (r.sent_at) return { label: 'Email sent', className: 'text-amber-700 bg-amber-50 border-amber-200' };
-  return { label: 'Waiting for turn', className: 'text-slate-600 bg-slate-100 border-slate-200' };
+  return { label: 'Not emailed yet', className: 'text-slate-600 bg-slate-100 border-slate-200' };
 }
 
 const formatDateTime = (value) => {

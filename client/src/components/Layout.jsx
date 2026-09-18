@@ -7,7 +7,6 @@ import {
   Inbox,
   FileBox,
   BarChart3,
-  Globe,
   Settings as SettingsIcon,
   PenTool,
   PlusCircle,
@@ -27,8 +26,16 @@ import {
   AlertOctagon,
   FolderOpen,
   PanelLeftClose,
-  PanelLeftOpen
+  PanelLeftOpen,
+  Building2,
+  KeyRound,
+  BellRing,
+  Contact,
+  SlidersHorizontal,
+  Wrench
 } from 'lucide-react';
+import NotificationBell from './notifications/NotificationBell';
+import { PermissionsProvider, usePermissions } from '../utils/permissions';
 
 /**
  * Sidebar menu. Groups open one at a time (opening a group closes the one that was open, at every level), and the
@@ -40,7 +47,8 @@ const NAV_SECTIONS = [
     title: 'Overview',
     items: [
       { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, to: '/dashboard', match: ['/'] },
-      { key: 'users', label: 'Users & Roles', icon: Users, to: '/users', match: ['/settings/users'] }
+      { key: 'notifications', label: 'Notifications', icon: Bell, to: '/notifications' },
+      { key: 'users', label: 'Users & Roles', icon: Users, to: '/users', perm: 'users.view' }
     ]
   },
   {
@@ -80,15 +88,15 @@ const NAV_SECTIONS = [
           }
         ]
       },
-      { key: 'templates', label: 'Templates', icon: FileBox, to: '/templates' },
+      { key: 'templates', label: 'Templates', icon: FileBox, to: '/templates', perm: 'templates.view' },
       {
         key: 'reports',
         label: 'Reports',
         icon: BarChart3,
         children: [
-          { label: 'All Reports', to: '/reports/all', match: ['/reports'], dot: '#6366f1' },
-          { label: 'Timeline', to: '/reports/timeline', dot: '#0ea5e9' },
-          { label: 'Scheduled Reports', to: '/reports/scheduled', dot: '#10b981' }
+          { label: 'All Reports', to: '/reports/all', match: ['/reports'], dot: '#6366f1', perm: 'reports.view' },
+          { label: 'Timeline', to: '/reports/timeline', dot: '#0ea5e9', perm: 'reports.view' },
+          { label: 'Scheduled Reports', to: '/reports/scheduled', dot: '#10b981', perm: 'reports.view' }
         ]
       }
     ]
@@ -97,29 +105,51 @@ const NAV_SECTIONS = [
     title: 'Manage',
     items: [
       {
-        key: 'others',
-        label: 'Others',
-        icon: Globe,
-        children: [
-          { label: 'Failed Access', to: '/others/failed-access', icon: AlertOctagon },
-          { label: 'Document Validity', to: '/others/document-validity', icon: ShieldCheck },
-          { label: 'Activity History', to: '/others/activity-history', icon: History },
-          { label: 'Developer API', to: '/others/api', icon: Code }
-        ]
-      },
-      {
         key: 'settings',
         label: 'Settings',
         icon: SettingsIcon,
         children: [
-          { label: 'General', to: '/settings/general', match: ['/settings'], icon: SettingsIcon },
-          { label: 'Users & Roles', to: '/settings/users', icon: Users },
-          { label: 'My Profile', to: '/settings/profile', icon: User },
-          { label: 'Integrations', to: '/settings/integrations', icon: Layers },
-          { label: 'My Notifications', to: '/settings/notifications', icon: Bell },
-          { label: 'Contacts', to: '/settings/contacts', icon: Users },
-          { label: 'Trash', to: '/settings/trash', icon: Trash2, tone: 'danger' },
-          { label: 'Developer Settings', to: '/settings/developer', icon: Code }
+          {
+            key: 'settings-org',
+            label: 'Organization',
+            icon: Building2,
+            children: [
+              { label: 'General', to: '/settings/general', match: ['/settings'], icon: SlidersHorizontal },
+              { label: 'Users & Roles', to: '/settings/users', icon: Users, perm: 'users.view' },
+              { label: 'Roles & Permissions', to: '/settings/permissions', icon: KeyRound, perm: ['roles.manage', 'users.view'] },
+              { label: 'Integrations', to: '/settings/integrations', icon: Layers },
+              { label: 'Contacts', to: '/settings/contacts', icon: Contact },
+              { label: 'Trash', to: '/settings/trash', icon: Trash2, tone: 'danger' }
+            ]
+          },
+          {
+            key: 'settings-account',
+            label: 'My Account',
+            icon: User,
+            children: [
+              { label: 'My Profile', to: '/settings/profile', icon: User },
+              { label: 'My Notifications', to: '/settings/notifications', icon: BellRing }
+            ]
+          },
+          {
+            key: 'settings-security',
+            label: 'Security & Logs',
+            icon: ShieldCheck,
+            children: [
+              { label: 'Failed Access', to: '/settings/failed-access', match: ['/others/failed-access'], icon: AlertOctagon, perm: 'security.failed_access' },
+              { label: 'Document Validity', to: '/settings/document-validity', match: ['/others/document-validity'], icon: ShieldCheck, perm: 'security.document_validity' },
+              { label: 'Activity History', to: '/settings/activity-history', match: ['/others/activity-history'], icon: History, perm: 'security.activity_history' }
+            ]
+          },
+          {
+            key: 'settings-developer',
+            label: 'Developer',
+            icon: Code,
+            children: [
+              { label: 'Developer Settings', to: '/settings/developer', icon: Wrench, perm: 'settings.developer' },
+              { label: 'Developer API', to: '/settings/developer-api', match: ['/others/api'], icon: Code, perm: ['api.keys', 'api.webhooks', 'api.logs'] }
+            ]
+          }
         ]
       },
       {
@@ -130,12 +160,20 @@ const NAV_SECTIONS = [
           { label: 'My Signatures', to: '/signatures', match: ['/settings/signatures'], icon: PenTool },
           { label: 'Send for Signatures', to: '/send-for-signatures', icon: Send },
           { label: 'Sign Yourself', to: '/sign-yourself', icon: Plus, tone: 'accent' },
-          { label: 'Use Template', to: '/templates', icon: FileBox }
+          { label: 'Use Template', to: '/templates', icon: FileBox, perm: 'templates.view' }
         ]
       }
     ]
   }
 ];
+
+/** Menu without the items the user has no permission for (and without groups that end up empty). */
+function filterNav(items, can) {
+  return items
+    .filter((item) => !item.perm || [].concat(item.perm).some((key) => can(key)))
+    .map((item) => (item.children ? { ...item, children: filterNav(item.children, can) } : item))
+    .filter((item) => !item.children || item.children.length > 0);
+}
 
 const itemMatches = (item, pathname) => Boolean(item.to) && (pathname === item.to || (item.match || []).includes(pathname));
 
@@ -174,6 +212,19 @@ function Collapse({ open, id, children }) {
 }
 
 export default function Layout() {
+  return (
+    <PermissionsProvider>
+      <AppLayout />
+    </PermissionsProvider>
+  );
+}
+
+function AppLayout() {
+  const { can } = usePermissions();
+  const navSections = useMemo(
+    () => NAV_SECTIONS.map((section) => ({ ...section, items: filterNav(section.items, can) })).filter((section) => section.items.length > 0),
+    [can]
+  );
   // Desktop keeps the sidebar open; phones and tablets start with it closed (overlay drawer)
   const isDesktopWidth = () => typeof window === 'undefined' || window.innerWidth >= 1024;
   const [sidebarOpen, setSidebarOpen] = useState(isDesktopWidth);
@@ -439,7 +490,7 @@ export default function Layout() {
               <PanelLeftOpen size={18} />
             </button>
           )}
-          {NAV_SECTIONS.map((section) => (
+          {navSections.map((section) => (
             <div key={section.title}>
               {sidebarOpen ? (
                 <p className="px-2.5 pb-1.5 pt-4 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">{section.title}</p>
@@ -525,12 +576,7 @@ export default function Layout() {
 
           {/* Right Header Actions */}
           <div className="flex items-center gap-2 sm:gap-4">
-            <button className="relative p-2 text-slate-600 hover:bg-slate-100 rounded-full transition" title="Notifications">
-              <Bell size={20} />
-              <span className="absolute top-1 right-1 bg-[#E71414] text-white text-[10px] rounded-full h-4 w-4 flex items-center justify-center font-bold">
-                3
-              </span>
-            </button>
+            <NotificationBell />
 
             <div className="flex items-center gap-2 sm:gap-3 border-l pl-2 sm:pl-4 border-slate-200">
               <div className="h-9 w-9 rounded-full bg-gradient-to-tr from-purple-700 to-indigo-600 text-white flex items-center justify-center font-bold text-sm shadow-sm">

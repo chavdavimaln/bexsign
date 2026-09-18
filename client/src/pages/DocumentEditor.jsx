@@ -69,6 +69,31 @@ import {
 import { showPopupAlert } from '../components/GlobalAlertModal';
 import { getDefaultDocContent, DEFAULT_DOCUMENT_TEXTS } from '../utils/documentDefaults';
 import { generateAndDownloadPdf } from '../utils/pdfGenerator';
+import TemplatePickerModal from '../components/templates/TemplatePickerModal';
+import { countTemplateUse } from '../components/templates/templateUi';
+import {
+  PAGE,
+  EDITOR_BASE_FONT,
+  EDITOR_BASE_SIZE,
+  EDITOR_BASE_LINE_HEIGHT,
+  MIN_FONT_SIZE,
+  MAX_FONT_SIZE,
+  FONT_GROUPS,
+  primaryFontName,
+  fontOptionValue,
+  styleSelectedText,
+  styleAtCaret,
+  settlePendingSpans,
+  selectionStyleElement,
+  selectedBlocks,
+  cleanEditorHtml,
+  sanitizePastedHtml,
+  plainTextToParagraphs,
+  insertBlocksAtRange,
+  getCaretOffsets,
+  setCaretOffsets,
+  paginateEditor
+} from '../utils/wordEditorDom';
 
 export default function DocumentEditor() {
   const { id } = useParams();
@@ -240,9 +265,10 @@ export default function DocumentEditor() {
   const [scheduleTimeZone, setScheduleTimeZone] = useState('Asia/Kolkata');
 
   // Full-View Microsoft Word-Style Document Editor State
-  const [wordFontFamily, setWordFontFamily] = useState('Verdana');
-  const [wordFontSize, setWordFontSize] = useState('14');
-  const [wordFontSizeInput, setWordFontSizeInput] = useState('14');
+  // Font and size of the selected text (shown in the toolbar); the document's own base style never changes with it
+  const [wordFontFamily, setWordFontFamily] = useState(EDITOR_BASE_FONT);
+  const [wordFontSize, setWordFontSize] = useState(String(EDITOR_BASE_SIZE));
+  const [wordFontSizeInput, setWordFontSizeInput] = useState(String(EDITOR_BASE_SIZE));
   const [showFontSizeMenu, setShowFontSizeMenu] = useState(false);
   const [wordIsBold, setWordIsBold] = useState(false);
   const [wordIsItalic, setWordIsItalic] = useState(false);
@@ -263,14 +289,23 @@ export default function DocumentEditor() {
   const [showColorPicker, setShowColorPicker] = useState(false);
   const [showHighlightPicker, setShowHighlightPicker] = useState(false);
   const [showClausesMenu, setShowClausesMenu] = useState(false);
+  const [showEditorTemplatePicker, setShowEditorTemplatePicker] = useState(false);
   const [showStylesMenu, setShowStylesMenu] = useState(false);
   const [showTableMenu, setShowTableMenu] = useState(false);
   const [showLineSpacingMenu, setShowLineSpacingMenu] = useState(false);
   const [showInsertMenu, setShowInsertMenu] = useState(false);
-  const [wordHistory, setWordHistory] = useState([]);
-  const [wordHistoryIndex, setWordHistoryIndex] = useState(-1);
+  const [wordPageCount, setWordPageCount] = useState(1);
+  const [wordCurrentPage, setWordCurrentPage] = useState(1);
   const wordEditorRef = useRef(null);
   const savedSelectionRef = useRef(null);
+  // A4 page breaks (generated CSS), undo/redo snapshots and the current zoom for measurements
+  const pageStyleRef = useRef(null);
+  const paginateFrameRef = useRef(0);
+  const wordHistoryRef = useRef({ stack: [], index: -1, timer: null });
+  const wordZoomRef = useRef(100);
+  wordZoomRef.current = wordEditorZoom;
+  // Set while a toolbar action moves focus back to the text, so the size box does not apply its value again on blur
+  const fontActionRef = useRef(false);
 
   const WORDPAD_TEXT_COLORS = [
     '#000000', '#1e293b', '#334155', '#475569', '#64748b', '#94a3b8', '#cbd5e1',
@@ -305,28 +340,100 @@ export default function DocumentEditor() {
       .map((block) => {
         const trimmed = block.trim();
         if (!trimmed) return '';
-        const escaped = trimmed
+        const escape = (value) => value
           .replace(/&/g, '&amp;')
           .replace(/</g, '&lt;')
           .replace(/>/g, '&gt;');
-        const isHeading =
-          /^[0-9]+\.\s+[A-Z\s]+/.test(trimmed) ||
-          (/^[A-Z\s]{5,}$/.test(trimmed) && trimmed.length < 70);
-        if (isHeading) {
-          return `<p style="margin-bottom: 12px;"><strong>${escaped.replace(/\n/g, '<br>')}</strong></p>`;
+        const isHeadingLine = (line) =>
+          (/^[0-9]+\.\s+[A-Z][A-Z\s&,'()-]*$/.test(line) || /^[A-Z][A-Z\s&,'()-]{4,}$/.test(line)) && line.length < 70;
+        // Only the heading line is bold ("1. SCOPE AND PURPOSE"), not the text below it
+        const [firstLine, ...rest] = trimmed.split('\n');
+        if (isHeadingLine(firstLine.trim())) {
+          const body = rest.length ? `<br>${escape(rest.join('\n')).replace(/\n/g, '<br>')}` : '';
+          return `<p style="margin-bottom: 12px;"><strong>${escape(firstLine.trim())}</strong>${body}</p>`;
         }
-        return `<p style="margin-bottom: 12px; line-height: 1.6;">${escaped.replace(/\n/g, '<br>')}</p>`;
+        return `<p style="margin-bottom: 12px;">${escape(trimmed).replace(/\n/g, '<br>')}</p>`;
       })
       .filter(Boolean)
       .join('');
   };
 
-  // Sync contentEditable innerHTML with React state
+  // The editor's HTML without editing helpers, kept in React state (word count, saving)
   const syncEditorContent = () => {
     if (wordEditorRef.current) {
-      const html = wordEditorRef.current.innerHTML;
-      setDocContentText(html);
+      setDocContentText(cleanEditorHtml(wordEditorRef.current));
     }
+  };
+
+  // ---- A4 pages: laid out again after every change (only a generated stylesheet changes, never the text) ----
+  const updateCurrentPage = () => {
+    const editor = wordEditorRef.current;
+    const sel = window.getSelection();
+    if (!editor || !sel || sel.rangeCount === 0 || !editor.contains(sel.anchorNode)) return;
+    const range = sel.getRangeAt(0);
+    let rect = range.getClientRects()[0];
+    if (!rect) {
+      const el = sel.anchorNode.nodeType === 3 ? sel.anchorNode.parentNode : sel.anchorNode;
+      rect = el.getBoundingClientRect();
+    }
+    const y = PAGE.contentTop + (rect.top - editor.getBoundingClientRect().top) / (wordZoomRef.current / 100);
+    const page = Math.max(1, Math.floor(y / PAGE.stride) + 1);
+    setWordCurrentPage((prev) => (prev === page ? prev : page));
+  };
+
+  const paginateNow = () => {
+    paginateFrameRef.current = 0;
+    const editor = wordEditorRef.current;
+    if (!editor || !pageStyleRef.current) return;
+    const pages = paginateEditor(editor, pageStyleRef.current, { scale: wordZoomRef.current / 100 });
+    setWordPageCount((prev) => (prev === pages ? prev : pages));
+    updateCurrentPage();
+  };
+
+  // One layout pass shortly after a burst of changes (a timer, so it also runs when the window is not painting)
+  const schedulePagination = () => {
+    if (paginateFrameRef.current) return;
+    paginateFrameRef.current = setTimeout(paginateNow, 30);
+  };
+
+  // ---- Undo / redo: snapshots of the text and cursor (typing is grouped; each toolbar action is one step) ----
+  const commitWordHistory = () => {
+    const history = wordHistoryRef.current;
+    clearTimeout(history.timer);
+    history.timer = null;
+    const editor = wordEditorRef.current;
+    if (!editor) return;
+    const html = cleanEditorHtml(editor);
+    const caret = getCaretOffsets(editor);
+    const current = history.stack[history.index];
+    if (current && current.html === html) {
+      if (caret) current.caret = caret;
+      return;
+    }
+    history.stack = history.stack.slice(0, history.index + 1);
+    history.stack.push({ html, caret });
+    if (history.stack.length > 150) history.stack.shift();
+    history.index = history.stack.length - 1;
+  };
+
+  const scheduleWordHistory = () => {
+    const history = wordHistoryRef.current;
+    clearTimeout(history.timer);
+    history.timer = setTimeout(commitWordHistory, 450);
+  };
+
+  const resetWordHistory = () => {
+    const history = wordHistoryRef.current;
+    clearTimeout(history.timer);
+    history.timer = null;
+    history.stack = [];
+    history.index = -1;
+    commitWordHistory();
+  };
+
+  // Typing not recorded yet becomes its own undo step before a toolbar action changes the text
+  const beginEditorChange = () => {
+    if (wordHistoryRef.current.timer) commitWordHistory();
   };
 
   // Keep selection when clicking toolbar buttons
@@ -350,12 +457,21 @@ export default function DocumentEditor() {
   // Continuously track active selection within the document editor
   useEffect(() => {
     const handleGlobalSelectionChange = () => {
+      const editor = wordEditorRef.current;
       const sel = window.getSelection();
-      if (sel && sel.rangeCount > 0 && wordEditorRef.current) {
+      if (sel && sel.rangeCount > 0 && editor) {
         const node = sel.anchorNode;
-        if (node && wordEditorRef.current.contains(node)) {
+        if (node && editor.contains(node)) {
+          // A font or size chosen at the cursor and never typed with is dropped once the cursor moves away
+          settlePendingSpans(editor, node);
           savedSelectionRef.current = sel.getRangeAt(0).cloneRange();
+          // Undo returns the cursor to where it was just before the change being undone
+          const history = wordHistoryRef.current;
+          if (!history.timer && history.stack[history.index]) {
+            history.stack[history.index].caret = getCaretOffsets(editor) || history.stack[history.index].caret;
+          }
           updateActiveFormatting();
+          updateCurrentPage();
         }
       }
     };
@@ -363,7 +479,9 @@ export default function DocumentEditor() {
     return () => document.removeEventListener('selectionchange', handleGlobalSelectionChange);
   }, []);
 
-  // Query formatting states on active cursor/selection
+  const LINE_SPACING_OPTIONS = ['1.2', '1.4', '1.6', '1.8', '2.0'];
+
+  // Toolbar state for the selection: styles, font and size of the selected text, alignment and line spacing
   const updateActiveFormatting = () => {
     try {
       setWordIsBold(document.queryCommandState('bold'));
@@ -375,254 +493,175 @@ export default function DocumentEditor() {
       setWordIsBulletedList(document.queryCommandState('insertUnorderedList'));
       setWordIsNumberedList(document.queryCommandState('insertOrderedList'));
 
-      const fontVal = document.queryCommandValue('fontName');
-      if (fontVal) {
-        setWordFontFamily(fontVal.replace(/['"]/g, ''));
-      }
-
       const colorVal = document.queryCommandValue('foreColor');
       if (colorVal) {
         setWordTextColor(colorVal);
       }
 
+      const editor = wordEditorRef.current;
       const sel = window.getSelection();
-      if (sel && sel.rangeCount > 0) {
-        let node = sel.anchorNode;
-        if (node && node.nodeType === 3) node = node.parentNode;
-        if (
-          node &&
-          node !== wordEditorRef.current &&
-          wordEditorRef.current &&
-          wordEditorRef.current.contains(node)
-        ) {
-          const computed = window.getComputedStyle(node);
-          if (computed && computed.fontSize) {
-            const rawPx = Math.round(parseFloat(computed.fontSize));
-            if (rawPx && rawPx >= 8 && rawPx <= 96) {
-              setWordFontSize(String(rawPx));
-              setWordFontSizeInput(String(rawPx));
-            }
-          }
-          if (computed && computed.textAlign) {
-            setWordTextAlign(computed.textAlign);
-          }
-        }
+      if (!editor || !sel || sel.rangeCount === 0) return;
+      const range = sel.getRangeAt(0);
+      if (!editor.contains(range.startContainer)) return;
+
+      const textEl = selectionStyleElement(range, editor);
+      const computed = window.getComputedStyle(textEl);
+      if (computed.fontFamily) setWordFontFamily(computed.fontFamily);
+      const px = Math.round(parseFloat(computed.fontSize));
+      if (px) {
+        setWordFontSize(String(px));
+        // The size box keeps what is being typed into it
+        if (document.activeElement?.id !== 'bex-font-size-input') setWordFontSizeInput(String(px));
+      }
+
+      const block = textEl.closest('p, div, h1, h2, h3, h4, h5, h6, li, td, th, blockquote, pre') || editor;
+      const blockStyle = window.getComputedStyle(block);
+      const align = String(blockStyle.textAlign || 'left');
+      setWordTextAlign(/center/.test(align) ? 'center' : (/right|end/.test(align) ? 'right' : (align === 'justify' ? 'justify' : 'left')));
+      const ratio = parseFloat(blockStyle.lineHeight) / parseFloat(blockStyle.fontSize);
+      if (ratio) {
+        const nearest = LINE_SPACING_OPTIONS.reduce((best, opt) => (Math.abs(opt - ratio) < Math.abs(best - ratio) ? opt : best));
+        setWordLineHeight(nearest);
       }
     } catch (e) {
       // Ignore
     }
   };
 
+  // After any change to the text: saved state, undo step, toolbar and pages
+  const afterEditorChange = () => {
+    syncEditorContent();
+    commitWordHistory();
+    updateActiveFormatting();
+    schedulePagination();
+  };
+
+  // Puts the focus back in the text with the selection the toolbar action applies to
+  const focusEditorSelection = () => {
+    const editor = wordEditorRef.current;
+    if (!editor) return null;
+    fontActionRef.current = true;
+    editor.focus();
+    fontActionRef.current = false;
+    restoreSelection();
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || !editor.contains(sel.getRangeAt(0).commonAncestorContainer)) {
+      // No cursor in the text yet: continue at the end of the document
+      setCaretOffsets(editor, null);
+    }
+    return window.getSelection();
+  };
+
   // Standard execCommand formatting wrapper
   const applyFormat = (command, value = null) => {
-    restoreSelection();
-    if (wordEditorRef.current) wordEditorRef.current.focus();
+    beginEditorChange();
+    if (!focusEditorSelection()) return;
     document.execCommand(command, false, value);
-    updateActiveFormatting();
-    syncEditorContent();
     saveSelection();
+    afterEditorChange();
+  };
+
+  // Font or size for the selected text only; with just a cursor, for the text typed next
+  const applyInlineStyle = (prop, value) => {
+    const editor = wordEditorRef.current;
+    beginEditorChange();
+    const sel = focusEditorSelection();
+    if (!editor || !sel || sel.rangeCount === 0) return;
+    const range = sel.getRangeAt(0);
+    const next = range.collapsed
+      ? styleAtCaret(range, prop, value, editor)
+      : styleSelectedText(range, prop, value, editor);
+    if (next) {
+      sel.removeAllRanges();
+      sel.addRange(next);
+    }
+    saveSelection();
+    afterEditorChange();
   };
 
   // Font name application
   const applyFontName = (font) => {
-    restoreSelection();
-    if (wordEditorRef.current) wordEditorRef.current.focus();
-    document.execCommand('fontName', false, font);
     setWordFontFamily(font);
-    updateActiveFormatting();
-    syncEditorContent();
-    saveSelection();
+    applyInlineStyle('fontFamily', font);
   };
 
-  // Font size application (px specific - works for selected text, current block, or typed input)
+  // Font size in px (8 to 96) for the selected text, or the text typed next at the cursor
   const applyFontSize = (sizeInput) => {
     const rawNum = parseInt(String(sizeInput).replace(/[^0-9]/g, ''), 10);
-    if (!rawNum || isNaN(rawNum)) return;
-    // Strict clamp: between 8px and 96px
-    const numericSize = Math.max(8, Math.min(96, rawNum));
-    const pxSize = `${numericSize}px`;
-
+    if (!rawNum || isNaN(rawNum)) {
+      setWordFontSizeInput(wordFontSize);
+      return;
+    }
+    const numericSize = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, rawNum));
     setWordFontSize(String(numericSize));
     setWordFontSizeInput(String(numericSize));
+    applyInlineStyle('fontSize', `${numericSize}px`);
+  };
 
-    // Ensure editor has focus, then restore previous selection
-    if (wordEditorRef.current) wordEditorRef.current.focus();
-    restoreSelection();
-
-    let sel = window.getSelection();
-    let range = null;
-    if (sel && sel.rangeCount > 0) {
-      range = sel.getRangeAt(0);
-    }
-
-    // Verify range is within wordEditorRef.current
-    const isInsideEditor = range && wordEditorRef.current && wordEditorRef.current.contains(range.commonAncestorContainer);
-
-    if (isInsideEditor && !range.collapsed) {
-      // CASE 1: Text is selected - style the selection
-      document.execCommand('styleWithCSS', false, false);
-      document.execCommand('fontSize', false, '7');
-
-      const createdSpans = [];
-      if (wordEditorRef.current) {
-        const query = 'font[size="7"], font[size="+7"], span[style*="-webkit-xxx-large"], span[style*="xxx-large"]';
-        const matched = Array.from(wordEditorRef.current.querySelectorAll(query));
-
-        if (matched.length > 0) {
-          matched.forEach((el) => {
-            const span = document.createElement('span');
-            span.style.fontSize = pxSize;
-            // Clear inner font-size overrides
-            span.querySelectorAll('*').forEach((child) => {
-              if (child.style && child.style.fontSize) child.style.fontSize = '';
-              if (child.tagName === 'FONT') child.removeAttribute('size');
-            });
-            while (el.firstChild) {
-              span.appendChild(el.firstChild);
-            }
-            el.parentNode.replaceChild(span, el);
-            createdSpans.push(span);
-          });
-        }
-      }
-
-      // Re-establish selection over modified elements so subsequent +/- or inputs continue to work seamlessly
-      if (createdSpans.length > 0) {
-        try {
-          const newRange = document.createRange();
-          newRange.setStartBefore(createdSpans[0]);
-          newRange.setEndAfter(createdSpans[createdSpans.length - 1]);
-          sel.removeAllRanges();
-          sel.addRange(newRange);
-          savedSelectionRef.current = newRange.cloneRange();
-        } catch (e) {
-          saveSelection();
-        }
-      } else {
-        // Fallback for complex selections (e.g. cross-elements or lists)
-        try {
-          const fragment = range.extractContents();
-          const span = document.createElement('span');
-          span.style.fontSize = pxSize;
-          fragment.querySelectorAll?.('*').forEach((child) => {
-            if (child.style && child.style.fontSize) child.style.fontSize = '';
-            if (child.tagName === 'FONT') child.removeAttribute('size');
-          });
-          span.appendChild(fragment);
-          range.insertNode(span);
-
-          const newRange = document.createRange();
-          newRange.selectNodeContents(span);
-          sel.removeAllRanges();
-          sel.addRange(newRange);
-          savedSelectionRef.current = newRange.cloneRange();
-        } catch (e) {
-          saveSelection();
-        }
-      }
-    } else if (isInsideEditor && range.collapsed) {
-      // CASE 2: Cursor is placed at a position (no highlighted text)
-      let container = range.startContainer;
-      if (container && container.nodeType === 3) {
-        container = container.parentNode;
-      }
-
-      // Update the active block element (p, h1-h6, li, td, th) if present
-      const block = container ? container.closest('p, h1, h2, h3, h4, h5, h6, li, td, th') : null;
-      if (block && block !== wordEditorRef.current) {
-        block.style.fontSize = pxSize;
-        // Also clear inner spans that had old hardcoded sizes
-        block.querySelectorAll('span, font').forEach((child) => {
-          if (child.style && child.style.fontSize) child.style.fontSize = '';
-          if (child.tagName === 'FONT') child.removeAttribute('size');
-        });
-      } else if (container && container !== wordEditorRef.current) {
-        container.style.fontSize = pxSize;
-      } else if (wordEditorRef.current) {
-        wordEditorRef.current.style.fontSize = pxSize;
-      }
-
-      saveSelection();
-    } else {
-      // CASE 3: No active selection inside editor - apply to base editor container
-      if (wordEditorRef.current) {
-        wordEditorRef.current.style.fontSize = pxSize;
-      }
-    }
-
-    syncEditorContent();
+  // One step smaller or larger than the size of the selected text
+  const stepFontSize = (delta) => {
+    const typed = parseInt(wordFontSizeInput, 10);
+    const current = typed && String(typed) !== String(wordFontSize) ? typed : parseInt(wordFontSize, 10) || EDITOR_BASE_SIZE;
+    applyFontSize(Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, current + delta)));
   };
 
   // Text Color application
   const applyTextColor = (color) => {
-    restoreSelection();
-    if (wordEditorRef.current) wordEditorRef.current.focus();
+    beginEditorChange();
+    if (!focusEditorSelection()) return;
     document.execCommand('styleWithCSS', false, true);
     document.execCommand('foreColor', false, color);
     setWordTextColor(color);
     setShowColorPicker(false);
-    updateActiveFormatting();
-    syncEditorContent();
     saveSelection();
+    afterEditorChange();
   };
 
-  // Background Highlight Color application
+  // Background Highlight Color application ("No Color" removes only the highlight, not other formatting)
   const applyHighlightColor = (color) => {
-    restoreSelection();
-    if (wordEditorRef.current) wordEditorRef.current.focus();
+    beginEditorChange();
+    if (!focusEditorSelection()) return;
     document.execCommand('styleWithCSS', false, true);
-    if (color === 'transparent') {
-      document.execCommand('removeFormat', false, null);
-    } else {
-      if (!document.execCommand('hiliteColor', false, color)) {
-        document.execCommand('backColor', false, color);
-      }
+    if (!document.execCommand('hiliteColor', false, color)) {
+      document.execCommand('backColor', false, color);
     }
     setWordHighlightColor(color);
     setShowHighlightPicker(false);
-    updateActiveFormatting();
-    syncEditorContent();
     saveSelection();
+    afterEditorChange();
   };
 
-  // Text Alignment
+  // Text Alignment (the paragraphs in the selection)
   const applyAlignment = (align) => {
-    restoreSelection();
-    if (wordEditorRef.current) wordEditorRef.current.focus();
+    beginEditorChange();
+    if (!focusEditorSelection()) return;
     if (align === 'left') document.execCommand('justifyLeft', false, null);
     else if (align === 'center') document.execCommand('justifyCenter', false, null);
     else if (align === 'right') document.execCommand('justifyRight', false, null);
     else if (align === 'justify') document.execCommand('justifyFull', false, null);
     setWordTextAlign(align);
-    updateActiveFormatting();
-    syncEditorContent();
     saveSelection();
+    afterEditorChange();
   };
 
-  // Line Height
+  // Line spacing of the paragraphs in the selection
   const applyLineHeight = (lh) => {
-    restoreSelection();
-    const sel = window.getSelection();
-    if (sel && sel.rangeCount > 0) {
-      let node = sel.anchorNode;
-      if (node && node.nodeType === 3) node = node.parentNode;
-      const block = node ? node.closest('p, div, h1, h2, h3, li') : null;
-      if (block) {
-        block.style.lineHeight = lh;
-      } else if (wordEditorRef.current) {
-        wordEditorRef.current.style.lineHeight = lh;
-      }
-    } else if (wordEditorRef.current) {
-      wordEditorRef.current.style.lineHeight = lh;
-    }
+    const editor = wordEditorRef.current;
+    beginEditorChange();
+    const sel = focusEditorSelection();
+    if (!editor || !sel || sel.rangeCount === 0) return;
+    selectedBlocks(sel.getRangeAt(0), editor).forEach((block) => {
+      block.style.lineHeight = lh;
+    });
     setWordLineHeight(lh);
-    syncEditorContent();
+    saveSelection();
+    afterEditorChange();
   };
 
   // Text Case transformations
   const transformCase = (type) => {
-    restoreSelection();
-    const sel = window.getSelection();
+    beginEditorChange();
+    const sel = focusEditorSelection();
     if (!sel || !sel.rangeCount || sel.isCollapsed) return;
     const selectedText = sel.toString();
     if (!selectedText) return;
@@ -635,50 +674,64 @@ export default function DocumentEditor() {
       newText = selectedText.toLowerCase();
     }
     document.execCommand('insertText', false, newText);
-    syncEditorContent();
     saveSelection();
+    afterEditorChange();
   };
 
-  // HTML Insertion at cursor
+  // HTML Insertion at cursor: blocks (clauses, tables) go in as whole paragraphs after splitting the paragraph at
+  // the cursor; inline content (a date) is inserted into the text
   const insertHtmlAtCursor = (html) => {
-    restoreSelection();
-    if (wordEditorRef.current) wordEditorRef.current.focus();
-    const sel = window.getSelection();
-    if (!sel || !sel.rangeCount) {
-      if (wordEditorRef.current) {
-        wordEditorRef.current.innerHTML += html;
-        syncEditorContent();
-      }
-      return;
-    }
-    const range = sel.getRangeAt(0);
-    range.deleteContents();
-
-    const temp = document.createElement('div');
-    temp.innerHTML = html;
-    const frag = document.createDocumentFragment();
-    let node, lastNode;
-    while ((node = temp.firstChild)) {
-      lastNode = frag.appendChild(node);
-    }
-    range.insertNode(frag);
-    if (lastNode) {
-      const newRange = range.cloneRange();
-      newRange.setStartAfter(lastNode);
-      newRange.collapse(true);
+    beginEditorChange();
+    const sel = focusEditorSelection();
+    if (!sel || !sel.rangeCount) return;
+    const blockCaret = insertBlocksAtRange(sel.getRangeAt(0), html, wordEditorRef.current);
+    if (blockCaret) {
       sel.removeAllRanges();
-      sel.addRange(newRange);
-      saveSelection();
+      sel.addRange(blockCaret);
+    } else if (!document.execCommand('insertHTML', false, html)) {
+      const range = sel.getRangeAt(0);
+      range.deleteContents();
+      const temp = document.createElement('div');
+      temp.innerHTML = html;
+      const frag = document.createDocumentFragment();
+      let node;
+      let lastNode;
+      while ((node = temp.firstChild)) {
+        lastNode = frag.appendChild(node);
+      }
+      range.insertNode(frag);
+      if (lastNode) {
+        const newRange = range.cloneRange();
+        newRange.setStartAfter(lastNode);
+        newRange.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(newRange);
+      }
     }
-    syncEditorContent();
+    saveSelection();
+    afterEditorChange();
   };
 
   const insertTextAtCursor = (text) => {
-    const html = text
-      .split(/\n\n+/)
-      .map((para) => `<p style="margin-bottom: 12px; line-height: 1.6;">${para.replace(/\n/g, '<br>')}</p>`)
-      .join('');
-    insertHtmlAtCursor(html);
+    insertHtmlAtCursor(plainTextToParagraphs(text));
+  };
+
+  // Pasted content keeps its text formatting (bold, lists, tables, fonts) without scripts, classes or page layout
+  const handleWordPaste = (e) => {
+    const html = e.clipboardData?.getData('text/html');
+    const text = e.clipboardData?.getData('text/plain');
+    if (!html && !text) return;
+    e.preventDefault();
+    beginEditorChange();
+    if (html) {
+      document.execCommand('insertHTML', false, sanitizePastedHtml(html));
+    } else if (!/\n/.test(text)) {
+      document.execCommand('insertText', false, text);
+    } else {
+      document.execCommand('insertHTML', false, plainTextToParagraphs(text));
+    }
+    saveSelection();
+    afterEditorChange();
   };
 
   // Interactive Table Helpers (WordPad / Word style)
@@ -699,10 +752,8 @@ export default function DocumentEditor() {
   };
 
   const insertTable = (rows = 3, cols = 3) => {
-    restoreSelection();
-    if (wordEditorRef.current) wordEditorRef.current.focus();
-
-    let tableHtml = `<table style="width: 100%; border-collapse: collapse; margin: 16px 0; font-size: ${wordFontSize}pt; border: 1px solid #cbd5e1;"><thead><tr style="background: #f8fafc; border-bottom: 2px solid #cbd5e1;">`;
+    // The table text has the size of the surrounding text
+    let tableHtml = `<table style="width: 100%; border-collapse: collapse; margin: 16px 0; border: 1px solid #cbd5e1;"><thead><tr style="background: #f8fafc; border-bottom: 2px solid #cbd5e1;">`;
     for (let c = 0; c < cols; c++) {
       tableHtml += `<th style="padding: 8px 12px; border: 1px solid #cbd5e1; text-align: left; font-weight: bold;">Header ${c + 1}</th>`;
     }
@@ -721,6 +772,7 @@ export default function DocumentEditor() {
   };
 
   const insertTableRow = (position = 'below') => {
+    beginEditorChange();
     const info = getActiveTableCellInfo();
     if (!info) {
       showPopupAlert('Click inside any table cell first to insert a row.', { title: 'Table Tool', type: 'info' });
@@ -742,10 +794,11 @@ export default function DocumentEditor() {
     } else {
       row.parentNode.insertBefore(newRow, row.nextSibling);
     }
-    syncEditorContent();
+    afterEditorChange();
   };
 
   const insertTableCol = (position = 'right') => {
+    beginEditorChange();
     const info = getActiveTableCellInfo();
     if (!info) {
       showPopupAlert('Click inside any table cell first to insert a column.', { title: 'Table Tool', type: 'info' });
@@ -767,10 +820,11 @@ export default function DocumentEditor() {
         r.insertBefore(newCell, refCell ? refCell.nextSibling : null);
       }
     });
-    syncEditorContent();
+    afterEditorChange();
   };
 
   const deleteTableRow = () => {
+    beginEditorChange();
     const info = getActiveTableCellInfo();
     if (!info) {
       showPopupAlert('Click inside the row you want to delete.', { title: 'Table Tool', type: 'info' });
@@ -783,10 +837,11 @@ export default function DocumentEditor() {
     } else {
       row.remove();
     }
-    syncEditorContent();
+    afterEditorChange();
   };
 
   const deleteTableCol = () => {
+    beginEditorChange();
     const info = getActiveTableCellInfo();
     if (!info) {
       showPopupAlert('Click inside the column you want to delete.', { title: 'Table Tool', type: 'info' });
@@ -804,32 +859,65 @@ export default function DocumentEditor() {
         }
       });
     }
-    syncEditorContent();
+    afterEditorChange();
   };
 
   const deleteTable = () => {
+    beginEditorChange();
     const info = getActiveTableCellInfo();
     if (!info) {
       showPopupAlert('Click inside the table you wish to delete.', { title: 'Table Tool', type: 'info' });
       return;
     }
     info.table.remove();
-    syncEditorContent();
+    afterEditorChange();
+  };
+
+  // Steps back (-1) or forward (+1) through the recorded versions of the text
+  const restoreWordHistory = (step) => {
+    const history = wordHistoryRef.current;
+    if (history.timer) commitWordHistory();
+    const target = history.index + step;
+    const editor = wordEditorRef.current;
+    if (!editor || target < 0 || target >= history.stack.length) return;
+    history.index = target;
+    const state = history.stack[target];
+    editor.innerHTML = state.html || '<p><br></p>';
+    editor.focus();
+    setCaretOffsets(editor, state.caret);
+    saveSelection();
+    setDocContentText(state.html);
+    updateActiveFormatting();
+    schedulePagination();
   };
 
   const handleWordUndo = () => {
-    applyFormat('undo');
+    restoreWordHistory(-1);
   };
 
   const handleWordRedo = () => {
-    applyFormat('redo');
+    restoreWordHistory(1);
   };
 
   // Populate contentEditable editor when modal opens
   useEffect(() => {
     if (showEditDocModal && isEditingDocRichText && wordEditorRef.current) {
+      const editor = wordEditorRef.current;
       const initialHtml = convertPlainTextToHtml(docContentText);
-      wordEditorRef.current.innerHTML = initialHtml;
+      editor.innerHTML = initialHtml && initialHtml.trim() ? initialHtml : '<p><br></p>';
+      try {
+        // Enter starts a new paragraph (<p>), like the document's own paragraphs
+        document.execCommand('defaultParagraphSeparator', false, 'p');
+      } catch (e) {}
+      savedSelectionRef.current = null;
+      // Phones and small windows start with the whole page width in view
+      if (window.innerWidth < PAGE.width + 80) {
+        setWordEditorZoom(Math.max(40, Math.floor(((window.innerWidth - 32) / PAGE.width) * 100)));
+      }
+      resetWordHistory();
+      schedulePagination();
+      // Web fonts change line lengths once loaded: lay the pages out again
+      if (document.fonts && document.fonts.ready) document.fonts.ready.then(schedulePagination).catch(() => {});
       setTimeout(() => {
         if (wordEditorRef.current) {
           wordEditorRef.current.focus();
@@ -839,10 +927,33 @@ export default function DocumentEditor() {
     }
   }, [showEditDocModal, isEditingDocRichText]);
 
+  // Pages follow every size change of the text; browser undo (menu, gestures) uses the editor's own history
+  useEffect(() => {
+    const editor = wordEditorRef.current;
+    if (!(showEditDocModal && isEditingDocRichText) || !editor) return undefined;
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => schedulePagination()) : null;
+    if (observer) observer.observe(editor);
+    const onBeforeInput = (e) => {
+      if (e.inputType === 'historyUndo' || e.inputType === 'historyRedo') {
+        e.preventDefault();
+        restoreWordHistory(e.inputType === 'historyUndo' ? -1 : 1);
+      }
+    };
+    editor.addEventListener('beforeinput', onBeforeInput);
+    window.addEventListener('resize', schedulePagination);
+    return () => {
+      if (observer) observer.disconnect();
+      editor.removeEventListener('beforeinput', onBeforeInput);
+      window.removeEventListener('resize', schedulePagination);
+      clearTimeout(paginateFrameRef.current);
+      paginateFrameRef.current = 0;
+    };
+  }, [showEditDocModal, isEditingDocRichText]);
+
   const handleWordPreviewPdf = () => {
     try {
       const activeDocFields = fieldsByDoc[activeDocIndex] || [];
-      const currentContent = wordEditorRef.current ? wordEditorRef.current.innerHTML : docContentText;
+      const currentContent = wordEditorRef.current ? cleanEditorHtml(wordEditorRef.current) : docContentText;
       generateAndDownloadPdf({
         documentName: documentTitle.endsWith('.pdf') ? documentTitle : `${documentTitle}.pdf`,
         documentText: currentContent,
@@ -864,7 +975,7 @@ export default function DocumentEditor() {
   };
 
   const handleWordSaveAndCreate = () => {
-    const finalContent = wordEditorRef.current ? wordEditorRef.current.innerHTML : docContentText;
+    const finalContent = wordEditorRef.current ? cleanEditorHtml(wordEditorRef.current) : docContentText;
     setIsEditingDocRichText(false);
     setShowEditDocModal(false);
     setDocumentsList((prev) => {
@@ -1602,11 +1713,10 @@ export default function DocumentEditor() {
     const signers = recipientList.filter((r) => r.role !== 'Receives a copy');
     const stepOfRecipient = (r) => r.signingOrder || 1;
     const isParallel = signingOrderMode === 'parallel';
-    const firstStep = signers.length > 0 ? Math.min(...signers.map(stepOfRecipient)) : 1;
+    // Every signer is emailed when the request is sent; "Send in order" emails them one after another by step
     return {
       isParallel,
-      now: isParallel ? signers : signers.filter((r) => stepOfRecipient(r) === firstStep),
-      later: isParallel ? [] : signers.filter((r) => stepOfRecipient(r) !== firstStep).sort((a, b) => stepOfRecipient(a) - stepOfRecipient(b)),
+      now: isParallel ? signers : [...signers].sort((a, b) => stepOfRecipient(a) - stepOfRecipient(b)),
       alreadySigned: recipientList.filter((r) => r.status === 'signed'),
       // A request that was sent before starts a new signing round when it is sent again
       isResend: Boolean(requestStatus) && requestStatus !== 'Draft'
@@ -3595,23 +3705,23 @@ export default function DocumentEditor() {
       {showEditDocModal && isEditingDocRichText && (
         <div className="fixed inset-0 z-50 bg-[#e2e8f0] flex flex-col font-sans select-none overflow-hidden text-slate-800 animate-in fade-in duration-150">
           {/* Top Word Window Title & Action Bar */}
-          <header className="h-14 bg-white border-b border-slate-200 px-4 sm:px-6 flex items-center justify-between shadow-xs shrink-0 z-30">
+          <header className="min-h-14 bg-white border-b border-slate-200 px-3 sm:px-6 py-2 flex items-center justify-between gap-2 shadow-xs shrink-0 z-30">
             {/* Left: Document Icon & Inline Rename */}
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="w-8 h-8 rounded-lg bg-[#007355] text-white flex items-center justify-center shadow-xs shrink-0">
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <div className="w-8 h-8 rounded-lg bg-[#007355] text-white items-center justify-center shadow-xs shrink-0 hidden sm:flex">
                 <FileText size={18} />
               </div>
-              <div className="flex flex-col min-w-0">
-                <div className="flex items-center gap-2">
+              <div className="flex flex-col min-w-0 flex-1">
+                <div className="flex items-center gap-2 min-w-0">
                   <input
                     type="text"
                     value={documentTitle}
                     onChange={(e) => setDocumentTitle(e.target.value)}
-                    className="text-sm font-black text-slate-900 bg-transparent hover:bg-slate-100 focus:bg-white px-2 py-0.5 rounded border border-transparent hover:border-slate-300 focus:border-[#007355] outline-none transition max-w-sm truncate"
+                    className="text-sm font-black text-slate-900 bg-transparent hover:bg-slate-100 focus:bg-white px-2 py-0.5 rounded border border-transparent hover:border-slate-300 focus:border-[#007355] outline-none transition w-full max-w-sm min-w-0 truncate"
                     title="Click to rename document"
                     placeholder="Document Title"
                   />
-                  <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded flex items-center gap-1 shrink-0">
+                  <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded items-center gap-1 shrink-0 hidden md:flex">
                     <Check size={11} /> Auto-saved
                   </span>
                 </div>
@@ -3623,8 +3733,8 @@ export default function DocumentEditor() {
               </div>
             </div>
 
-            {/* Right: Actions */}
-            <div className="flex items-center gap-2">
+            {/* Right: Actions (icons only on phones) */}
+            <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
               <button
                 type="button"
                 onClick={() => {
@@ -3635,39 +3745,42 @@ export default function DocumentEditor() {
                     setShowEditDocModal(false);
                   }
                 }}
-                className="px-3.5 py-1.5 border border-slate-300 hover:bg-slate-100 text-slate-700 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                className="px-2.5 sm:px-3.5 py-1.5 border border-slate-300 hover:bg-slate-100 text-slate-700 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
                 title="Return to envelope document list"
+                aria-label="Back to documents"
               >
                 <ArrowLeft size={14} />
-                <span>Back to documents</span>
+                <span className="hidden lg:inline">Back to documents</span>
               </button>
 
               <button
                 type="button"
                 onClick={handleWordPreviewPdf}
-                className="px-3.5 py-1.5 border border-slate-300 hover:bg-slate-100 text-slate-800 rounded-lg text-xs font-bold flex items-center gap-1.5 transition shadow-2xs cursor-pointer"
+                className="px-2.5 sm:px-3.5 py-1.5 border border-slate-300 hover:bg-slate-100 text-slate-800 rounded-lg text-xs font-bold flex items-center gap-1.5 transition shadow-2xs cursor-pointer"
                 title="Download PDF preview with current content and styling"
+                aria-label="Preview as PDF"
               >
                 <Eye size={14} className="text-[#007355]" />
-                <span>Preview as PDF</span>
+                <span className="hidden md:inline">Preview as PDF</span>
               </button>
 
               <button
                 type="button"
                 onClick={handleWordSaveAndCreate}
-                className="px-5 py-1.5 bg-[#007355] hover:bg-[#005c44] text-white rounded-lg text-xs font-extrabold flex items-center gap-1.5 transition shadow cursor-pointer"
+                className="px-3 sm:px-5 py-1.5 bg-[#007355] hover:bg-[#005c44] text-white rounded-lg text-xs font-extrabold flex items-center gap-1.5 transition shadow cursor-pointer"
                 title="Save changes and apply to document editor canvas"
               >
                 <Save size={14} />
-                <span>Save & Create</span>
+                <span className="hidden sm:inline">Save & Create</span>
+                <span className="sm:hidden">Save</span>
               </button>
 
-              <div className="w-[1px] h-6 bg-slate-200 mx-1" />
+              <div className="w-[1px] h-6 bg-slate-200 mx-1 hidden sm:block" />
 
               <button
                 type="button"
                 onClick={() => setIsEditorFullscreen(!isEditorFullscreen)}
-                className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition"
+                className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition hidden sm:block"
                 title={isEditorFullscreen ? "Exit full view" : "Enter full view"}
               >
                 {isEditorFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
@@ -3688,7 +3801,7 @@ export default function DocumentEditor() {
           </header>
 
           {/* Microsoft Word-Style Ribbon Toolbar */}
-          <div className="bg-white border-b border-slate-200 px-4 py-2 flex items-center gap-1.5 flex-wrap shrink-0 z-20 shadow-2xs text-xs">
+          <div className="bg-white border-b border-slate-200 px-2 sm:px-4 py-2 flex items-center gap-1.5 flex-wrap shrink-0 z-20 shadow-2xs text-xs">
             {/* 1. History (Undo / Redo) */}
             <div className="flex items-center gap-0.5 border-r border-slate-200 pr-2">
               <button
@@ -3714,54 +3827,22 @@ export default function DocumentEditor() {
             {/* 2. Font Family Selector (WordPad Style Categorized) */}
             <div className="flex items-center gap-1 border-r border-slate-200 pr-2">
               <select
-                value={wordFontFamily}
+                value={fontOptionValue(wordFontFamily) || wordFontFamily}
                 onFocus={saveSelection}
-                onChange={(e) => {
-                  setWordFontFamily(e.target.value);
-                  applyFontName(e.target.value);
-                }}
+                onChange={(e) => applyFontName(e.target.value)}
                 className="p-1 text-xs border border-slate-200 rounded bg-slate-50 hover:bg-white focus:border-[#007355] outline-none font-semibold text-slate-700 cursor-pointer max-w-[130px] truncate"
-                title="Font Family"
+                title="Font of the selected text"
               >
-                <optgroup label="Standard Business & UI">
-                  <option value="Arial, sans-serif">Arial</option>
-                  <option value="Calibri, sans-serif">Calibri</option>
-                  <option value="'Segoe UI', sans-serif">Segoe UI</option>
-                  <option value="Inter, sans-serif">Inter</option>
-                  <option value="Roboto, sans-serif">Roboto</option>
-                  <option value="Helvetica, sans-serif">Helvetica</option>
-                  <option value="Verdana, sans-serif">Verdana</option>
-                  <option value="Tahoma, sans-serif">Tahoma</option>
-                  <option value="'Trebuchet MS', sans-serif">Trebuchet MS</option>
-                  <option value="'Open Sans', sans-serif">Open Sans</option>
-                  <option value="Lato, sans-serif">Lato</option>
-                  <option value="Montserrat, sans-serif">Montserrat</option>
-                  <option value="Poppins, sans-serif">Poppins</option>
-                </optgroup>
-                <optgroup label="Formal & Legal Serif">
-                  <option value="'Times New Roman', Times, serif">Times New Roman</option>
-                  <option value="Georgia, serif">Georgia</option>
-                  <option value="Garamond, serif">Garamond</option>
-                  <option value="Cambria, serif">Cambria</option>
-                  <option value="Palatino, serif">Palatino</option>
-                  <option value="Merriweather, serif">Merriweather</option>
-                  <option value="'Playfair Display', serif">Playfair Display</option>
-                  <option value="Baskerville, serif">Baskerville</option>
-                </optgroup>
-                <optgroup label="Monospace & Code">
-                  <option value="'Courier New', Courier, monospace">Courier New</option>
-                  <option value="Consolas, monospace">Consolas</option>
-                  <option value="Monaco, monospace">Monaco</option>
-                  <option value="'Fira Code', monospace">Fira Code</option>
-                  <option value="'Source Code Pro', monospace">Source Code Pro</option>
-                </optgroup>
-                <optgroup label="Handwriting & Script">
-                  <option value="'Caveat', cursive">Caveat</option>
-                  <option value="'Brush Script MT', cursive">Brush Script MT</option>
-                  <option value="'Dancing Script', cursive">Dancing Script</option>
-                  <option value="'Pacifico', cursive">Pacifico</option>
-                  <option value="Impact, fantasy">Impact</option>
-                </optgroup>
+                {!fontOptionValue(wordFontFamily) && (
+                  <option value={wordFontFamily}>{primaryFontName(wordFontFamily) || 'Default'}</option>
+                )}
+                {FONT_GROUPS.map((group) => (
+                  <optgroup key={group.label} label={group.label}>
+                    {group.fonts.map(([label, value]) => (
+                      <option key={value} value={value} style={{ fontFamily: value }}>{label}</option>
+                    ))}
+                  </optgroup>
+                ))}
               </select>
             </div>
 
@@ -3774,13 +3855,9 @@ export default function DocumentEditor() {
                   e.preventDefault();
                   saveSelection();
                 }}
-                onClick={() => {
-                  const curr = parseInt(wordFontSizeInput || wordFontSize || '14', 10);
-                  const next = Math.max(8, curr - 1);
-                  applyFontSize(next);
-                }}
+                onClick={() => stepFontSize(-1)}
                 className="p-1 hover:bg-slate-100 text-slate-700 rounded font-bold transition cursor-pointer w-6 h-6 flex items-center justify-center border border-slate-200"
-                title="Decrease Font Size (1px)"
+                title="Decrease font size (Ctrl+[)"
               >
                 <Minus size={11} />
               </button>
@@ -3788,44 +3865,48 @@ export default function DocumentEditor() {
               {/* Editable input with unit indicator and dropdown trigger */}
               <div className="relative flex items-center border border-slate-200 rounded bg-slate-50 hover:bg-white focus-within:bg-white focus-within:border-[#007355] transition">
                 <input
+                  id="bex-font-size-input"
                   type="text"
+                  inputMode="numeric"
                   value={wordFontSizeInput}
-                  onChange={(e) => setWordFontSizeInput(e.target.value)}
+                  onChange={(e) => setWordFontSizeInput(e.target.value.replace(/[^0-9]/g, '').slice(0, 2))}
                   onMouseDown={() => {
                     saveSelection();
                   }}
-                  onFocus={() => {
+                  onFocus={(e) => {
                     saveSelection();
                     setShowFontSizeMenu(false);
+                    e.target.select();
                   }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       e.preventDefault();
                       applyFontSize(wordFontSizeInput);
-                      e.target.blur();
+                    } else if (e.key === 'Escape') {
+                      e.preventDefault();
+                      setWordFontSizeInput(wordFontSize);
+                      focusEditorSelection();
                     } else if (e.key === 'ArrowUp') {
                       e.preventDefault();
-                      const curr = parseInt(wordFontSizeInput || wordFontSize || '14', 10);
-                      const next = Math.min(96, curr + 1);
-                      applyFontSize(next);
+                      stepFontSize(1);
                     } else if (e.key === 'ArrowDown') {
                       e.preventDefault();
-                      const curr = parseInt(wordFontSizeInput || wordFontSize || '14', 10);
-                      const next = Math.max(8, curr - 1);
-                      applyFontSize(next);
+                      stepFontSize(-1);
                     }
                   }}
                   onBlur={() => {
-                    const rawNum = parseInt(String(wordFontSizeInput).replace(/[^0-9]/g, ''), 10);
-                    if (rawNum && !isNaN(rawNum)) {
+                    // Leaving the box applies a size that was typed but not confirmed with Enter
+                    if (fontActionRef.current) return;
+                    const rawNum = parseInt(wordFontSizeInput, 10);
+                    if (rawNum && String(rawNum) !== String(wordFontSize)) {
                       applyFontSize(rawNum);
                     } else {
                       setWordFontSizeInput(wordFontSize);
                     }
                   }}
                   className="w-9 text-center text-xs font-bold text-slate-800 outline-none py-0.5"
-                  title="Type any font size in px and press Enter"
-                  placeholder="14"
+                  title="Font size of the selected text in px: type a size and press Enter"
+                  placeholder={String(EDITOR_BASE_SIZE)}
                 />
                 <span className="text-[10px] text-slate-400 font-semibold pr-0.5 select-none">px</span>
 
@@ -3889,13 +3970,9 @@ export default function DocumentEditor() {
                   e.preventDefault();
                   saveSelection();
                 }}
-                onClick={() => {
-                  const curr = parseInt(wordFontSizeInput || wordFontSize || '14', 10);
-                  const next = Math.min(96, curr + 1);
-                  applyFontSize(next);
-                }}
+                onClick={() => stepFontSize(1)}
                 className="p-1 hover:bg-slate-100 text-slate-700 rounded font-bold transition cursor-pointer w-6 h-6 flex items-center justify-center border border-slate-200"
-                title="Increase Font Size (1px)"
+                title="Increase font size (Ctrl+])"
               >
                 <Plus size={11} />
               </button>
@@ -4689,10 +4766,22 @@ export default function DocumentEditor() {
                     type="button"
                     onMouseDown={(e) => e.preventDefault()}
                     onClick={() => {
+                      setShowClausesMenu(false);
+                      setShowEditorTemplatePicker(true);
+                    }}
+                    className="w-full text-left px-3.5 py-1.5 hover:bg-slate-50 text-[#007355] font-bold cursor-pointer flex items-center gap-1.5"
+                  >
+                    <FileText size={13} /> Choose from template library...
+                  </button>
+                  <button
+                    type="button"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => {
                       if (window.confirm('Replace document content with Standard Employment Agreement?')) {
                         const h = convertPlainTextToHtml(DEFAULT_DOCUMENT_TEXTS.employment);
+                        beginEditorChange();
                         if (wordEditorRef.current) wordEditorRef.current.innerHTML = h;
-                        setDocContentText(h);
+                        afterEditorChange();
                         setShowClausesMenu(false);
                       }
                     }}
@@ -4706,8 +4795,9 @@ export default function DocumentEditor() {
                     onClick={() => {
                       if (window.confirm('Replace document content with Non-Disclosure Agreement (NDA)?')) {
                         const h = convertPlainTextToHtml(DEFAULT_DOCUMENT_TEXTS.nda);
+                        beginEditorChange();
                         if (wordEditorRef.current) wordEditorRef.current.innerHTML = h;
-                        setDocContentText(h);
+                        afterEditorChange();
                         setShowClausesMenu(false);
                       }
                     }}
@@ -4721,8 +4811,9 @@ export default function DocumentEditor() {
                     onClick={() => {
                       if (window.confirm('Replace document content with Master Services Agreement?')) {
                         const h = convertPlainTextToHtml(DEFAULT_DOCUMENT_TEXTS.service);
+                        beginEditorChange();
                         if (wordEditorRef.current) wordEditorRef.current.innerHTML = h;
-                        setDocContentText(h);
+                        afterEditorChange();
                         setShowClausesMenu(false);
                       }
                     }}
@@ -4735,7 +4826,7 @@ export default function DocumentEditor() {
             </div>
           </div>
 
-          {/* Center Workspace (A4 Document Canvas) */}
+          {/* Center Workspace: A4 pages; the text flows from one page to the next */}
           <main
             onClick={() => {
               setShowColorPicker(false);
@@ -4746,125 +4837,186 @@ export default function DocumentEditor() {
               setShowTableMenu(false);
               setShowFontSizeMenu(false);
             }}
-            className="flex-1 bg-slate-200/90 overflow-y-auto p-4 sm:p-10 flex flex-col items-center print:p-0 print:bg-white"
+            className="flex-1 bg-slate-200/90 overflow-auto px-3 py-5 sm:p-10 print:p-0 print:bg-white"
           >
-            {/* MS Word Top Horizontal Ruler (Standard A4: 210mm / 794px) */}
-            <div
-              style={{
-                transform: `scale(${wordEditorZoom / 100})`,
-                transformOrigin: 'top center',
-                transition: 'transform 0.15s ease'
-              }}
-              className="w-[794px] mb-2 bg-slate-100 border border-slate-300 rounded-t-xs shadow-2xs select-none text-[9px] text-slate-500 font-mono flex items-center justify-between px-1 h-5 relative overflow-hidden print:hidden"
-            >
-              {/* Left Margin Shading (1 inch / 25.4mm) */}
-              <div className="absolute left-0 top-0 bottom-0 w-12 bg-slate-200/90 border-r border-slate-300 flex items-center justify-center text-[8px] text-slate-400 font-bold">
-                ◀ L
-              </div>
-              {/* Centered Numbers / Ticks across 210mm */}
-              <div className="flex-1 flex justify-between px-14 text-slate-400 font-medium">
-                <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>10</span><span>11</span><span>12</span><span>13</span><span>14</span><span>15</span><span>16</span><span>17</span><span>18</span>
-              </div>
-              {/* Right Margin Shading */}
-              <div className="absolute right-0 top-0 bottom-0 w-12 bg-slate-200/90 border-l border-slate-300 flex items-center justify-center text-[8px] text-slate-400 font-bold">
-                R ▶
-              </div>
-            </div>
+            {/* Page breaks of the text (generated by paginateEditor) */}
+            <style ref={pageStyleRef} />
+            {(() => {
+              const scale = wordEditorZoom / 100;
+              const RULER_SPACE = 28;
+              const pagesHeight = wordPageCount * PAGE.stride - PAGE.gap;
+              const pageNumbers = Array.from({ length: wordPageCount }, (_, idx) => idx + 1);
+              return (
+                <div className="mx-auto" style={{ width: PAGE.width * scale, height: (RULER_SPACE + pagesHeight) * scale }}>
+                  <div
+                    className="relative"
+                    style={{
+                      width: PAGE.width,
+                      height: RULER_SPACE + pagesHeight,
+                      transform: `scale(${scale})`,
+                      transformOrigin: 'top left'
+                    }}
+                  >
+                    {/* MS Word Top Horizontal Ruler (Standard A4: 210mm / 794px) */}
+                    <div className="absolute top-0 left-0 w-full h-5 bg-slate-100 border border-slate-300 rounded-t-xs shadow-2xs select-none text-[9px] text-slate-500 font-mono flex items-center justify-between px-1 overflow-hidden print:hidden">
+                      <div className="absolute left-0 top-0 bottom-0 w-14 bg-slate-200/90 border-r border-slate-300 flex items-center justify-center text-[8px] text-slate-400 font-bold">
+                        ◀ L
+                      </div>
+                      <div className="flex-1 flex justify-between px-16 text-slate-400 font-medium">
+                        <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>10</span><span>11</span><span>12</span><span>13</span><span>14</span><span>15</span><span>16</span><span>17</span><span>18</span>
+                      </div>
+                      <div className="absolute right-0 top-0 bottom-0 w-14 bg-slate-200/90 border-l border-slate-300 flex items-center justify-center text-[8px] text-slate-400 font-bold">
+                        R ▶
+                      </div>
+                    </div>
 
-            {/* Authentic A4 Document Canvas */}
-            <div
-              style={{
-                transform: `scale(${wordEditorZoom / 100})`,
-                transformOrigin: 'top center',
-                transition: 'transform 0.15s ease'
-              }}
-              className="w-[794px] min-h-[1123px] max-w-[794px] bg-white rounded-xs border border-slate-300 shadow-[0_4px_30px_rgba(0,0,0,0.18)] p-12 sm:p-14 flex flex-col justify-between relative transition-all"
-            >
-              {/* Document Header Metadata Line */}
-              <div className="border-b border-slate-200 pb-3 mb-6 flex justify-between items-center text-[10px] text-slate-400 font-mono select-none">
-                <div className="flex items-center gap-2">
-                  <span className="font-bold text-slate-600 uppercase tracking-wider">{documentTitle.replace(/\.pdf$/i, '')}</span>
-                  <span className="bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded border border-slate-200 text-[9px] font-semibold">
-                    A4 (210 × 297 mm)
-                  </span>
+                    <div
+                      className="absolute left-0 w-full"
+                      style={{ top: RULER_SPACE, height: pagesHeight }}
+                      onMouseDown={(e) => {
+                        // A click on a page outside the text puts the cursor at the end of the document
+                        const editor = wordEditorRef.current;
+                        if (!editor || editor.contains(e.target)) return;
+                        e.preventDefault();
+                        editor.focus();
+                        setCaretOffsets(editor, null);
+                        saveSelection();
+                        updateActiveFormatting();
+                      }}
+                    >
+                      {/* A4 sheets: header and page number around each page's text area */}
+                      {pageNumbers.map((pageNum) => (
+                        <div
+                          key={pageNum}
+                          className="absolute left-0 bg-white rounded-xs border border-slate-300 shadow-[0_4px_30px_rgba(0,0,0,0.18)] select-none cursor-text"
+                          style={{ top: (pageNum - 1) * PAGE.stride, width: PAGE.width, height: PAGE.height }}
+                        >
+                          <div
+                            className="absolute border-b border-slate-200 pb-3 flex justify-between items-center gap-3 text-[10px] text-slate-400 font-mono"
+                            style={{ top: 40, left: PAGE.marginX, right: PAGE.marginX }}
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="font-bold text-slate-600 uppercase tracking-wider truncate">{documentTitle.replace(/\.pdf$/i, '')}</span>
+                              <span className="bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded border border-slate-200 text-[9px] font-semibold shrink-0">
+                                A4 (210 × 297 mm)
+                              </span>
+                            </div>
+                            <span className="truncate">{displayDocId}</span>
+                          </div>
+                          <div
+                            className="absolute border-t border-slate-200 pt-3 flex justify-between items-center gap-3 text-[10px] text-slate-400 font-mono"
+                            style={{ bottom: 40, left: PAGE.marginX, right: PAGE.marginX }}
+                          >
+                            <span>BexSign Legal Verification • Page {pageNum} of {wordPageCount}</span>
+                            <span>SHA-256 Digital Signature Standard</span>
+                          </div>
+                        </div>
+                      ))}
+
+                      {/* The document text: one editable flow laid over the pages' text areas */}
+                      <div
+                        ref={wordEditorRef}
+                        id="bex-word-editor-flow"
+                        contentEditable
+                        suppressContentEditableWarning
+                        spellCheck
+                        onInput={() => {
+                          syncEditorContent();
+                          updateActiveFormatting();
+                          scheduleWordHistory();
+                          schedulePagination();
+                        }}
+                        onPaste={handleWordPaste}
+                        onKeyUp={() => {
+                          saveSelection();
+                          updateActiveFormatting();
+                        }}
+                        onMouseUp={() => {
+                          saveSelection();
+                          updateActiveFormatting();
+                        }}
+                        onSelect={() => {
+                          saveSelection();
+                          updateActiveFormatting();
+                        }}
+                        onTouchEnd={() => {
+                          saveSelection();
+                          updateActiveFormatting();
+                        }}
+                        onKeyDown={(e) => {
+                          const mod = e.ctrlKey || e.metaKey;
+                          const key = e.key.toLowerCase();
+                          if (mod && key === 'b') {
+                            e.preventDefault();
+                            applyFormat('bold');
+                          } else if (mod && key === 'i') {
+                            e.preventDefault();
+                            applyFormat('italic');
+                          } else if (mod && key === 'u') {
+                            e.preventDefault();
+                            applyFormat('underline');
+                          } else if (mod && key === 'z') {
+                            e.preventDefault();
+                            if (e.shiftKey) handleWordRedo();
+                            else handleWordUndo();
+                          } else if (mod && key === 'y') {
+                            e.preventDefault();
+                            handleWordRedo();
+                          } else if (mod && key === 's') {
+                            e.preventDefault();
+                            handleWordSaveAndCreate();
+                          } else if (mod && (e.key === ']' || (e.shiftKey && (e.key === '>' || e.key === '.')))) {
+                            e.preventDefault();
+                            stepFontSize(1);
+                          } else if (mod && (e.key === '[' || (e.shiftKey && (e.key === '<' || e.key === ',')))) {
+                            e.preventDefault();
+                            stepFontSize(-1);
+                          } else if (e.key === 'Tab') {
+                            e.preventDefault();
+                            document.execCommand('insertText', false, '    ');
+                          }
+                        }}
+                        style={{
+                          position: 'absolute',
+                          top: PAGE.contentTop,
+                          left: PAGE.marginX,
+                          width: PAGE.contentWidth,
+                          minHeight: PAGE.contentHeight,
+                          zIndex: 1,
+                          fontFamily: EDITOR_BASE_FONT,
+                          fontSize: `${EDITOR_BASE_SIZE}px`,
+                          lineHeight: EDITOR_BASE_LINE_HEIGHT,
+                          textAlign: 'left',
+                          outline: 'none',
+                          wordBreak: 'break-word',
+                          overflowWrap: 'anywhere'
+                        }}
+                        className="focus:outline-none selection:bg-emerald-200 text-slate-800 cursor-text select-text"
+                      />
+                    </div>
+                  </div>
                 </div>
-                <span>{displayDocId}</span>
-              </div>
-
-              {/* Main Content Area */}
-              <div className="flex-1 flex flex-col">
-                <div
-                  ref={wordEditorRef}
-                  contentEditable
-                  suppressContentEditableWarning
-                  onInput={() => {
-                    syncEditorContent();
-                    updateActiveFormatting();
-                  }}
-                  onKeyUp={() => {
-                    saveSelection();
-                    updateActiveFormatting();
-                  }}
-                  onMouseUp={() => {
-                    saveSelection();
-                    updateActiveFormatting();
-                  }}
-                  onSelect={() => {
-                    saveSelection();
-                    updateActiveFormatting();
-                  }}
-                  onTouchEnd={() => {
-                    saveSelection();
-                    updateActiveFormatting();
-                  }}
-                  onKeyDown={(e) => {
-                    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
-                      e.preventDefault();
-                      applyFormat('bold');
-                    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'i') {
-                      e.preventDefault();
-                      applyFormat('italic');
-                    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'u') {
-                      e.preventDefault();
-                      applyFormat('underline');
-                    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
-                      e.preventDefault();
-                      if (e.shiftKey) handleWordRedo();
-                      else handleWordUndo();
-                    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
-                      e.preventDefault();
-                      handleWordRedo();
-                    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
-                      e.preventDefault();
-                      handleWordSaveAndCreate();
-                    } else if (e.key === 'Tab') {
-                      e.preventDefault();
-                      document.execCommand('insertText', false, '    ');
-                      syncEditorContent();
-                    }
-                  }}
-                  style={{
-                    fontFamily: wordFontFamily,
-                    fontSize: `${wordFontSize}px`,
-                    textAlign: wordTextAlign,
-                    lineHeight: wordLineHeight,
-                    minHeight: '820px',
-                    width: '100%',
-                    border: 'none',
-                    outline: 'none',
-                    wordBreak: 'break-word'
-                  }}
-                  className="flex-1 w-full focus:outline-none selection:bg-emerald-200 leading-relaxed font-sans text-slate-800 cursor-text"
-                />
-              </div>
-
-              {/* Document Page Footer */}
-              <div className="border-t border-slate-200 pt-3 mt-6 flex justify-between items-center text-[10px] text-slate-400 font-mono select-none">
-                <span>BexSign Legal Verification • Page 1 of {Math.max(1, Math.ceil((docContentText || '').replace(/<[^>]+>/g, ' ').trim().split(/\s+/).filter(Boolean).length / 380))}</span>
-                <span>SHA-256 Digital Signature Standard</span>
-              </div>
-            </div>
+              );
+            })()}
           </main>
+
+          {/* Template library: the chosen template's text replaces the document text (still editable) */}
+          <TemplatePickerModal
+            open={showEditorTemplatePicker}
+            mode="replace"
+            title="Replace the document text with a template"
+            onClose={() => setShowEditorTemplatePicker(false)}
+            onConfirm={([template]) => {
+              setShowEditorTemplatePicker(false);
+              if (!template || !wordEditorRef.current) return;
+              beginEditorChange();
+              wordEditorRef.current.innerHTML = convertPlainTextToHtml(template.content) || '<p><br></p>';
+              afterEditorChange();
+              wordEditorRef.current.focus();
+              countTemplateUse(template);
+              if (/^Document \d+(\.pdf)?$/i.test(documentTitle.trim())) setDocumentTitle(`${template.name}.pdf`);
+            }}
+          />
 
           {/* Bottom Word Status Bar */}
           <footer className="h-8 bg-white border-t border-slate-200 px-4 sm:px-6 flex items-center justify-between text-[11px] text-slate-500 font-medium shrink-0 z-20 select-none">
@@ -4874,11 +5026,10 @@ export default function DocumentEditor() {
               const words = plain.trim().split(/\s+/).filter(Boolean);
               const wordCount = words.length;
               const charCount = plain.length;
-              const pages = Math.max(1, Math.ceil(wordCount / 380));
               const readTime = Math.max(1, Math.ceil(wordCount / 200));
               return (
                 <div className="flex items-center gap-4">
-                  <span>Page 1 of {pages}</span>
+                  <span>Page {Math.min(wordCurrentPage, wordPageCount)} of {wordPageCount}</span>
                   <span>•</span>
                   <span className="font-semibold text-slate-700">{wordCount} words</span>
                   <span>•</span>
@@ -4892,13 +5043,13 @@ export default function DocumentEditor() {
             {/* Right: Active Typography Info & Zoom */}
             <div className="flex items-center gap-3">
               <span className="hidden md:inline font-mono text-[10px] text-slate-400">
-                {wordFontFamily.replace(/,.*$/, '')} • {wordFontSize}pt • Spacing {wordLineHeight}
+                {primaryFontName(wordFontFamily)} • {wordFontSize}px • Spacing {wordLineHeight}
               </span>
 
               <div className="flex items-center gap-1">
                 <button
                   type="button"
-                  onClick={() => setWordEditorZoom(prev => Math.max(60, prev - 10))}
+                  onClick={() => setWordEditorZoom(prev => Math.max(40, prev - 10))}
                   className="p-1 hover:bg-slate-100 rounded text-slate-600 cursor-pointer"
                   title="Zoom Out"
                 >
@@ -5202,7 +5353,7 @@ export default function DocumentEditor() {
                           ) : (
                             <span
                               className={`inline-flex items-center justify-center min-w-6 h-6 px-1.5 rounded-full text-[10px] font-bold ${emailedNow ? 'bg-[#007355] text-white' : 'bg-slate-100 text-slate-600 border border-slate-200'}`}
-                              title={emailedNow ? 'Emailed as soon as you send' : 'Emailed after the previous step has signed'}
+                              title={emailedNow ? (sendPlan.isParallel ? 'Emailed as soon as you send' : `Emailed as soon as you send, as number ${rec.signingOrder || 1} in the order`) : 'Not emailed'}
                             >
                               {sendPlan.isParallel ? 'All' : rec.signingOrder || 1}
                             </span>
@@ -5241,14 +5392,10 @@ export default function DocumentEditor() {
                     </>
                   ) : (
                     <>
-                      <strong className="text-slate-800">Emailed now:</strong> {sendPlan.now.map((r) => r.name || r.email).join(', ') || '-'}
-                      {sendPlan.later.length > 0 && (
-                        <>
-                          <br />
-                          <strong className="text-slate-800">Next, in order:</strong>{' '}
-                          {sendPlan.later.map((r) => `${r.signingOrder || 1}. ${r.name || r.email}`).join(', ')}
-                        </>
-                      )}
+                      <strong className="text-slate-800">Emailed now, one after another:</strong>{' '}
+                      {sendPlan.now.map((r) => `${r.signingOrder || 1}. ${r.name || r.email}`).join(', ') || '-'}
+                      <br />
+                      <span className="text-slate-500">Nobody waits for an earlier recipient to sign.</span>
                     </>
                   )}
                 </p>

@@ -3,6 +3,7 @@ const router = express.Router();
 const bcrypt = require('bcryptjs');
 const db = require('../db');
 const { authenticateUser, requireRole } = require('../middleware/authMiddleware');
+const { notify, logActivity } = require('../utils/platformEvents');
 
 // Apply authentication middleware to all user management routes
 router.use(authenticateUser);
@@ -155,6 +156,16 @@ router.post('/', requireRole(['manager']), async (req, res) => {
             [newUserId]
         );
 
+        await logActivity({ req, category: 'user', action: `Added user ${email} as ${assignedRole}`, entityType: 'user', entityId: newUserId });
+        await notify({
+            userIds: [newUserId],
+            category: 'user',
+            severity: 'success',
+            title: 'Welcome to BexSign',
+            message: `${req.user.first_name || 'An administrator'} added you to BexSign as ${assignedRole.replace('_', ' ')}.`,
+            link: '/dashboard'
+        });
+
         res.status(201).json({
             success: true,
             message: `User ${email} created successfully with role ${assignedRole}.`,
@@ -213,6 +224,19 @@ router.put('/:id', requireRole(['manager']), async (req, res) => {
             ]
         );
 
+        const previousRole = String(userRows[0].role || 'team_member').toLowerCase();
+        await logActivity({ req, category: 'user', action: `Updated user ${userRows[0].email}`, entityType: 'user', entityId: Number(id) });
+        if (role !== undefined && role.toLowerCase() !== previousRole) {
+            await notify({
+                userIds: [Number(id)],
+                excludeUserId: req.user.id,
+                category: 'user',
+                title: `Your role is now ${role.toLowerCase().replace('_', ' ')}`,
+                message: `${req.user.first_name || 'An administrator'} changed your role from ${previousRole.replace('_', ' ')} to ${role.toLowerCase().replace('_', ' ')}.`,
+                link: '/notifications'
+            });
+        }
+
         res.json({ success: true, message: 'User updated successfully' });
     } catch (err) {
         console.error('Update User Error:', err);
@@ -240,6 +264,12 @@ router.patch('/:id/status', requireRole(['manager']), async (req, res) => {
              ON DUPLICATE KEY UPDATE status = ?`,
             [id, status, status]
         );
+
+        const [target] = await db.query('SELECT email FROM users WHERE id = ?', [id]);
+        await logActivity({ req, category: 'user', action: `${status === 'active' ? 'Activated' : 'Deactivated'} user ${target[0]?.email || `#${id}`}`, entityType: 'user', entityId: Number(id) });
+        if (status === 'active') {
+            await notify({ userIds: [Number(id)], category: 'user', severity: 'success', title: 'Your account was reactivated', message: 'You can sign in to BexSign again.', link: '/dashboard' });
+        }
 
         res.json({ success: true, message: `User status changed to ${status}.` });
     } catch (err) {
@@ -280,15 +310,20 @@ router.post('/:id/reset-password', async (req, res) => {
         const userEmail = targetUser[0].email;
         let emailNotice = '';
         if (sendEmail) {
-            emailNotice = ` A notification with instructions has been dispatched to ${userEmail}.`;
-            try {
-                await db.query(
-                    `INSERT INTO activity_history (document_id, activity_description, ip_address)
-                     VALUES (1, ?, ?)`,
-                    [`Password reset email dispatched to ${userEmail} by ${req.user.email || 'Manager'}`, req.ip || '127.0.0.1']
-                );
-            } catch (eHist) {}
+            const { sendPasswordChangedEmail } = require('../utils/emailService');
+            const mail = await sendPasswordChangedEmail({ to: userEmail, name: targetUser[0].first_name });
+            emailNotice = mail.success ? ` A confirmation email was sent to ${userEmail}.` : ` The confirmation email to ${userEmail} could not be sent.`;
         }
+        await logActivity({ req, category: 'user', action: isSelf ? 'Changed own password' : `Reset the password of ${userEmail}`, entityType: 'user', entityId: Number(id) });
+        await notify({
+            userIds: [Number(id)],
+            excludeUserId: isSelf ? null : req.user.id,
+            category: 'user',
+            severity: 'warning',
+            title: 'Your password was changed',
+            message: isSelf ? 'You changed your password.' : `${req.user.first_name || 'An administrator'} set a new password for your account.`,
+            link: '/settings/profile'
+        });
 
         res.json({ 
             success: true, 
@@ -311,7 +346,10 @@ router.delete('/:id', requireRole(['manager']), async (req, res) => {
             return res.status(400).json({ error: 'Primary system administrator account cannot be deleted.' });
         }
 
+        const [target] = await db.query('SELECT email FROM users WHERE id = ?', [id]);
         await db.query('DELETE FROM users WHERE id = ?', [id]);
+        await db.query('DELETE FROM user_permissions WHERE user_id = ?', [id]).catch(() => {});
+        await logActivity({ req, category: 'user', action: `Deleted user ${target[0]?.email || `#${id}`}`, entityType: 'user', entityId: Number(id) });
         res.json({ success: true, message: 'User deleted successfully.' });
     } catch (err) {
         console.error('Delete User Error:', err);

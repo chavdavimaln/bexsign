@@ -467,12 +467,15 @@ function formatDisplayDate(value, withTime = false) {
     : { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-/** Recipients whose turn it is: everyone pending (parallel) or the lowest pending order (sequential). */
+/**
+ * Recipients who can sign now: every pending signer/approver. With "Send in order" (sequential) they are listed by
+ * signing step, so the invitations go out one after another (step 1, then 2, then 3...) without waiting for an
+ * earlier recipient to sign first.
+ */
 function getActiveSigningGroup(recipients, isSequential) {
   const pending = recipients.filter((r) => isSigningRole(r.role) && !['signed', 'declined'].includes(r.status));
-  if (!isSequential || pending.length === 0) return pending;
-  const minOrder = Math.min(...pending.map((r) => r.signing_order_index || 1));
-  return pending.filter((r) => (r.signing_order_index || 1) === minOrder);
+  if (!isSequential) return pending;
+  return [...pending].sort((a, b) => ((a.signing_order_index || 1) - (b.signing_order_index || 1)) || (a.id - b.id));
 }
 
 function getClientBaseUrl() {
@@ -548,6 +551,42 @@ async function sendSigningInvitations(doc, group, { req = null, isReminder = fal
         [r.id]
       );
     }
+    // In-app notifications: the recipient (if they have an account) and, when the email failed, the sender
+    try {
+      const { notify } = require('./platformEvents');
+      const signLink = `/documents/sign/${doc.id}?email=${encodeURIComponent(r.email)}`;
+      if (result.success) {
+        await notify({
+          emails: [r.email],
+          category: 'signing',
+          severity: isReminder ? 'warning' : 'info',
+          title: isReminder
+            ? `Reminder: "${doc.document_name || 'Document'}" is waiting for your signature`
+            : `${sender.name} asked you to sign "${doc.document_name || 'Document'}"`,
+          message: isReminder
+            ? `${sender.name} (${sender.email}) sent a reminder. The request expires on ${expiresOn}.`
+            : `${documentNames.length > 1 ? `${documentNames.length} documents need` : 'The document needs'} your signature. The request expires on ${expiresOn}.`,
+          link: signLink,
+          entityType: 'document',
+          entityId: doc.id,
+          actorName: sender.name
+        });
+      } else if (doc.user_id) {
+        await notify({
+          userIds: [doc.user_id],
+          category: 'email',
+          severity: 'error',
+          title: `Email to ${r.email} could not be delivered`,
+          message: `The ${isReminder ? 'reminder' : 'signature request'} for "${doc.document_name || 'Document'}" was not delivered: ${result.error}`,
+          link: `/documents/${doc.id}`,
+          entityType: 'document',
+          entityId: doc.id
+        });
+      }
+    } catch (eNotify) {
+      console.warn('[Notifications] invitation notification skipped:', eNotify.message);
+    }
+
     await logRequestEvent(doc.id, {
       recipientId: r.id || null,
       eventType: result.success ? (isReminder ? 'reminded' : 'sent') : 'email_failed',

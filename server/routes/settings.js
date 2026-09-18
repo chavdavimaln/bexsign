@@ -7,9 +7,10 @@ const db = require('../db');
 router.get('/profile/:userId', async (req, res) => {
     const userId = req.params.userId;
     try {
+        // The requested user's own profile (the first account only when that user does not exist)
         const [results] = await db.query(
-            'SELECT first_name, last_name, email, company, phone, role FROM users WHERE id = ? OR id = 1',
-            [userId]
+            'SELECT id, first_name, last_name, email, company, phone, role FROM users WHERE id = ? OR id = 1 ORDER BY (id = ?) DESC, id ASC LIMIT 1',
+            [userId, userId]
         );
         if (results.length === 0) {
             return res.json({
@@ -37,7 +38,7 @@ router.put('/profile/:userId', async (req, res) => {
     const lName = lastName || last_name;
 
     try {
-        const query = `UPDATE users SET first_name = ?, last_name = ?, email = COALESCE(?, email), company = ?, phone = ? WHERE id = ? OR id = 1`;
+        const query = `UPDATE users SET first_name = ?, last_name = ?, email = COALESCE(?, email), company = ?, phone = ? WHERE id = ?`;
         await db.query(query, [fName, lName, email || null, company || null, phone || null, userId]);
         res.json({ message: 'Profile updated successfully' });
     } catch (err) {
@@ -56,10 +57,25 @@ router.all('/password/:userId', async (req, res) => {
     }
     try {
         const bcrypt = require('bcryptjs');
+        const [users] = await db.query('SELECT id, email, first_name, last_name FROM users WHERE id = ?', [userId]);
+        const user = users[0];
+        if (!user) {
+            return res.status(404).json({ success: false, error: 'User not found.' });
+        }
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(newPassword, salt);
-        await db.query('UPDATE users SET password_hash = ? WHERE id = ? OR id = 1', [hashedPassword, userId]);
-        
+        await db.query('UPDATE users SET password_hash = ? WHERE id = ?', [hashedPassword, user.id]);
+
+        let emailed = false;
+        if (sendEmail) {
+            const { sendPasswordChangedEmail } = require('../utils/emailService');
+            const confirmation = await sendPasswordChangedEmail({
+                to: user.email,
+                name: `${user.first_name || ''} ${user.last_name || ''}`.trim()
+            });
+            emailed = confirmation.success;
+        }
+
         // Log password change in audit history
         try {
             await db.query(
@@ -71,8 +87,11 @@ router.all('/password/:userId', async (req, res) => {
 
         res.json({
             success: true,
-            message: sendEmail 
-                ? 'Password changed successfully! A confirmation has been sent to your email.' 
+            emailed,
+            message: sendEmail
+                ? (emailed
+                    ? `Password changed successfully! A confirmation email was sent to ${user.email}.`
+                    : `Password changed successfully, but the confirmation email to ${user.email} could not be sent.`)
                 : 'Password updated successfully!'
         });
     } catch (err) {

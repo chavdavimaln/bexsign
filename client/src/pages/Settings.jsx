@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { getLoggedInUser } from '../utils/currentUser';
 
 export default function Settings() {
   const [activeTab, setActiveTab] = useState('Profile');
@@ -11,7 +12,7 @@ export default function Settings() {
 
   const fetchProfile = async () => {
     try {
-      const res = await fetch('http://localhost:5000/api/settings/profile/1');
+      const res = await fetch(`http://localhost:5000/api/settings/profile/${getLoggedInUser()?.id || 1}`);
       const data = await res.json();
       if (res.ok) {
         setProfile({
@@ -33,7 +34,7 @@ export default function Settings() {
     e.preventDefault();
     setLoading(true);
     try {
-      const res = await fetch('http://localhost:5000/api/settings/profile/1', {
+      const res = await fetch(`http://localhost:5000/api/settings/profile/${getLoggedInUser()?.id || 1}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(profile)

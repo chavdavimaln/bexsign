@@ -443,14 +443,11 @@ ${x + 2.5} ${top - 6} m ${x + 5} ${top - 9.5} l ${x + 9.5} ${top - 2.5} l S` : '
         block = {
           height: 20,
           ops: (x, top) => `
-% Placed Field: ${pdfText(field.type)}
-0.82 0.85 0.88 RG
-0.75 w
-${x} ${top - 20} ${COLUMN_WIDTH} 20 re S
+% Placed Field: ${pdfText(field.type)} (value only, no border)
 BT
 /F2 9.5 Tf
 0.15 0.2 0.25 rg
-${x + 8} ${top - 14} Td
+${x + 4} ${top - 14} Td
 (${pdfText(text)}) Tj
 ET`
         };

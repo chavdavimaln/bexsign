@@ -480,7 +480,85 @@ async function sendSigningDelegatedEmail({
   }, 'Assigned email');
 }
 
+/**
+ * Password reset link ("Forgot password?" and "Send Password Change Link to Email"). The link holds a one-time
+ * token that expires after `expiresInMinutes`.
+ */
+async function sendPasswordResetEmail({ to, name = '', resetUrl, expiresInMinutes = 60, requestIp = '' }) {
+  const mailHtml = getBexSignHtmlTemplate({
+    headerTitle: 'Reset your BexSign password',
+    headerColor: '#00a884',
+    mainMessage: `Hello ${escapeHtml(name || to)},<br/><br/>We received a request to reset the password of your BexSign account <strong>${escapeHtml(to)}</strong>. Click the button below to choose a new password.`,
+    details: [
+      { label: 'Link valid for', value: `${expiresInMinutes} minutes (one use only)` },
+      ...(requestIp ? [{ label: 'Requested from IP', value: escapeHtml(requestIp) }] : [])
+    ],
+    ctaText: 'Reset password',
+    ctaLink: resetUrl,
+    extraHtml: `<p style="font-size: 12px; color: #666; margin: 0 0 8px 0;">If the button does not work, copy this link into your browser:<br/><a href="${escapeHtml(resetUrl)}" style="color: #00a884; word-break: break-all;">${escapeHtml(resetUrl)}</a></p>`,
+    footerNote: 'If you did not ask to reset your password, you can ignore this email: your password stays the same.'
+  });
+
+  return deliverMail({
+    to,
+    subject: 'Reset your BexSign password',
+    html: mailHtml,
+    text: `Hello ${name || to},\n\nReset the password of your BexSign account ${to} with this link (valid for ${expiresInMinutes} minutes, one use only):\n${resetUrl}\n\nIf you did not ask to reset your password, ignore this email.`
+  }, 'Password reset email');
+}
+
+/** Confirmation that the account password was changed (reset link or "Update Password"). */
+async function sendPasswordChangedEmail({ to, name = '', changedAt = new Date(), requestIp = '' }) {
+  const when = new Date(changedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const mailHtml = getBexSignHtmlTemplate({
+    headerTitle: 'Your BexSign password was changed',
+    headerColor: '#00a884',
+    mainMessage: `Hello ${escapeHtml(name || to)},<br/><br/>The password of your BexSign account <strong>${escapeHtml(to)}</strong> was changed.`,
+    details: [
+      { label: 'Changed on', value: escapeHtml(when) },
+      ...(requestIp ? [{ label: 'IP address', value: escapeHtml(requestIp) }] : [])
+    ],
+    footerNote: 'If you did not change your password, reset it right away from the BexSign sign-in page ("Forgot password?") and contact your administrator.'
+  });
+
+  return deliverMail({
+    to,
+    subject: 'Your BexSign password was changed',
+    html: mailHtml
+  }, 'Password changed email');
+}
+
+/** A BexSign notification sent by email (when the user turned on email for its category). */
+async function sendNotificationEmail({ to, name = '', title, message = '', categoryLabel = 'Notification', link = '' }) {
+  const mailHtml = getBexSignHtmlTemplate({
+    headerTitle: escapeHtml(title),
+    headerColor: '#00a884',
+    mainMessage: `${name ? `Hello ${escapeHtml(name)},<br/><br/>` : ''}${escapeHtml(message)}`,
+    details: [{ label: 'Category', value: escapeHtml(categoryLabel) }],
+    ctaText: link ? 'Open in BexSign' : '',
+    ctaLink: link,
+    footerNote: 'You receive this email because email notifications are turned on for this category. Change it in Settings > My Notifications.'
+  });
+  return deliverMail({ to, subject: title, html: mailHtml }, 'Notification email');
+}
+
+/** A scheduled or on-demand report with its CSV attached. */
+async function sendReportEmail({ to, reportName, periodLabel = '', rowCount = 0, attachments = [], summary = [] }) {
+  const mailHtml = getBexSignHtmlTemplate({
+    headerTitle: `Report: ${escapeHtml(reportName)}`,
+    headerColor: '#00a884',
+    mainMessage: `Your BexSign report <strong>${escapeHtml(reportName)}</strong>${periodLabel ? ` for ${escapeHtml(periodLabel)}` : ''} is attached (${rowCount} row${rowCount === 1 ? '' : 's'}).`,
+    details: summary.map(([label, value]) => ({ label: escapeHtml(label), value: escapeHtml(String(value)) })),
+    footerNote: 'Scheduled reports can be changed or paused in Reports > Scheduled Reports.'
+  });
+  return deliverMail({ to, subject: `BexSign report: ${reportName}${periodLabel ? ` (${periodLabel})` : ''}`, html: mailHtml, attachments }, 'Report email');
+}
+
 module.exports = {
+  sendNotificationEmail,
+  sendReportEmail,
+  sendPasswordResetEmail,
+  sendPasswordChangedEmail,
   sendSignatureRequestEmail,
   sendDocumentDeclinedEmail,
   sendSigningDelegatedEmail,

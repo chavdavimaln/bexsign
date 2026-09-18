@@ -14,8 +14,24 @@ import {
   Check 
 } from 'lucide-react';
 import { showPopupAlert } from '../components/GlobalAlertModal';
+import { getLoggedInUser } from '../utils/currentUser';
+
+const API_BASE = 'http://localhost:5000/api';
+
+// POSTs JSON and returns { ok, status, data }; `ok` is false for HTTP errors and { success: false } answers
+async function postJson(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok && data.success !== false, status: res.status, data };
+}
 
 export default function MyProfile() {
+  // The signed-in user's account (the first account when no user id was saved at sign-in)
+  const [userId] = useState(() => getLoggedInUser()?.id || 1);
   const [profile, setProfile] = useState(() => {
     try {
       const saved = localStorage.getItem('user');
@@ -63,14 +79,14 @@ export default function MyProfile() {
 
   const fetchProfile = async () => {
     try {
-      const res = await fetch('http://localhost:5000/api/settings/profile/1');
+      const res = await fetch(`${API_BASE}/settings/profile/${userId}`);
       const data = await res.json();
       if (data && data.first_name) {
         setProfile(prev => ({
           ...prev,
           firstName: data.first_name || prev.firstName,
           lastName: data.last_name || prev.lastName,
-          email: data.email || 'vimal@bexcodeservices.com',
+          email: data.email || prev.email,
           company: data.company || prev.company,
           phone: data.phone || prev.phone
         }));
@@ -84,7 +100,7 @@ export default function MyProfile() {
     e.preventDefault();
     setErrorMsg('');
     try {
-      await fetch('http://localhost:5000/api/settings/profile/1', {
+      await fetch(`${API_BASE}/settings/profile/${userId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -109,7 +125,7 @@ export default function MyProfile() {
       } catch (err) {}
 
       setSuccessMsg('Profile information updated successfully.');
-      showPopupAlert('Profile Updated', 'Your profile details have been saved successfully.', 'success');
+      showPopupAlert('Your profile details have been saved successfully.', { title: 'Profile Updated', type: 'success' });
       setTimeout(() => setSuccessMsg(''), 4000);
     } catch (err) {
       setErrorMsg('Failed to update profile.');
@@ -127,7 +143,7 @@ export default function MyProfile() {
     setConfirmPassword(generated);
     setShowNewPassword(true);
     setShowConfirmPassword(true);
-    showPopupAlert('Password Generated', `A secure password was generated: ${generated}`, 'info');
+    showPopupAlert(`A secure password was generated: ${generated}`, { title: 'Password Generated', type: 'info' });
   };
 
   // Handle manual / generated password save
@@ -147,109 +163,50 @@ export default function MyProfile() {
 
     setPasswordLoading(true);
     try {
-      let data = null;
-
-      // 1. Try /api/change-password
-      try {
-        const res = await fetch('http://localhost:5000/api/change-password', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            email: profile.email,
-            newPassword: newPassword,
-            sendEmail: true
-          })
-        });
-        if (res.ok) {
-          data = await res.json();
-        }
-      } catch (e1) {}
-
-      // 2. Fallback to /api/auth/change-password
-      if (!data || !data.success) {
-        try {
-          const res = await fetch('http://localhost:5000/api/auth/change-password', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              email: profile.email,
-              newPassword: newPassword,
-              sendEmail: true
-            })
-          });
-          if (res.ok) {
-            data = await res.json();
-          }
-        } catch (e2) {}
+      // The account with this email; when the email field was edited but not saved yet, the signed-in account (id)
+      let result = await postJson(`${API_BASE}/change-password`, { email: profile.email, newPassword, sendEmail: true });
+      if (!result.ok && result.status === 404) {
+        result = await postJson(`${API_BASE}/settings/password/${userId}`, { newPassword, sendEmail: true });
       }
 
-      // 3. Fallback to /api/settings/password/1
-      if (!data || !data.success) {
-        try {
-          const res = await fetch('http://localhost:5000/api/settings/password/1', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              newPassword: newPassword,
-              sendEmail: true
-            })
-          });
-          if (res.ok) {
-            data = await res.json();
-          }
-        } catch (e3) {}
-      }
-
-      if (data && data.success) {
-        setSuccessMsg(data.message || 'Password updated successfully!');
-        showPopupAlert('Password Updated', data.message || 'Your password has been changed successfully.', 'success');
+      if (result.ok) {
+        const message = result.data.message || 'Password updated successfully!';
+        setSuccessMsg(message);
+        showPopupAlert(message, { title: 'Password Updated', type: 'success' });
         setNewPassword('');
         setConfirmPassword('');
         setTimeout(() => setSuccessMsg(''), 4000);
       } else {
-        setErrorMsg((data && data.error) || 'Failed to update password. Please ensure password is at least 6 characters.');
+        setErrorMsg(result.data.error || 'Failed to update password. Please ensure password is at least 6 characters.');
       }
     } catch (err) {
-      setErrorMsg('Error updating password: ' + (err.message || 'Please check backend connection.'));
+      setErrorMsg(err instanceof TypeError
+        ? 'Could not reach the BexSign server at http://localhost:5000. Make sure it is running, then try again.'
+        : `Error updating password: ${err.message}`);
     } finally {
       setPasswordLoading(false);
     }
   };
 
-  // Handle sending email to change password
+  // Emails a one-time password reset link to the account email
   const handleSendResetEmail = async () => {
     setErrorMsg('');
     setEmailLoading(true);
     try {
-      let data = null;
-
-      try {
-        const res = await fetch('http://localhost:5000/api/send-reset-email', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: profile.email })
-        });
-        if (res.ok) data = await res.json();
-      } catch (e1) {}
-
-      if (!data || !data.success) {
-        try {
-          const res = await fetch('http://localhost:5000/api/auth/send-reset-email', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: profile.email })
-          });
-          if (res.ok) data = await res.json();
-        } catch (e2) {}
-      }
-
-      if (data && data.success) {
-        showPopupAlert('Email Dispatched', data.message || `Password reset instructions sent to ${profile.email}`, 'success');
+      const result = await postJson(`${API_BASE}/send-reset-email`, { email: profile.email });
+      if (result.ok) {
+        showPopupAlert(result.data.message || `A password reset link has been emailed to ${profile.email}.`, { title: 'Email sent', type: 'success' });
       } else {
-        setErrorMsg((data && data.error) || 'Failed to dispatch email.');
+        const error = result.data.error || `The password reset email could not be sent (HTTP ${result.status}).`;
+        setErrorMsg(error);
+        showPopupAlert(error, { title: 'Email not sent', type: 'error' });
       }
     } catch (err) {
-      setErrorMsg('Error requesting password reset email: ' + err.message);
+      const error = err instanceof TypeError
+        ? 'Could not reach the BexSign server at http://localhost:5000, so no email was sent. Make sure it is running, then try again.'
+        : `Error requesting password reset email: ${err.message}`;
+      setErrorMsg(error);
+      showPopupAlert(error, { title: 'Email not sent', type: 'error' });
     } finally {
       setEmailLoading(false);
     }

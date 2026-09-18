@@ -15,6 +15,14 @@ const settingRoutes = require('./routes/settings');
 const contactRoutes = require('./contacts');
 const trashRoutes = require('./routes/trash');
 const userRoutes = require('./routes/users');
+const permissionRoutes = require('./routes/permissions');
+const notificationRoutes = require('./routes/notifications');
+const securityRoutes = require('./routes/security');
+const platformSettingsRoutes = require('./routes/platformSettings');
+const developerRoutes = require('./routes/developer');
+const publicApiRoutes = require('./routes/publicApi');
+const { ensurePlatformSchema } = require('./utils/platformSchema');
+const { startReportScheduler } = require('./utils/reportScheduler');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -48,11 +56,25 @@ app.use('/api/settings', settingRoutes);
 app.use('/api/contacts', contactRoutes);
 app.use('/api/trash', trashRoutes);
 app.use('/api/users', userRoutes);
+// Platform modules: permissions, notifications, security logs, settings, developer API
+app.use('/api/permissions', permissionRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/security', securityRoutes);
+app.use('/api/platform-settings', platformSettingsRoutes);
+app.use('/api/developer', developerRoutes);
+app.use('/api/v1', publicApiRoutes);
 
 // Start Server
 const server = app.listen(PORT, () => {
     console.log(`Bexsign Backend Server listening on http://localhost:${PORT}`);
     console.log(`Connected to MySQL Database: ${process.env.DB_NAME || 'db_bex_sign'}`);
+    // Tables of the platform modules, then the scheduled-report runner
+    ensurePlatformSchema()
+        .then(() => {
+            console.log('[Schema] Platform module tables ready');
+            startReportScheduler();
+        })
+        .catch((err) => console.error('[Schema] Platform tables could not be prepared:', err.message));
     // Signed documents issued with an older layout get the current signature stamp and lock (no emails are sent)
     setTimeout(() => {
         refreshOutdatedCompletedPdfs().catch((err) => console.warn('[Signed PDFs] refresh skipped:', err.message));

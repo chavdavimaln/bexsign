@@ -350,8 +350,9 @@ function buildFieldBlock(doc, field, recipient, columnWidth, context = {}) {
     };
   }
 
+  // Text values are printed as they are, without a box around them
   const value = fieldDisplayValue(field, recipient);
-  const textWidth = columnWidth - 16;
+  const textWidth = columnWidth - 8;
   doc.font('Helvetica').fontSize(10);
   const textHeight = doc.heightOfString(value, { width: textWidth });
   const boxHeight = Math.max(24, textHeight + 12);
@@ -359,8 +360,7 @@ function buildFieldBlock(doc, field, recipient, columnWidth, context = {}) {
     full: false,
     height: boxHeight,
     draw: (x, y, width) => {
-      doc.rect(x, y, width, boxHeight).strokeColor(COLORS.border).lineWidth(0.75).stroke();
-      doc.font('Helvetica').fontSize(10).fillColor(COLORS.text).text(value, x + 8, y + (boxHeight - textHeight) / 2, { width: width - 16 });
+      doc.font('Helvetica').fontSize(10).fillColor(COLORS.text).text(value, x + 4, y + (boxHeight - textHeight) / 2, { width: width - 8 });
     }
   };
 }

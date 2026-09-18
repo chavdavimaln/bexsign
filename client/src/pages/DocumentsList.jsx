@@ -1414,7 +1414,7 @@ export default function DocumentsList() {
             <p className="text-slate-700 font-medium">Are you sure you want to send a reminder to the signers?</p>
             <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 space-y-1">
               <p className="font-bold text-slate-800">Note:</p>
-              <p>1. When the send in order option is checked, a reminder will be sent to the signer who is next in line.</p>
+              <p>1. A reminder is sent to every recipient who has not signed yet, in signing order.</p>
             </div>
             <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
               <button onClick={() => setActiveModal(null)} className="px-4 py-1.5 border border-slate-300 rounded text-xs font-semibold">No</button>

@@ -60,7 +60,18 @@ async function authenticateUser(req, res, next) {
         }
         next();
     } catch (err) {
-        // Fallback for demo environments
+        // A real (JWT) token that is expired, tampered with or signed with another secret never falls back to the
+        // default account: that would give every broken token manager rights
+        if (token.split('.').length === 3) {
+            return res.status(401).json({
+                success: false,
+                error: err.name === 'TokenExpiredError'
+                    ? 'Your session has expired. Please sign in again.'
+                    : 'Your session is not valid. Please sign in again.',
+                sessionExpired: true
+            });
+        }
+        // Demo session tokens (not JWTs) keep the default account
         req.user = {
             id: 1,
             email: 'vimal@bexcodeservices.com',

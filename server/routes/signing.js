@@ -20,6 +20,8 @@ const { generateServerPdfBuffer } = require('../utils/pdfGenerator');
 const requestHelpers = require('../utils/requestHelpers');
 const { finalizeCompletedRequest } = require('../utils/requestCompletion');
 const { isUsableSignature } = require('../utils/signatureValidation');
+const { emitDocumentWebhook, notifyDocumentOwner, notifyRecipientUsers } = require('../utils/documentEvents');
+const { logFailedAccess } = require('../utils/platformEvents');
 
 /**
  * Everything that happens once a recipient has completed their part: their field values are stored, they are
@@ -129,6 +131,32 @@ async function completeRecipientSigning({
     let completion = null;
     let nextRecipients = [];
 
+    // Sender notification and webhooks for the signature (and for completion)
+    const signedDoc = { ...doc, status: finalStatus, completed_at: allCompleted ? new Date() : null };
+    emitDocumentWebhook('document.signed', signedDoc, { recipient: { ...recipient, status: 'signed' } });
+    if (allCompleted) {
+        emitDocumentWebhook('document.completed', signedDoc, { recipients });
+        await notifyDocumentOwner(signedDoc, {
+            title: `"${doc.document_name || 'Document'}" is completed`,
+            message: `All recipients have signed. The signed documents and the certificate of completion were emailed to everyone.`,
+            severity: 'success'
+        });
+        await notifyRecipientUsers(signedDoc, recipients, {
+            title: `"${doc.document_name || 'Document'}" is completed`,
+            message: 'Everyone has signed. The signed documents were emailed to you.',
+            severity: 'success',
+            exceptEmail: recipient.email
+        });
+    } else {
+        await notifyDocumentOwner(signedDoc, {
+            title: `${name} ${recipient.role === 'approver' ? 'approved' : 'signed'} "${doc.document_name || 'Document'}"`,
+            message: `${pendingSigners.length} recipient${pendingSigners.length === 1 ? '' : 's'} still ${pendingSigners.length === 1 ? 'needs' : 'need'} to sign: ${pendingSigners.map((r) => r.name || r.email).join(', ')}.`,
+            severity: 'success',
+            actorEmail: recipient.email,
+            actorName: name
+        });
+    }
+
     if (allCompleted) {
         await requestHelpers.logRequestEvent(docId, { description: `All recipients completed "${doc.document_name}". Document marked Completed.`, req });
         try {
@@ -138,7 +166,7 @@ async function completeRecipientSigning({
             completion = { emailed: [], failed: [{ error: eComplete.message }], files: [], certificatePath: null };
         }
     } else {
-        // 4. Sequential order: email the next signing group that has not been emailed yet
+        // 4. Email any signer who has not received the request yet (e.g. their invitation failed when it was sent)
         const [freshDocs] = await db.query('SELECT * FROM documents WHERE id = ?', [docId]);
         const isSequential = doc.signing_order === 'sequential';
         const nextGroup = requestHelpers.getActiveSigningGroup(recipients, isSequential).filter((r) => !r.sent_at);
@@ -189,7 +217,7 @@ const physicalCopyUpload = multer({
  * Loads the request and the recipient acting on it, and checks they may still act:
  * the request must be open, they must be a signer/approver and it must be their turn.
  */
-async function loadSigningContext({ documentId, token, email }) {
+async function loadSigningContext({ documentId, token, email, req = null }) {
     const docId = parseInt(documentId || token) || 0;
     const signerEmail = String(email || '').trim();
     if (!docId) return { error: { status: 400, message: 'Document id is required.' } };
@@ -207,7 +235,10 @@ async function loadSigningContext({ documentId, token, email }) {
 
     const recipients = await requestHelpers.getRecipients(docId);
     const recipient = recipients.find((r) => String(r.email || '').toLowerCase() === signerEmail.toLowerCase());
-    if (!recipient) return { error: { status: 403, message: 'This email address is not a recipient of the document.' } };
+    if (!recipient) {
+        await logFailedAccess({ req, email: signerEmail || null, source: 'signing_link', reason: 'Signing action by an email that is not a recipient', documentId: docId });
+        return { error: { status: 403, message: 'This email address is not a recipient of the document.' } };
+    }
     if (!requestHelpers.isSigningRole(recipient.role)) {
         return { error: { status: 403, message: 'You receive a copy of this document and do not need to sign it.' } };
     }
@@ -230,7 +261,7 @@ router.post('/decline', async (req, res) => {
         return res.status(400).json({ success: false, error: 'Please enter the reason for declining this document.' });
     }
     try {
-        const context = await loadSigningContext({ documentId, token, email: signerEmail });
+        const context = await loadSigningContext({ documentId, token, email: signerEmail, req });
         if (context.error) return res.status(context.error.status).json({ success: false, error: context.error.message });
         const { docId, doc, recipient } = context;
 
@@ -244,6 +275,14 @@ router.post('/decline', async (req, res) => {
             eventType: 'declined',
             description: `${recipient.name || recipient.email} (${recipient.email}) declined to sign: ${declineReason}`,
             req
+        });
+        emitDocumentWebhook('document.declined', { ...doc, status: 'Declined' }, { recipient: { ...recipient, status: 'declined' }, reason: declineReason });
+        await notifyDocumentOwner(doc, {
+            title: `${recipient.name || recipient.email} declined "${doc.document_name || 'Document'}"`,
+            message: `Reason: ${declineReason}. The request is closed; send a corrected copy if needed.`,
+            severity: 'error',
+            actorEmail: recipient.email,
+            actorName: recipient.name
         });
 
         const sender = await requestHelpers.getRequestSender(doc);
@@ -285,7 +324,7 @@ router.post('/assign', async (req, res) => {
         return res.status(400).json({ success: false, error: 'Please enter the reason for assigning this document.' });
     }
     try {
-        const context = await loadSigningContext({ documentId, token, email: signerEmail });
+        const context = await loadSigningContext({ documentId, token, email: signerEmail, req });
         if (context.error) return res.status(context.error.status).json({ success: false, error: context.error.message });
         const { docId, doc, recipients, recipient } = context;
 
@@ -322,6 +361,13 @@ router.post('/assign', async (req, res) => {
             eventType: 'assigned',
             description: `${recipient.name || recipient.email} (${recipient.email}) assigned the signing to ${nextName} (${nextEmail}): ${assignReason}`,
             req
+        });
+        await notifyDocumentOwner(doc, {
+            title: `${recipient.name || recipient.email} assigned "${doc.document_name || 'Document'}" to ${nextName}`,
+            message: `${nextName} (${nextEmail}) now signs instead. Reason: ${assignReason}`,
+            severity: 'info',
+            actorEmail: recipient.email,
+            actorName: recipient.name
         });
 
         const updated = (await requestHelpers.getRecipients(docId)).find((r) => r.id === recipient.id);
@@ -669,6 +715,7 @@ router.post('/viewed', async (req, res) => {
         const recipients = await requestHelpers.getRecipients(docId);
         const recipient = recipients.find((r) => String(r.email).toLowerCase() === email);
         if (!recipient) {
+            await logFailedAccess({ req, email, source: 'signing_link', reason: 'Signing link opened with an email that is not a recipient', documentId: docId });
             return res.json({ success: false, error: 'Recipient not found' });
         }
         if (!recipient.viewed_at) {
@@ -682,6 +729,16 @@ router.post('/viewed', async (req, res) => {
                 description: `${recipient.name} (${recipient.email}) viewed the document`,
                 req
             });
+            const [viewedDocs] = await db.query('SELECT * FROM documents WHERE id = ?', [docId]);
+            if (viewedDocs[0]) {
+                emitDocumentWebhook('document.viewed', viewedDocs[0], { recipient: { ...recipient, status: 'viewed' } });
+                await notifyDocumentOwner(viewedDocs[0], {
+                    title: `${recipient.name || recipient.email} viewed "${viewedDocs[0].document_name || 'Document'}"`,
+                    message: `${recipient.email} opened the signing request.`,
+                    actorEmail: recipient.email,
+                    actorName: recipient.name
+                });
+            }
         }
         res.json({ success: true });
     } catch (err) {
@@ -710,7 +767,7 @@ function decodeClientPdfs(completedPdfs) {
 }
 
 // @route   POST /api/signatures/submit
-// @desc    Submit the current recipient's fields and signature. Notifies the next signer group (sequential),
+// @desc    Submit the current recipient's fields and signature. Emails any signer not yet invited,
 //          or — when every signer/approver has finished — marks the request Completed and emails the signed
 //          PDFs plus the certificate of completion to the sender and all recipients.
 router.post('/submit', async (req, res) => {
@@ -752,6 +809,7 @@ router.post('/submit', async (req, res) => {
             ? recipients.find((r) => String(r.email).toLowerCase() === email.toLowerCase())
             : recipients.find((r) => String(r.id) === String(recipientId));
         if (!recipient) {
+            await logFailedAccess({ req, email: email || null, source: 'signing_link', reason: 'Signature submitted by an email that is not a recipient', documentId: docId });
             return res.status(403).json({ success: false, error: 'This email address is not a recipient of the document.' });
         }
         if (!requestHelpers.isSigningRole(recipient.role)) {
@@ -817,7 +875,7 @@ router.post('/physical-copy', (req, res, next) => {
         return res.status(400).json({ success: false, error: 'Choose the scanned copy of the signed document to upload.' });
     }
     try {
-        const context = await loadSigningContext({ documentId, token, email: signerEmail });
+        const context = await loadSigningContext({ documentId, token, email: signerEmail, req });
         if (context.error) return res.status(context.error.status).json({ success: false, error: context.error.message });
         const { docId, doc, recipient } = context;
 

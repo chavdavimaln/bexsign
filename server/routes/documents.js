@@ -21,6 +21,7 @@ const {
   sendDocumentCopyEmail
 } = require('../utils/emailService');
 const requestHelpers = require('../utils/requestHelpers');
+const { emitDocumentWebhook, notifyRecipientUsers } = require('../utils/documentEvents');
 const { isUsableSignature } = require('../utils/signatureValidation');
 const { sha256, findFingerprint, recordFingerprint } = require('../utils/pdfFingerprints');
 const { protectWithPassword } = require('../utils/pdfLock');
@@ -644,7 +645,8 @@ router.post('/:id/save', async (req, res) => {
 });
 
 // @route   POST /api/documents/send/:id
-// @desc    Save the request and send it: first signing group (sequential) or all signers (parallel) are emailed
+// @desc    Save the request and send it: every signer is emailed now, one after another in signing order (sequential)
+//          or all at once (parallel)
 router.post('/send/:id', async (req, res) => {
     const { id } = req.params;
     const { documentName, documents, fieldsByDoc, fields, recipientEmail, recipientName } = req.body;
@@ -735,6 +737,7 @@ router.post('/send/:id', async (req, res) => {
             description: `Document "${doc.document_name}" sent for signature (${isSequential ? 'in order' : 'parallel'}) to: ${group.map((r) => r.email).join(', ')}`,
             req
         });
+        emitDocumentWebhook('document.sent', doc, { recipients: group });
 
         const finalRecipients = await requestHelpers.getRecipients(id);
         const signingRecipientsNow = finalRecipients.filter((r) => requestHelpers.isSigningRole(r.role));
@@ -780,7 +783,12 @@ router.post(['/:id/remind', '/remind/:id'], async (req, res) => {
             return res.json({ success: true, message: 'All recipients have already completed this document.' });
         }
 
-        const results = await requestHelpers.sendSigningInvitations(doc, group, { req, isReminder: true });
+        // Signers who never received the request (e.g. sent before every signer was emailed at once) get the invitation
+        const notInvited = group.filter((r) => r.id && !r.sent_at);
+        const results = [
+            ...await requestHelpers.sendSigningInvitations(doc, notInvited, { req }),
+            ...await requestHelpers.sendSigningInvitations(doc, group.filter((r) => !notInvited.includes(r)), { req, isReminder: true })
+        ];
         const sent = results.filter((r) => r.success).map((r) => r.email);
         res.json({
             success: sent.length > 0,
@@ -824,6 +832,13 @@ router.post(['/:id/recall', '/recall/:id'], async (req, res) => {
         }
 
         await requestHelpers.logRequestEvent(id, { description: `Document recalled. Reason: "${recallReason}"`, req });
+        await notifyRecipientUsers(doc, recipients.filter((r) => targets.includes(r.email)), {
+            category: 'signing',
+            severity: 'warning',
+            title: `"${docTitle}" was recalled`,
+            message: `${sender.name} recalled this request, so it no longer needs your signature. Reason: ${recallReason}`
+        });
+        emitDocumentWebhook('document.recalled', doc, { reason: recallReason });
 
         res.json({ success: true, message: 'Document recalled successfully.' });
     } catch (err) {

@@ -26,7 +26,7 @@ const describeDevice = (userAgent) => {
 const SIGNING_ROLES = ['signer', 'approver'];
 
 // Details page statuses: 'signed', 'viewed' (viewed, not signed), 'emailed' (email sent, not viewed yet),
-// 'waiting' (not emailed yet: waits for earlier recipients in signing order) or 'copy' (receives a copy)
+// 'waiting' (not emailed yet, e.g. the invitation failed) or 'copy' (receives a copy)
 const toRecipientStatus = (r) => {
   const s = String(r.status || '').toLowerCase();
   if (s === 'signed') return 'signed';
@@ -136,10 +136,6 @@ export default function DocumentDetails() {
   const totalRecipients = signingRecipients.length;
   const signedRecipients = signingRecipients.filter((r) => r.status === 'signed').length;
   const completionPercentage = totalRecipients > 0 ? Math.round((signedRecipients / totalRecipients) * 100) : 0;
-  // Recipients whose turn it is (the lowest signing step that has not signed); later steps wait for them
-  const unsignedSteps = signingRecipients.filter((r) => r.status !== 'signed').map((r) => r.step);
-  const currentStep = unsignedSteps.length > 0 ? Math.min(...unsignedSteps) : null;
-  const currentSigners = signingRecipients.filter((r) => r.status !== 'signed' && r.step === currentStep).map((r) => r.name);
   const [remindingId, setRemindingId] = useState(null);
 
   const handleSendReminder = async (rec) => {
@@ -350,7 +346,7 @@ export default function DocumentDetails() {
             const isSigned = rec.status === 'signed';
             const isViewed = rec.status === 'viewed';
             const isEmailed = rec.status === 'emailed'; // email sent, not viewed or signed yet
-            const isWaiting = rec.status === 'waiting'; // not emailed yet: waits for earlier recipients in signing order
+            const isWaiting = rec.status === 'waiting'; // not emailed yet
             const isCopy = rec.status === 'copy';
             const wasMailed = isSigned || isViewed || isEmailed;
 
@@ -385,7 +381,7 @@ export default function DocumentDetails() {
                         )}
                         {isWaiting && (
                           <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-slate-100 text-slate-600 border border-slate-200">
-                            Waiting for turn
+                            Not emailed yet
                           </span>
                         )}
                         {isCopy && (
@@ -426,9 +422,16 @@ export default function DocumentDetails() {
                       )}
 
                       {isWaiting && (
-                        <p className="text-xs text-slate-500 leading-snug">
-                          Receives the email after {currentSigners.length > 0 ? currentSigners.join(', ') : 'the previous recipients'} {currentSigners.length > 1 ? 'have' : 'has'} signed
-                        </p>
+                        <div className="flex items-center gap-3 flex-wrap pt-0.5">
+                          <p className="text-xs text-slate-500 leading-snug">The signing email has not reached this recipient yet</p>
+                          <button
+                            onClick={() => handleSendReminder(rec)}
+                            disabled={remindingId === rec.id}
+                            className="text-xs font-bold text-[#00a884] hover:underline flex items-center gap-1 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 shrink-0 disabled:opacity-60"
+                          >
+                            <Send size={11} /> {remindingId === rec.id ? 'Sending...' : 'Send email'}
+                          </button>
+                        </div>
                       )}
 
                       {isCopy && (
