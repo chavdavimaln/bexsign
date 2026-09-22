@@ -32,6 +32,7 @@ import {
   History
 } from 'lucide-react';
 import { showPopupAlert } from '../components/GlobalAlertModal';
+import { API_BASE } from '../utils/api';
 
 export default function UserManagement() {
   const [users, setUsers] = useState([]);
@@ -98,7 +99,7 @@ export default function UserManagement() {
   const fetchUsers = async () => {
     setLoading(true);
     try {
-      const res = await fetch('http://localhost:5000/api/users');
+      const res = await fetch(`${API_BASE}/users`);
       const data = await res.json();
       if (data.success) {
         setUsers(data.users || []);
@@ -113,7 +114,7 @@ export default function UserManagement() {
 
   const fetchRoles = async () => {
     try {
-      const res = await fetch('http://localhost:5000/api/users/roles');
+      const res = await fetch(`${API_BASE}/users/roles`);
       const data = await res.json();
       if (data.success) {
         setRoles(data.roles || []);
@@ -123,7 +124,7 @@ export default function UserManagement() {
 
   const fetchLoginLogs = async () => {
     try {
-      const res = await fetch('http://localhost:5000/api/users/login-logs');
+      const res = await fetch(`${API_BASE}/users/login-logs`);
       const data = await res.json();
       if (data.success) {
         setLoginLogs(data.logs || []);
@@ -159,7 +160,7 @@ export default function UserManagement() {
     }
 
     try {
-      const res = await fetch('http://localhost:5000/api/users', {
+      const res = await fetch(`${API_BASE}/users`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData)
@@ -193,7 +194,7 @@ export default function UserManagement() {
     if (!activeUser) return;
 
     try {
-      const res = await fetch(`http://localhost:5000/api/users/${activeUser.id}`, {
+      const res = await fetch(`${API_BASE}/users/${activeUser.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -223,7 +224,7 @@ export default function UserManagement() {
   const handleToggleStatus = async (user) => {
     const newStatus = user.status === 'active' ? 'inactive' : 'active';
     try {
-      const res = await fetch(`http://localhost:5000/api/users/${user.id}/status`, {
+      const res = await fetch(`${API_BASE}/users/${user.id}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus })
@@ -256,7 +257,7 @@ export default function UserManagement() {
     }
 
     try {
-      const res = await fetch(`http://localhost:5000/api/users/${activeUser.id}/reset-password`, {
+      const res = await fetch(`${API_BASE}/users/${activeUser.id}/reset-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -289,7 +290,7 @@ export default function UserManagement() {
     }
 
     try {
-      const res = await fetch(`http://localhost:5000/api/users/${user.id}`, {
+      const res = await fetch(`${API_BASE}/users/${user.id}`, {
         method: 'DELETE'
       });
       const data = await res.json();

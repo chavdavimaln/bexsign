@@ -33,6 +33,149 @@ function toPlainText(value) {
     .trim();
 }
 
+const ENTITIES = { nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'", apos: "'" };
+const decodeEntities = (text) => String(text).replace(/&(#\d+|#x[0-9a-f]+|[a-z]+);/gi, (match, code) => {
+  if (ENTITIES[code.toLowerCase()] !== undefined) return ENTITIES[code.toLowerCase()];
+  if (code[0] === '#') return String.fromCharCode(code[1] === 'x' ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10));
+  return match;
+});
+
+const BLOCK_TAGS = { p: 'p', div: 'p', h1: 'h1', h2: 'h2', h3: 'h3', h4: 'h3', h5: 'h3', h6: 'h3', li: 'li', blockquote: 'quote' };
+
+/**
+ * The document body written in BexSign's editor, as blocks of styled runs:
+ * { type, align, runs: [{ text, bold, italic, underline, color }] }.
+ * Only the formatting the editor can produce is understood; anything else keeps its text.
+ */
+function htmlToBlocks(html) {
+  const blocks = [];
+  let current = null;
+  const styleStack = [];
+  const openBlocks = [];
+
+  const style = () => styleStack.reduce((acc, s) => ({ ...acc, ...s }), {});
+  const startBlock = (type, attrs = '') => {
+    const alignMatch = /text-align\s*:\s*(center|right|justify)/i.exec(attrs);
+    current = { type, align: alignMatch ? alignMatch[1].toLowerCase() : 'left', runs: [] };
+    blocks.push(current);
+  };
+  const addText = (raw) => {
+    const text = decodeEntities(raw).replace(/\s+/g, ' ');
+    if (!text.trim() && !current) return;
+    if (!current) startBlock('p');
+    current.runs.push({ text, ...style() });
+  };
+
+  for (const token of String(html).match(/<[^>]+>|[^<]+/g) || []) {
+    if (token[0] !== '<') {
+      addText(token);
+      continue;
+    }
+    const closing = token[1] === '/';
+    const name = (/^<\/?\s*([a-z0-9]+)/i.exec(token) || [])[1]?.toLowerCase();
+    if (!name) continue;
+    const attrs = token.slice(name.length + (closing ? 2 : 1), -1);
+
+    if (name === 'br') {
+      if (!current) startBlock('p');
+      current.runs.push({ text: '\n', ...style() });
+      continue;
+    }
+    if (BLOCK_TAGS[name]) {
+      if (closing) {
+        openBlocks.pop();
+        current = null;
+      } else {
+        openBlocks.push(name);
+        startBlock(BLOCK_TAGS[name], attrs);
+      }
+      continue;
+    }
+    if (['b', 'strong', 'i', 'em', 'u', 'span', 'font', 'a', 'mark'].includes(name)) {
+      if (closing) {
+        styleStack.pop();
+        continue;
+      }
+      const next = {};
+      if (name === 'b' || name === 'strong') next.bold = true;
+      if (name === 'i' || name === 'em') next.italic = true;
+      if (name === 'u') next.underline = true;
+      if (/font-weight\s*:\s*(bold|[6-9]00)/i.test(attrs)) next.bold = true;
+      if (/font-style\s*:\s*italic/i.test(attrs)) next.italic = true;
+      if (/text-decoration[^;"]*underline/i.test(attrs)) next.underline = true;
+      const color = /(?:^|[;\s"])color\s*:\s*([^;"']+)/i.exec(attrs);
+      if (color) next.color = color[1].trim();
+      styleStack.push(next);
+      continue;
+    }
+    // ul/ol/table and anything else: the text inside still comes through
+    if (closing && (name === 'ul' || name === 'ol')) current = null;
+  }
+
+  return blocks.filter((block) => block.runs.some((run) => run.text.trim()) || block.type === 'p');
+}
+
+/** Draws the document body with its formatting (headings, bold, italic, underline, colour, alignment, lists). */
+function drawDocumentBody(doc, documentText, { left, width }) {
+  const isHtml = /<[a-z][\s\S]*>/i.test(documentText || '');
+
+  if (!isHtml) {
+    // Plain text: headings are recognised from how the line is written
+    toPlainText(documentText).split('\n').forEach((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        doc.moveDown(0.45);
+        return;
+      }
+      const isHeading = /^[0-9]+\.\s+[A-Z]/.test(trimmed) || (/^[A-Z0-9\s&,.'()-]{5,}$/.test(trimmed) && trimmed.length < 70);
+      doc.font(isHeading ? 'Helvetica-Bold' : 'Helvetica').fontSize(isHeading ? 10.5 : 10).fillColor(COLORS.text)
+        .text(trimmed, left, doc.y, { width, lineGap: 2 });
+    });
+    return;
+  }
+
+  const SIZES = { h1: 15, h2: 12.5, h3: 11, p: 10, li: 10, quote: 10 };
+  const fontFor = (run, blockType) => {
+    const bold = run.bold || blockType === 'h1' || blockType === 'h2' || blockType === 'h3';
+    const italic = run.italic || blockType === 'quote';
+    if (bold && italic) return 'Helvetica-BoldOblique';
+    if (bold) return 'Helvetica-Bold';
+    if (italic) return 'Helvetica-Oblique';
+    return 'Helvetica';
+  };
+
+  htmlToBlocks(documentText).forEach((block) => {
+    const runs = block.runs.filter((run) => run.text !== '');
+    if (runs.length === 0 || !runs.some((run) => run.text.trim())) {
+      doc.moveDown(0.4);
+      return;
+    }
+    const size = SIZES[block.type] || 10;
+    const indent = block.type === 'li' || block.type === 'quote' ? 16 : 0;
+    const blockWidth = width - indent;
+    if (block.type === 'h1' || block.type === 'h2' || block.type === 'h3') doc.moveDown(0.35);
+
+    if (block.type === 'li') {
+      doc.font('Helvetica').fontSize(size).fillColor(COLORS.text).text('•', left + 4, doc.y, { width: 10, continued: false });
+      doc.moveUp(1);
+    }
+
+    runs.forEach((run, index) => {
+      const options = {
+        width: blockWidth,
+        align: block.align === 'left' ? 'left' : block.align,
+        lineGap: 2,
+        underline: Boolean(run.underline),
+        continued: index < runs.length - 1
+      };
+      doc.font(fontFor(run, block.type)).fontSize(size).fillColor(run.color || COLORS.text);
+      if (index === 0) doc.text(run.text, left + indent, doc.y, options);
+      else doc.text(run.text, options);
+    });
+    doc.fillColor(COLORS.text);
+  });
+}
+
 function formatDateTime(value) {
   if (!value) return '-';
   const d = new Date(value);
@@ -439,19 +582,7 @@ function generateSignedDocumentPdf({
       doc.font('Helvetica-Bold').fontSize(18).fillColor(COLORS.text).text(title, left, doc.y, { width });
       doc.moveDown(0.6);
 
-      toPlainText(documentText).split('\n').forEach((line) => {
-        const trimmed = line.trim();
-        if (!trimmed) {
-          doc.moveDown(0.45);
-          return;
-        }
-        const isHeading = /^[0-9]+\.\s+[A-Z]/.test(trimmed) || (/^[A-Z0-9\s&,.'()-]{5,}$/.test(trimmed) && trimmed.length < 70);
-        doc
-          .font(isHeading ? 'Helvetica-Bold' : 'Helvetica')
-          .fontSize(isHeading ? 10.5 : 10)
-          .fillColor(COLORS.text)
-          .text(trimmed, left, doc.y, { width, lineGap: 2 });
-      });
+      drawDocumentBody(doc, documentText, { left, width });
 
       if (sections.length > 0) {
         // Fields only (no field labels or headings), like the signed document in Zoho Sign
@@ -546,6 +677,8 @@ function generateCompletionCertificatePdf({
           ['Status', String(r.status || 'pending').toUpperCase()],
           ['Emailed on', formatDateTime(r.sent_at)],
           ['Viewed on', formatDateTime(r.viewed_at)],
+          // Consent to the Electronic Record and Signature Disclosure, given before signing
+          ['Terms agreed', formatDateTime(r.consent_at)],
           ['Completed on', formatDateTime(r.signed_at)],
           ['IP address', r.signed_ip || signedEvent?.ip_address || '-'],
           ['Device', describeDevice(r.signed_user_agent || signedEvent?.user_agent)]
@@ -618,5 +751,7 @@ module.exports = {
   formatDateTime,
   generateSignedDocumentPdf,
   generateCompletionCertificatePdf,
-  toPlainText
+  toPlainText,
+  htmlToBlocks,
+  drawDocumentBody
 };

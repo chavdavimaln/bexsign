@@ -30,6 +30,7 @@ import { getDocumentOwner } from '../utils/currentUser';
 import { downloadSignedDocument, printLockedDocument } from '../utils/signedPdf';
 import { showPopupAlert } from './GlobalAlertModal';
 import { recipientColorAt, fieldBelongsTo } from '../utils/recipientColors';
+import { API_BASE, API_ORIGIN } from '../utils/api';
 
 const SIGNING_ROLES = ['signer', 'approver'];
 
@@ -138,7 +139,7 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack, mode = '
   useEffect(() => {
     if (!doc?.id) return undefined;
     let cancelled = false;
-    fetch(`http://localhost:5000/api/documents/${doc.id}?view=sender`)
+    fetch(`${API_BASE}/documents/${doc.id}?view=sender`)
       .then((res) => res.json())
       .then((data) => {
         const serverDoc = data?.document;
@@ -162,7 +163,7 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack, mode = '
         setServerRecipients((serverDoc.recipients || []).filter((r) => !r.isFallback));
       })
       .catch(() => {
-        if (!cancelled && isSenderView) setLoadError('Could not reach the BexSign server at http://localhost:5000.');
+        if (!cancelled && isSenderView) setLoadError(`Could not reach the BexSign server at ${API_ORIGIN}.`);
       });
     return () => {
       cancelled = true;
@@ -238,7 +239,7 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack, mode = '
         showPopupAlert(`Downloaded "${fileName}" with the signatures collected so far (${signedCount} of ${signingRecipients.length} signed). The file is locked and cannot be edited.`, { title: 'In-progress copy downloaded', type: 'success' });
       }
     } catch (err) {
-      showPopupAlert(err instanceof TypeError ? 'Could not reach the BexSign server at http://localhost:5000.' : err.message, { title: 'Download failed', type: 'error' });
+      showPopupAlert(err instanceof TypeError ? `Could not reach the BexSign server at ${API_ORIGIN}.` : err.message, { title: 'Download failed', type: 'error' });
     }
   };
 
@@ -247,7 +248,7 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack, mode = '
       try {
         await printLockedDocument(doc.id, { index: activeDocIndex });
       } catch (err) {
-        showPopupAlert(err instanceof TypeError ? 'Could not reach the BexSign server at http://localhost:5000.' : err.message, { title: 'Print failed', type: 'error' });
+        showPopupAlert(err instanceof TypeError ? `Could not reach the BexSign server at ${API_ORIGIN}.` : err.message, { title: 'Print failed', type: 'error' });
       }
       return;
     }

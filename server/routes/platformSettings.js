@@ -29,7 +29,8 @@ const LANGUAGES = [
   ['en', 'English'], ['hi', 'Hindi'], ['gu', 'Gujarati'], ['es', 'Spanish'], ['fr', 'French'],
   ['de', 'German'], ['pt', 'Portuguese'], ['ar', 'Arabic'], ['ja', 'Japanese'], ['zh', 'Chinese']
 ];
-const SIGNING_ORDERS = ['parallel', 'sequential'];
+// The signing flows a new request can start with (server/utils/signingFlow.js keeps the full catalog)
+const SIGNING_ORDERS = require('../utils/signingFlow').SIGNING_FLOW_MODES.map((m) => m.key);
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const HEX_RE = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i;
@@ -183,6 +184,8 @@ async function loadGeneral() {
 function serializeGeneral(row) {
   const out = {};
   for (const [key, rule] of Object.entries(GENERAL_FIELDS)) out[key] = rule.type === 'bool' ? Boolean(row[key]) : row[key];
+  // Rows saved before the three signing flows kept 'parallel' / 'sequential'
+  out.default_signing_order = require('../utils/signingFlow').normalizeMode(out.default_signing_order);
   return out;
 }
 
@@ -227,7 +230,7 @@ router.get('/general', async (req, res) => {
         dateFormats: DATE_FORMATS,
         timeFormats: TIME_FORMATS,
         languages: LANGUAGES.map(([value, label]) => ({ value, label })),
-        signingOrders: SIGNING_ORDERS
+        signingOrders: require('../utils/signingFlow').SIGNING_FLOW_MODES.map(({ key, label, summary }) => ({ value: key, label, hint: summary }))
       }
     });
   } catch (err) {

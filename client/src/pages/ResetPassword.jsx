@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Eye, EyeOff, CheckCircle2, AlertCircle, Check, KeyRound } from 'lucide-react';
+import { API_BASE, API_ORIGIN } from '../utils/api';
 
-const API_BASE = 'http://localhost:5000/api';
 
 /** Opened from the password reset email: sets a new password with the one-time link. */
 export default function ResetPassword() {
@@ -22,7 +22,7 @@ export default function ResetPassword() {
   const [doneMessage, setDoneMessage] = useState('');
 
   const serverError = (err) => (err instanceof TypeError
-    ? 'Could not reach the BexSign server at http://localhost:5000. Make sure it is running, then try again.'
+    ? `Could not reach the BexSign server at ${API_ORIGIN}. Make sure it is running, then try again.`
     : err.message);
 
   useEffect(() => {

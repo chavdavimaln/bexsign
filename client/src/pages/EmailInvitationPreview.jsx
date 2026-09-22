@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Mail, ArrowLeft, ExternalLink, CheckCircle2, ShieldCheck, Clock } from 'lucide-react';
 import { getDocumentOwner, getLoggedInUser } from '../utils/currentUser';
+import { API_BASE } from '../utils/api';
 
 /**
  * Email Invitation Preview (Page 7)
@@ -27,7 +28,7 @@ export default function EmailInvitationPreview() {
     // Fetch document details or read from localStorage
     const fetchDoc = async () => {
       try {
-        const res = await fetch(`http://localhost:5000/api/documents/${id || 1}`);
+        const res = await fetch(`${API_BASE}/documents/${id || 1}`);
         const data = await res.json();
         if (data && data.document) {
           const d = data.document;

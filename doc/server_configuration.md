@@ -1,5 +1,9 @@
 # Server Configuration & Architecture Guide
 
+> **Current reference:** environment variables are documented in `server/.env.example` and in
+> [21 — Live Server Deployment](21-live-server-deployment.md); the code layout is in
+> [02 — Project Structure](02-project-structure.md). This page keeps the architectural background.
+
 This document outlines the Express server setup, environment configuration, database connection pool, security settings, and middleware for **BexSign**.
 
 ---

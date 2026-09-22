@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Download, ChevronDown, Check, Layers } from 'lucide-react';
+import { API_BASE } from '../utils/api';
 
 export default function FormDataModal({ doc, onClose }) {
   const [recipientsData, setRecipientsData] = useState([]);
@@ -12,7 +13,7 @@ export default function FormDataModal({ doc, onClose }) {
     const fetchFormData = async () => {
       try {
         if (doc?.id) {
-          const res = await fetch(`http://localhost:5000/api/documents/${doc.id}/form-data`);
+          const res = await fetch(`${API_BASE}/documents/${doc.id}/form-data`);
           const json = await res.json();
           if (json.success && json.recipients && json.recipients.length > 0) {
             setRecipientsData(json.recipients);

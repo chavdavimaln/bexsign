@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { getLoggedInUser } from '../utils/currentUser';
 import { TEMPLATE_LIBRARY, TEMPLATE_CATEGORIES, TEMPLATE_KINDS, searchTemplates } from '../utils/templateLibrary';
+import { API_ORIGIN } from '../utils/api';
 import {
   API_BASE,
   CategoryIcon,
@@ -106,7 +107,7 @@ export default function Templates() {
       .catch((err) => setSaved({
         status: 'error',
         items: [],
-        error: err instanceof TypeError ? 'Could not reach the BexSign server at http://localhost:5000.' : err.message
+        error: err instanceof TypeError ? `Could not reach the BexSign server at ${API_ORIGIN}.` : err.message
       }));
   };
 
@@ -267,7 +268,7 @@ export default function Templates() {
       if (tab !== 'saved') switchTab('saved');
       loadSaved();
     } catch (err) {
-      setFormError(err instanceof TypeError ? 'Could not reach the BexSign server at http://localhost:5000.' : err.message);
+      setFormError(err instanceof TypeError ? `Could not reach the BexSign server at ${API_ORIGIN}.` : err.message);
     } finally {
       setFormBusy(false);
     }
@@ -767,7 +768,7 @@ export default function Templates() {
               <div className="max-w-3xl mx-auto bg-white border border-slate-200 rounded-md shadow-sm px-5 py-6 sm:px-12 sm:py-10">
                 <TemplateDocument content={previewTemplate.content} />
                 {previewTemplate.filePath && (
-                  <a href={`http://localhost:5000${previewTemplate.filePath}`} target="_blank" rel="noreferrer" className="mt-4 inline-flex items-center gap-1.5 text-xs font-bold text-[#007355] hover:underline">
+                  <a href={`${API_ORIGIN}${previewTemplate.filePath}`} target="_blank" rel="noreferrer" className="mt-4 inline-flex items-center gap-1.5 text-xs font-bold text-[#007355] hover:underline">
                     <FileText size={14} /> Open the uploaded file
                   </a>
                 )}

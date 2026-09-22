@@ -8,11 +8,13 @@ import CompletedDocumentViewer from '../components/CompletedDocumentViewer';
 import CompletionCertificateModal from '../components/CompletionCertificateModal';
 import FormDataModal from '../components/FormDataModal';
 import DocumentVersionsModal from '../components/DocumentVersionsModal';
+import TemplatesUsedModal from '../components/documents/TemplatesUsedModal';
 import BexDocumentSheet from '../components/BexDocumentSheet';
 import { getDefaultDocContent } from '../utils/documentDefaults';
 import { getDocumentOwner } from '../utils/currentUser';
 import EditCopyModal from '../components/EditCopyModal';
 import { downloadAllSignedDocuments, printAllLockedDocuments } from '../utils/signedPdf';
+import { API_BASE, API_ORIGIN } from '../utils/api';
 import {
   FileText,
   Plus,
@@ -87,6 +89,15 @@ export default function DocumentsList() {
     return INITIAL_COLUMNS;
   });
 
+  /** Templates a request was built from, as a list of names (empty when none was used). */
+  const templatesOf = (doc) => {
+    const raw = doc.template_used || doc.templates || doc.template_name || '';
+    return String(raw)
+      .split(/[,;|]/)
+      .map((name) => name.trim())
+      .filter(Boolean);
+  };
+
   const isColVisible = (colId) => {
     const col = tableColumns.find((c) => c.id === colId);
     return col ? col.visible !== false : false;
@@ -117,6 +128,8 @@ export default function DocumentsList() {
 
   // Active Modals State
   const [activeModal, setActiveModal] = useState(null);
+  // Which request's templates are being looked at: { name, templates: [] }
+  const [templatesModal, setTemplatesModal] = useState(null);
   // Sent/completed request whose "Edit" asks to create an editable copy
   const [editCopyDoc, setEditCopyDoc] = useState(null);
   const [recallReason, setRecallReason] = useState('');
@@ -183,8 +196,8 @@ export default function DocumentsList() {
     setLoading(true);
     try {
       const url = isTrashView
-        ? 'http://localhost:5000/api/trash'
-        : 'http://localhost:5000/api/documents';
+        ? `${API_BASE}/trash`
+        : `${API_BASE}/documents`;
       const response = await fetch(url);
       const data = await response.json();
       if (data.success && Array.isArray(data.documents)) {
@@ -284,7 +297,7 @@ export default function DocumentsList() {
         const names = await downloadAllSignedDocuments(doc.id);
         handleActionToast(`Downloaded ${names.length === 1 ? `"${names[0]}"` : `${names.length} documents`} (locked PDF, cannot be edited).`);
       } catch (err) {
-        showPopupAlert(err instanceof TypeError ? 'Could not reach the BexSign server at http://localhost:5000.' : err.message, { title: 'Download failed', type: 'error' });
+        showPopupAlert(err instanceof TypeError ? `Could not reach the BexSign server at ${API_ORIGIN}.` : err.message, { title: 'Download failed', type: 'error' });
       }
       return;
     }
@@ -357,7 +370,7 @@ export default function DocumentsList() {
         handleActionToast('Preparing the document for printing...');
         await printAllLockedDocuments(doc.id);
       } catch (err) {
-        showPopupAlert(err instanceof TypeError ? 'Could not reach the BexSign server at http://localhost:5000.' : err.message, { title: 'Print failed', type: 'error' });
+        showPopupAlert(err instanceof TypeError ? `Could not reach the BexSign server at ${API_ORIGIN}.` : err.message, { title: 'Print failed', type: 'error' });
       }
       return;
     }
@@ -472,7 +485,7 @@ export default function DocumentsList() {
     handleActionToast(`Moved document "${docName}" to trash.`);
 
     try {
-      await fetch(`http://localhost:5000/api/trash/move/${docToDelete.id}`, {
+      await fetch(`${API_BASE}/trash/move/${docToDelete.id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       });
@@ -492,7 +505,7 @@ export default function DocumentsList() {
     handleActionToast(`Document "${docName}" permanently deleted.`);
 
     try {
-      await fetch(`http://localhost:5000/api/trash/delete/${docToDelete.id}`, {
+      await fetch(`${API_BASE}/trash/delete/${docToDelete.id}`, {
         method: 'DELETE'
       });
     } catch (e) {
@@ -507,7 +520,7 @@ export default function DocumentsList() {
     handleActionToast(`Document "${doc.document_name || doc.name}" restored to Drafts.`);
 
     try {
-      await fetch(`http://localhost:5000/api/trash/restore/${doc.id}`, {
+      await fetch(`${API_BASE}/trash/restore/${doc.id}`, {
         method: 'POST'
       });
     } catch (e) {
@@ -518,7 +531,7 @@ export default function DocumentsList() {
   const executeRecallDoc = async () => {
     if (selectedDoc) {
       try {
-        await fetch(`http://localhost:5000/api/documents/recall/${selectedDoc.id}`, {
+        await fetch(`${API_BASE}/documents/recall/${selectedDoc.id}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ reason: recallReason })
@@ -532,7 +545,7 @@ export default function DocumentsList() {
   const executeExtendDoc = async () => {
     if (selectedDoc) {
       try {
-        await fetch(`http://localhost:5000/api/documents/extend/${selectedDoc.id}`, {
+        await fetch(`${API_BASE}/documents/extend/${selectedDoc.id}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ newExpiryDate })
@@ -545,7 +558,7 @@ export default function DocumentsList() {
   const executeRemindDoc = async () => {
     if (selectedDoc) {
       try {
-        await fetch(`http://localhost:5000/api/documents/remind/${selectedDoc.id}`, {
+        await fetch(`${API_BASE}/documents/remind/${selectedDoc.id}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' }
         });
@@ -557,7 +570,7 @@ export default function DocumentsList() {
   const executeSaveReminderSettings = async () => {
     if (selectedDoc) {
       try {
-        await fetch(`http://localhost:5000/api/documents/reminder-settings/${selectedDoc.id}`, {
+        await fetch(`${API_BASE}/documents/reminder-settings/${selectedDoc.id}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ reminderFrequencyDays: reminderDays, autoReminder: autoReminderEnabled })
@@ -570,7 +583,7 @@ export default function DocumentsList() {
   const executeUploadSignedDoc = async () => {
     if (selectedDoc) {
       try {
-        await fetch(`http://localhost:5000/api/documents/upload-signed/${selectedDoc.id}`, {
+        await fetch(`${API_BASE}/documents/upload-signed/${selectedDoc.id}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ signedFileCertify })
@@ -583,7 +596,7 @@ export default function DocumentsList() {
 
   const filteredDocs = documents.filter((doc) => {
     const docName = (doc.document_name || doc.name || '').toLowerCase();
-    const docFolder = (doc.folder || '-').toLowerCase();
+    const docFolder = (doc.folder || doc.folder_name || '-').toLowerCase();
     const docType = (doc.type || 'Document').toLowerCase();
     const docOwner = getDocumentOwner(doc).name.toLowerCase();
     const docRecipient = (doc.recipient_email || doc.recipient || '').toLowerCase();
@@ -676,7 +689,7 @@ export default function DocumentsList() {
         handleActionToast(`Permanently deleted ${count} document(s).`);
 
         try {
-          await fetch('http://localhost:5000/api/trash/bulk-delete', {
+          await fetch(`${API_BASE}/trash/bulk-delete`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ids: idsToDelete })
@@ -692,7 +705,7 @@ export default function DocumentsList() {
         handleActionToast(`Moved ${count} document(s) to trash.`);
 
         try {
-          await fetch('http://localhost:5000/api/trash/bulk-move', {
+          await fetch(`${API_BASE}/trash/bulk-move`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ids: idsToDelete })
@@ -1137,7 +1150,7 @@ export default function DocumentsList() {
                     {/* Folder Name */}
                     {isColVisible('folder') && (
                       <td className="p-2.5 w-[7%] text-slate-500 text-center align-middle break-words">
-                        {doc.folder || '-'}
+                        {doc.folder || doc.folder_name || <span className="text-slate-400">General</span>}
                       </td>
                     )}
 
@@ -1172,26 +1185,54 @@ export default function DocumentsList() {
                       </td>
                     )}
 
-                    {/* SignForm Name */}
+                    {/* Sign form: where the request came from */}
                     {isColVisible('signform') && (
                       <td className="p-2.5 w-[8%] text-slate-500 text-center align-middle break-words">
-                        {doc.signform || '-'}
+                        {doc.self_sign_id
+                          ? <span className="bg-violet-100 text-violet-700 text-[10px] px-2 py-0.5 rounded font-bold uppercase">Sign yourself</span>
+                          : (doc.signform || <span className="text-slate-400">Send for signatures</span>)}
                       </td>
                     )}
 
-                    {/* Templates Used */}
+                    {/* Templates the request was built from: none, or the list behind the eye */}
                     {isColVisible('templates') && (
-                      <td className="p-2.5 w-[7%] text-slate-500 text-center align-middle break-words">
-                        {doc.templates || '-'}
+                      <td className="p-2.5 w-[7%] text-slate-500 text-center align-middle">
+                        {templatesOf(doc).length > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => setTemplatesModal({ name: doc.document_name || doc.name, templates: templatesOf(doc) })}
+                            title={`Templates used: ${templatesOf(doc).join(', ')}`}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-[#007355] border border-emerald-200 text-[10px] font-bold hover:bg-emerald-100 transition cursor-pointer"
+                          >
+                            <Eye size={12} />
+                            {templatesOf(doc).length === 1 ? '1 template' : `${templatesOf(doc).length} templates`}
+                          </button>
+                        ) : (
+                          <span className="text-slate-400 text-[11px] font-semibold">None</span>
+                        )}
                       </td>
                     )}
 
-                    {/* Status Pill Badge */}
+                    {/* Status: the request's state, and whether it still waits to be confirmed */}
                     {isColVisible('status') && (
-                      <td className="p-2.5 w-[10%] whitespace-nowrap align-middle">
+                      <td className="p-2.5 w-[12%] align-middle">
+                        <div className="flex flex-col items-start gap-1">
                         {docStatus === 'COMPLETED' && (
                           <span className="bg-[#007355] text-white text-[10px] px-2 py-0.5 rounded font-black tracking-wider uppercase inline-block">
                             COMPLETED
+                          </span>
+                        )}
+                        {docStatus === 'COMPLETED' && doc.verification_status === 'pending' && (
+                          <span
+                            className="bg-amber-100 text-amber-800 border border-amber-200 text-[10px] px-2 py-0.5 rounded font-black tracking-wider uppercase inline-block whitespace-nowrap"
+                            title="Everyone has signed. The documents still have to be verified and confirmed."
+                          >
+                            Pending confirmation
+                          </span>
+                        )}
+                        {docStatus === 'COMPLETED' && doc.verification_status === 'rejected' && (
+                          <span className="bg-rose-100 text-rose-700 border border-rose-200 text-[10px] px-2 py-0.5 rounded font-black tracking-wider uppercase inline-block whitespace-nowrap">
+                            Confirmation rejected
                           </span>
                         )}
                         {(docStatus === 'IN PROGRESS' || docStatus === 'IN PROCESS') && (
@@ -1214,6 +1255,7 @@ export default function DocumentsList() {
                             {docStatus}
                           </span>
                         )}
+                        </div>
                       </td>
                     )}
 
@@ -1670,6 +1712,14 @@ export default function DocumentsList() {
             </div>
           </div>
         </div>
+      )}
+
+      {templatesModal && (
+        <TemplatesUsedModal
+          documentName={templatesModal.name}
+          templates={templatesModal.templates}
+          onClose={() => setTemplatesModal(null)}
+        />
       )}
 
       {/* 12. Legal Disclosure Modal */}

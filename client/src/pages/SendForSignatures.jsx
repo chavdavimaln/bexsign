@@ -32,9 +32,10 @@ import {
 import { showPopupAlert } from '../components/GlobalAlertModal';
 import { getDefaultDocContent, DEFAULT_DOCUMENT_TEXTS } from '../utils/documentDefaults';
 import TemplatePickerModal from '../components/templates/TemplatePickerModal';
+import { apiFetch } from '../utils/api';
 import { templatesToDocuments, countTemplateUse, countPlaceholders } from '../components/templates/templateUi';
+import { API_BASE } from '../utils/api';
 
-const API_BASE = 'http://localhost:5000/api';
 // Zoho Sign limits
 const MAX_RECIPIENTS = 25;
 const MAX_DOCUMENTS = 40;
@@ -124,13 +125,30 @@ function cleanRecipientList(list, { validOnly = false } = {}) {
     }));
 }
 
+/**
+ * How the request is emailed and what each recipient may see (server: document_signing_flow).
+ * "Send in order" plus "Show completed fields" give the three flows the server supports.
+ */
+const SIGNING_MODES = [
+  { key: 'sequential_shared', inOrder: true, showPreviousFields: true },
+  { key: 'sequential_private', inOrder: true, showPreviousFields: false },
+  { key: 'parallel_private', inOrder: false, showPreviousFields: false }
+];
+const LEGACY_SIGNING_MODES = { sequential: 'sequential_shared', parallel: 'parallel_private' };
+
+function signingModeOf(state) {
+  if (!state.sendInOrder) return 'parallel_private';
+  return state.showPreviousFields ? 'sequential_shared' : 'sequential_private';
+}
+
 function buildSnapshotKey(state) {
   return JSON.stringify({
     docs: (state.documentsList || []).map((d) => [d.name, d.documentText, d.fileId || null, d.file ? d.uploadKey : null]),
     recipients: (state.recipients || []).map((r, idx) => [r.email, r.name, r.role, r.deliveryMode, r.privateNote, stepOf(r, idx)]),
     settings: [
-      state.sendInOrder, state.daysToComplete, state.agreementValidUntil, state.documentType, state.folder,
-      state.description, state.allowComments, state.autoReminders, state.reminderEveryDays, state.noteToAll
+      state.sendInOrder, state.showPreviousFields, state.daysToComplete, state.agreementValidUntil, state.documentType, state.folder,
+      state.description, state.allowComments, state.autoReminders, state.reminderEveryDays, state.noteToAll,
+      state.requireVerification
     ]
   });
 }
@@ -215,7 +233,9 @@ export default function SendForSignatures() {
 
   // Recipient State
   // Everyone is emailed at once unless the sender chooses "Send in order"
-  const [sendInOrder, setSendInOrder] = useState(false);
+  // Signing flow (document_signing_flow): in order + completed fields shown is the default for a new request
+  const [sendInOrder, setSendInOrder] = useState(true);
+  const [showPreviousFields, setShowPreviousFields] = useState(true);
   const [recipients, setRecipients] = useState(() => [
     {
       id: 1,
@@ -244,6 +264,8 @@ export default function SendForSignatures() {
   const [autoReminders, setAutoReminders] = useState(true);
   const [reminderEveryDays, setReminderEveryDays] = useState('5');
   const [noteToAll, setNoteToAll] = useState('');
+  // Final step after the last signature: a person verifies the signed PDFs and confirms them (on by default)
+  const [requireVerification, setRequireVerification] = useState(true);
 
   // Draft State (Zoho Sign: a request stays a Draft until it is sent or discarded)
   const [requestStatus, setRequestStatus] = useState(id ? null : 'Draft');
@@ -262,8 +284,8 @@ export default function SendForSignatures() {
 
   const isDraftRequest = requestStatus === 'Draft';
   latestRef.current = {
-    documentsList, recipients, sendInOrder, daysToComplete, agreementValidUntil, documentType, folder,
-    description, allowComments, autoReminders, reminderEveryDays, noteToAll, requestStatus
+    documentsList, recipients, sendInOrder, showPreviousFields, daysToComplete, agreementValidUntil, documentType, folder,
+    description, allowComments, autoReminders, reminderEveryDays, noteToAll, requireVerification, requestStatus
   };
   const draftSnapshotKey = buildSnapshotKey(latestRef.current);
 
@@ -290,6 +312,45 @@ export default function SendForSignatures() {
     }
   }, [id]);
 
+  // New requests start from the organization's defaults (Settings > General). A field the user has already
+  // changed keeps their value, and applying the defaults does not auto-save an empty draft.
+  useEffect(() => {
+    if (id) return undefined;
+    let cancelled = false;
+    apiFetch('/platform-settings/general')
+      .then((data) => {
+        const s = data?.settings;
+        if (cancelled || !s) return;
+        const current = latestRef.current;
+        const next = {};
+        const days = Number(s.default_expiry_days);
+        const every = Number(s.reminder_frequency_days);
+        if (days > 0 && current.daysToComplete === '15') next.daysToComplete = String(days);
+        if (every > 0 && current.reminderEveryDays === '5') next.reminderEveryDays = String(every);
+        if (typeof s.auto_reminders === 'boolean' && current.autoReminders === true) next.autoReminders = s.auto_reminders;
+        if (s.default_signing_order && current.sendInOrder === true && current.showPreviousFields === true) {
+          const mode = SIGNING_MODES.find((m) => m.key === s.default_signing_order)
+            || SIGNING_MODES.find((m) => m.key === LEGACY_SIGNING_MODES[s.default_signing_order]);
+          if (mode) {
+            next.sendInOrder = mode.inOrder;
+            next.showPreviousFields = mode.showPreviousFields;
+          }
+        }
+        const changed = Object.keys(next).filter((key) => next[key] !== current[key]);
+        if (!changed.length) return;
+        if (buildSnapshotKey(current) === lastSavedKeyRef.current) skipNextAutosaveRef.current = true;
+        if ('daysToComplete' in next) setDaysToComplete(next.daysToComplete);
+        if ('reminderEveryDays' in next) setReminderEveryDays(next.reminderEveryDays);
+        if ('autoReminders' in next) setAutoReminders(next.autoReminders);
+        if ('sendInOrder' in next) setSendInOrder(next.sendInOrder);
+        if ('showPreviousFields' in next) setShowPreviousFields(next.showPreviousFields);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
   // Close dropdown and card 3-dots menu on outside click
   useEffect(() => {
     function handleClickOutside(event) {
@@ -306,7 +367,11 @@ export default function SendForSignatures() {
 
   const fetchDraftData = async () => {
     try {
-      const res = await fetch(`${API_BASE}/documents/${id}`);
+      // The confirmation step is stored by its own module (document_verification), not on the documents row
+      const [res, savedVerification] = await Promise.all([
+        fetch(`${API_BASE}/documents/${id}`),
+        apiFetch(`/verification/${id}`).catch(() => null)
+      ]);
       const data = await res.json();
       if (data.success && data.document) {
         const doc = data.document;
@@ -349,7 +414,13 @@ export default function SendForSignatures() {
         localStorage.setItem(`bexsign_doc_${id}_documents`, JSON.stringify(loadedDocs));
 
         if (doc.custom_message) setNoteToAll(doc.custom_message);
-        if (doc.signing_order) setSendInOrder(doc.signing_order === 'sequential');
+        const savedMode = doc.signing_mode || doc.signing_flow?.mode
+          || LEGACY_SIGNING_MODES[doc.signing_order] || '';
+        const savedFlow = SIGNING_MODES.find((m) => m.key === savedMode);
+        if (savedFlow) {
+          setSendInOrder(savedFlow.inOrder);
+          setShowPreviousFields(doc.signing_flow ? Boolean(doc.signing_flow.showPreviousFields) : savedFlow.showPreviousFields);
+        }
         if (doc.expiration_days) setDaysToComplete(String(doc.expiration_days));
         if (doc.reminder_days) setReminderEveryDays(String(doc.reminder_days));
         if (doc.document_type) setDocumentType(doc.document_type);
@@ -358,6 +429,9 @@ export default function SendForSignatures() {
         if (doc.folder_name) setFolder(doc.folder_name);
         if (doc.auto_reminders !== undefined && doc.auto_reminders !== null) setAutoReminders(Boolean(doc.auto_reminders));
         if (doc.allow_comments !== undefined && doc.allow_comments !== null) setAllowComments(Boolean(doc.allow_comments));
+        if (savedVerification?.verification && savedVerification.verification.isDefault === false) {
+          setRequireVerification(Boolean(savedVerification.verification.required));
+        }
 
         const realRecipients = (doc.recipients || []).filter((r) => !r.isFallback);
         if (realRecipients.length > 0) {
@@ -427,12 +501,14 @@ export default function SendForSignatures() {
     formData.append('status', status);
     formData.append('folderName', snapshot.folder || 'None');
     formData.append('signingOrder', snapshot.sendInOrder ? 'sequential' : 'parallel');
+    formData.append('signingMode', signingModeOf(snapshot));
     formData.append('daysToComplete', snapshot.daysToComplete);
     formData.append('agreementValidUntil', snapshot.agreementValidUntil);
     formData.append('documentType', snapshot.documentType);
     formData.append('description', snapshot.description);
     formData.append('allowComments', snapshot.allowComments ? '1' : '0');
     formData.append('autoReminders', snapshot.autoReminders ? '1' : '0');
+    formData.append('requireVerification', snapshot.requireVerification ? '1' : '0');
     formData.append('reminderDays', snapshot.reminderEveryDays);
     formData.append('noteToAll', snapshot.noteToAll);
     formData.append('recipients', JSON.stringify(cleanRecipientList(snapshot.recipients, { validOnly: true })));
@@ -1597,6 +1673,21 @@ export default function SendForSignatures() {
               <span>Send in order</span>
             </label>
 
+            {sendInOrder && (
+              <label
+                className="flex items-center gap-2 cursor-pointer select-none font-medium text-slate-700"
+                title="Each recipient opens the document with the signature, stamp, date and other fields the previous recipients completed"
+              >
+                <input
+                  type="checkbox"
+                  checked={showPreviousFields}
+                  onChange={(e) => setShowPreviousFields(e.target.checked)}
+                  className="accent-[#007355] rounded h-3.5 w-3.5"
+                />
+                <span>Show completed fields to the next recipient</span>
+              </label>
+            )}
+
             <button
               type="button"
               onClick={handleAddMe}
@@ -1795,11 +1886,14 @@ export default function SendForSignatures() {
                   </p>
                 )}
               </div>
-              {sendInOrder && (
-                <p className="text-[11px] text-slate-400 pl-6">
-                  Drag recipients or change their number to set the order. Give recipients the same number to email them at the same time.
-                </p>
-              )}
+              <p className="text-[11px] text-slate-400 pl-6">
+                {sendInOrder
+                  ? 'Each recipient is emailed once the previous one has signed. Drag recipients or change their number to set the order; recipients with the same number are emailed together. '
+                  : 'Everyone can sign at the same time, in any order. '}
+                {sendInOrder && showPreviousFields
+                  ? 'The next recipient opens the document with the fields the earlier recipients completed.'
+                  : 'Recipients only see their own fields.'}
+              </p>
             </div>
           )}
         </div>
@@ -1893,7 +1987,7 @@ export default function SendForSignatures() {
                 />
               </div>
 
-              {/* Checkboxes: Allow comments & Automatic reminders */}
+              {/* Checkboxes: Allow comments, Verify & confirm, Automatic reminders */}
               <div className="pt-2 space-y-3">
                 <label className="flex items-center gap-2 cursor-pointer font-medium text-slate-700">
                   <input
@@ -1904,6 +1998,23 @@ export default function SendForSignatures() {
                   />
                   <span>Allow recipient comments</span>
                 </label>
+
+                {/* Final check: the completed PDFs are verified against their fingerprints and confirmed by a person */}
+                <div>
+                  <label className="flex items-start gap-2 cursor-pointer font-medium text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={requireVerification}
+                      onChange={(e) => setRequireVerification(e.target.checked)}
+                      className="accent-[#007355] rounded h-3.5 w-3.5 mt-0.5 shrink-0"
+                    />
+                    <span>Verify and confirm the document when everyone has signed</span>
+                  </label>
+                  <p className="text-[11px] text-slate-400 pl-5.5 mt-0.5 leading-tight">
+                    The request waits for you to check the signed PDFs and confirm them. Clear this box if the document is
+                    finished the moment the last recipient signs.
+                  </p>
+                </div>
 
                 <div>
                   <label className="flex items-center gap-2 cursor-pointer font-medium text-slate-700">

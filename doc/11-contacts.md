@@ -1,27 +1,24 @@
-# 11 — Contacts Management
+# 11 — Contacts
 
-Manage address book contacts (Name, Email, Company, Phone) for autocomplete during document dispatch.
+An address book of people you send documents to, so recipients can be filled in quickly.
+Server: `server/contacts.js` (mounted at `/api/contacts`). Table: `contacts`
+(`user_id, name, email, company, phone, last_used, created_at`).
 
----
+## Current state
 
-# 12 — Signatures Management
+| | |
+|---|---|
+| `GET /api/contacts` | the signed-in user's contacts |
+| `POST /api/contacts` | add a contact |
 
-Store pre-saved default signatures (Type, Draw, Upload) for quick insertion into self-signed documents.
+Both require a valid token. Editing and deleting contacts, importing a list, and autocomplete inside
+**Send for signatures** are **not implemented yet** — the Contacts screen in Settings is still a placeholder.
+Recipients are typed in by hand, or added in bulk from a CSV with "Add bulk recipients".
 
----
+## If you extend it
 
-# 13 — Notifications System
-
-Configure email and in-app alerts for document status updates, viewing notifications, reminders, and expiration notices.
-
----
-
-# 14 — Integrations
-
-Connect cloud storage (Google Drive, OneDrive, Dropbox), CRMs, webhooks, and SMTP servers.
-
----
-
-# 15 — Developer API
-
-Manage API Keys, webhook endpoints, and view request/response logs for REST integration.
+- Keep rows scoped to `user_id`; contacts are personal, not organisation-wide, unless you decide otherwise and add a
+  permission for it.
+- Update `last_used` when a contact is used in a request so the picker can sort by recency.
+- Follow the module conventions in [02 — Project Structure](02-project-structure.md): an idempotent schema routine,
+  `requirePermission` where needed, and `apiFetch` on the client.

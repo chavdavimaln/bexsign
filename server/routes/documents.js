@@ -26,6 +26,9 @@ const { isUsableSignature } = require('../utils/signatureValidation');
 const { sha256, findFingerprint, recordFingerprint } = require('../utils/pdfFingerprints');
 const { protectWithPassword } = require('../utils/pdfLock');
 const { getCompletedPdfFiles, buildProgressCopy } = require('../utils/requestCompletion');
+const { recordValidityCheck, verifyPdfBuffer } = require('../utils/validityLog');
+const signingFlow = require('../utils/signingFlow');
+const documentVerification = require('../utils/documentVerification');
 
 const EMPTY_SIGNATURE_ERROR = 'The signature is empty. Draw, type or upload a signature before saving.';
 
@@ -76,13 +79,67 @@ function buildRequestSettings(body = {}) {
     if (body.noteToAll !== undefined) settings.custom_message = body.noteToAll || null;
     if (body.daysToComplete !== undefined && body.daysToComplete !== '') settings.expiration_days = parseInt(body.daysToComplete) || 15;
     if (body.reminderDays !== undefined && body.reminderDays !== '') settings.reminder_days = parseInt(body.reminderDays) || 5;
-    if (body.signingOrder) settings.signing_order = body.signingOrder === 'sequential' ? 'sequential' : 'parallel';
+    if (body.signingMode || body.signingOrder) {
+        settings.signing_order = signingFlow.describeMode(signingFlow.normalizeMode(body.signingMode || body.signingOrder)).order;
+    }
     if (body.documentType !== undefined) settings.document_type = body.documentType || null;
     if (body.description !== undefined) settings.description = body.description || null;
     if (body.agreementValidUntil !== undefined) settings.validity = body.agreementValidUntil || null;
     if (body.autoReminders !== undefined) settings.auto_reminders = TRUE_VALUES.includes(body.autoReminders) ? 1 : 0;
     if (body.allowComments !== undefined) settings.allow_comments = TRUE_VALUES.includes(body.allowComments) ? 1 : 0;
     return settings;
+}
+
+/**
+ * A signature is evidence: once a recipient has signed, the documents and the fields of that request are frozen.
+ * Editing is done on a copy ("Edit as new"), or - when the sender deliberately restarts - by clearing every
+ * signature first, so nobody can end up signed to text that changed afterwards.
+ *
+ * Returns { blocked: true } when the caller should be refused.
+ */
+async function guardSignedContent(documentId, body = {}, req = null) {
+    const touchesContent = body.fields !== undefined || body.fieldsByDoc !== undefined
+        || body.documents !== undefined || body.documentsMeta !== undefined;
+    if (!touchesContent) return { blocked: false };
+
+    const [[counted]] = await db.query(
+        "SELECT COUNT(*) AS signed FROM document_recipients WHERE document_id = ? AND status = 'signed'",
+        [documentId]
+    );
+    if (!Number(counted?.signed)) return { blocked: false };
+
+    const restart = body.restartSigning === true || body.restartSigning === 'true' || body.restartSigning === '1';
+    if (!restart) {
+        return {
+            blocked: true,
+            error: 'This request already carries a signature, so its documents and fields cannot be changed. '
+                + 'Use "Edit as new" to work on a copy, or restart the signing round to collect every signature again.'
+        };
+    }
+
+    // Deliberate restart: the collected signatures are cleared and everyone signs the new version
+    await requestHelpers.restartSigningRound(documentId);
+    await requestHelpers.logRequestEvent(documentId, {
+        description: 'Document edited after signing: every signature was cleared and all recipients must sign the new version',
+        req
+    });
+    return { blocked: false, restarted: true };
+}
+
+/** Saves the sender's "verify and confirm when everyone has signed" choice in its own table. */
+async function applyVerificationSetting(documentId, body = {}, req = null) {
+    if (body.requireVerification === undefined) return;
+    await documentVerification.saveVerificationSetting(documentId, body.requireVerification, {
+        userId: req?.user?.id || null,
+        req
+    });
+}
+
+/** Saves the signing flow (how recipients are emailed and what they may see) in its own table. */
+async function applySigningFlow(documentId, body = {}, req = null) {
+    const chosen = body.signingMode || body.signingOrder;
+    if (!chosen) return;
+    await signingFlow.saveSigningFlow(documentId, chosen, { userId: req?.user?.id || null });
 }
 
 async function applyRequestSettings(documentId, settings) {
@@ -101,17 +158,26 @@ router.get('/', async (req, res) => {
     const { status, folder, userId } = req.query;
     try {
         let query = `
-            SELECT d.*, 
-                   di.bexsign_doc_id, 
-                   di.signer_name, 
-                   di.signer_email, 
-                   di.signature_status, 
+            SELECT d.*,
+                   di.bexsign_doc_id,
+                   di.signer_name,
+                   di.signer_email,
+                   di.signature_status,
                    di.signature_image,
                    di.signature_style,
                    di.signed_at,
+                   -- Shown in the list: whether the completed request still waits to be verified and confirmed,
+                   -- how many documents it holds, and whether it came from a self-sign flow
+                   dv.status AS verification_status,
+                   dv.required AS verification_required,
+                   (SELECT COUNT(*) FROM document_files df WHERE df.document_id = d.id) AS file_count,
+                   ss.id AS self_sign_id,
+                   ss.stage AS self_sign_stage,
                    ${requestHelpers.OWNER_COLUMNS}
             FROM documents d
             LEFT JOIN document_identifiers di ON d.id = di.document_id
+            LEFT JOIN document_verification dv ON dv.document_id = d.id
+            LEFT JOIN self_sign_documents ss ON ss.document_id = d.id
             ${requestHelpers.OWNER_JOIN}
             WHERE 1=1
         `;
@@ -181,6 +247,11 @@ router.post('/upload', uploadRequestFiles, async (req, res) => {
         const isNew = targetId === 0;
 
         if (!isNew) {
+            const guard = await guardSignedContent(targetId, req.body, req);
+            if (guard.blocked) return res.status(409).json({ success: false, error: guard.error, signatureLocked: true });
+        }
+
+        if (!isNew) {
             let updateSql = 'UPDATE documents SET document_name = ?, folder_name = ?, status = ?';
             const updateParams = [docName, folder, docStatus];
             if (recipEmail) {
@@ -204,6 +275,8 @@ router.post('/upload', uploadRequestFiles, async (req, res) => {
         }
 
         await applyRequestSettings(targetId, buildRequestSettings(req.body));
+        await applySigningFlow(targetId, req.body, req);
+        await applyVerificationSetting(targetId, req.body, req);
 
         const savedRecipients = Array.isArray(recipientList)
             ? await requestHelpers.saveRecipients(targetId, recipientList)
@@ -274,8 +347,28 @@ router.post('/verify', (req, res, next) => {
         const hash = sha256(req.file.buffer);
         const match = await findFingerprint(hash);
         if (!match) {
+            // Log the check (modified / unknown / not a PDF) for Settings > Document Validity
+            const outcome = await verifyPdfBuffer(req.file.buffer, req.file.originalname).catch(() => null);
+            await recordValidityCheck({
+                req,
+                documentId: outcome && outcome.matchType !== 'name' ? outcome.match?.document_id || null : null,
+                fileName: req.file.originalname,
+                sha256: hash,
+                result: outcome?.result || 'unknown',
+                message: outcome?.message || 'Not recognized: no PDF issued by BexSign has this fingerprint.',
+                source: 'upload'
+            });
             return res.json({ success: true, verified: false, sha256: hash, fileName: req.file.originalname });
         }
+        await recordValidityCheck({
+            req,
+            documentId: match.document_id,
+            fileName: req.file.originalname,
+            sha256: hash,
+            result: 'valid',
+            message: 'Authentic: unchanged copy of a PDF issued by BexSign.',
+            source: 'upload'
+        });
         const [docs] = await db.query(
             `SELECT d.id, d.document_name, d.status, d.sent_at, d.completed_at, di.bexsign_doc_id
              FROM documents d LEFT JOIN document_identifiers di ON di.document_id = d.id
@@ -560,14 +653,25 @@ router.get('/:id', async (req, res) => {
             if (isCompleted) {
                 doc.fields = allFields;
             } else if (viewerEmail) {
-                // Zoho Sign privacy: while the request is in progress a recipient only receives their own fields
+                // While the request is in progress a recipient receives their own fields. With "In order, showing
+                // completed fields" they also receive, read-only, what the recipients before them filled in.
                 const signingRecipients = recRows.filter((r) => requestHelpers.isSigningRole(r.role));
                 const viewer = recRows.find((r) => String(r.email || '').trim().toLowerCase() === viewerEmail);
-                doc.fields = allFields.filter((f) => {
-                    if (viewer) return requestHelpers.fieldBelongsToRecipient(f, viewer, signingRecipients);
-                    const ownerEmail = String(f.assigneeEmail || '').trim().toLowerCase();
-                    return !ownerEmail || ownerEmail === viewerEmail;
-                });
+                const viewerFlow = await signingFlow.getSigningFlow(id, doc);
+                doc.fields = allFields.reduce((list, f) => {
+                    const isMine = viewer
+                        ? requestHelpers.fieldBelongsToRecipient(f, viewer, signingRecipients)
+                        : (() => {
+                            const ownerEmail = String(f.assigneeEmail || '').trim().toLowerCase();
+                            return !ownerEmail || ownerEmail === viewerEmail;
+                        })();
+                    if (isMine) {
+                        list.push(f);
+                    } else if (viewerFlow.showPreviousFields && f.signedAt) {
+                        list.push({ ...f, isAssignedToOther: true, completedByOther: true, readOnly: true });
+                    }
+                    return list;
+                }, []);
             } else if (req.query.view === 'sender') {
                 // Sender view: every recipient's fields with the signatures collected so far
                 doc.fields = allFields;
@@ -583,6 +687,12 @@ router.get('/:id', async (req, res) => {
             doc.sender = await requestHelpers.getRequestSender(doc);
             doc.expires_on = requestHelpers.getRequestExpiry(doc);
         } catch (eSender) {}
+
+        // How this request is sent and what each recipient may see (document_signing_flow)
+        try {
+            doc.signing_flow = await signingFlow.getSigningFlow(doc.id, doc);
+            doc.signing_mode = doc.signing_flow.mode;
+        } catch (eFlow) {}
 
         res.json({ success: true, document: doc });
     } catch (err) {
@@ -614,6 +724,8 @@ router.post('/:id/save', async (req, res) => {
         if (found.length === 0) {
             return res.status(404).json({ success: false, error: 'Document not found' });
         }
+        const guard = await guardSignedContent(id, req.body, req);
+        if (guard.blocked) return res.status(409).json({ success: false, error: guard.error, signatureLocked: true });
 
         if (titleToSave) {
             await db.query('UPDATE documents SET document_name = ? WHERE id = ?', [titleToSave, id]);
@@ -625,6 +737,8 @@ router.post('/:id/save', async (req, res) => {
             await db.query('UPDATE documents SET status = ? WHERE id = ?', [status, id]);
         }
         await applyRequestSettings(id, buildRequestSettings(req.body));
+        await applySigningFlow(id, req.body, req);
+        await applyVerificationSetting(id, req.body, req);
 
         const recListSave = req.body.recipients || req.body.recipientList;
         const recipients = Array.isArray(recListSave)
@@ -645,8 +759,8 @@ router.post('/:id/save', async (req, res) => {
 });
 
 // @route   POST /api/documents/send/:id
-// @desc    Save the request and send it: every signer is emailed now, one after another in signing order (sequential)
-//          or all at once (parallel)
+// @desc    Save the request and send it. "In order": only the recipients in the first signing step are emailed now,
+//          the next step follows once this one has signed. "All at once": every signer is emailed immediately.
 router.post('/send/:id', async (req, res) => {
     const { id } = req.params;
     const { documentName, documents, fieldsByDoc, fields, recipientEmail, recipientName } = req.body;
@@ -662,6 +776,8 @@ router.post('/send/:id', async (req, res) => {
             await db.query('UPDATE documents SET document_name = ? WHERE id = ?', [documentName, id]);
         }
         await applyRequestSettings(id, buildRequestSettings(req.body));
+        await applySigningFlow(id, req.body, req);
+        await applyVerificationSetting(id, req.body, req);
 
         let recipientList = req.body.recipients || req.body.recipientList;
         if (!Array.isArray(recipientList) || recipientList.length === 0) {
@@ -715,7 +831,9 @@ router.post('/send/:id', async (req, res) => {
         await getOrCreateDocumentIdentifier(id, { status: 'In Progress' });
 
         const roundRecipients = restarted ? await requestHelpers.getRecipients(id) : recipients;
-        const isSequential = doc.signing_order === 'sequential';
+        // In order: only the first step is emailed now, the next step goes out when this one has signed
+        const flow = await signingFlow.getSigningFlow(id, doc);
+        const isSequential = flow.isSequential;
         const group = requestHelpers.getActiveSigningGroup(roundRecipients, isSequential);
         if (group.length === 0) {
             return res.status(409).json({
@@ -734,7 +852,7 @@ router.post('/send/:id', async (req, res) => {
             });
         }
         await requestHelpers.logRequestEvent(id, {
-            description: `Document "${doc.document_name}" sent for signature (${isSequential ? 'in order' : 'parallel'}) to: ${group.map((r) => r.email).join(', ')}`,
+            description: `Document "${doc.document_name}" sent for signature (${flow.short}) to: ${group.map((r) => r.email).join(', ')}`,
             req
         });
         emitDocumentWebhook('document.sent', doc, { recipients: group });
@@ -745,6 +863,8 @@ router.post('/send/:id', async (req, res) => {
             success: true,
             restarted,
             signingOrder: isSequential ? 'sequential' : 'parallel',
+            signingMode: flow.mode,
+            signingModeLabel: flow.label,
             message: failedEmails.length
                 ? `Document sent. Email could not be delivered to: ${failedEmails.map((f) => f.email).join(', ')}`
                 : `Document dispatched to: ${dispatchedEmails.join(', ')}`,
@@ -760,6 +880,188 @@ router.post('/send/:id', async (req, res) => {
     } catch (err) {
         console.error('Send Error:', err);
         res.status(500).json({ success: false, error: 'Database error while sending document' });
+    }
+});
+
+// @route   POST /api/documents/:id/bundle-pdf
+// @desc    The request's signed documents and/or its certificate of completion merged into a single PDF,
+//          optionally protected with a password. Used by "Download" on the document page.
+router.post('/:id/bundle-pdf', async (req, res) => {
+    const { id } = req.params;
+    const include = String(req.body?.include || 'both').toLowerCase(); // documents | certificate | both
+    const password = String(req.body?.password || '').trim();
+    try {
+        const [docs] = await db.query('SELECT id, document_name FROM documents WHERE id = ?', [id]);
+        if (docs.length === 0) return res.status(404).json({ success: false, error: 'Document not found' });
+
+        const bundle = await getCompletedPdfFiles(id);
+        const sources = [];
+        if (include !== 'certificate') {
+            bundle.documents.filter((d) => d.buffer).forEach((d) => sources.push(d.buffer));
+        }
+        if (include !== 'documents' && bundle.certificate) sources.push(bundle.certificate);
+        if (sources.length === 0) {
+            return res.status(400).json({ success: false, error: 'There is nothing to download for this request yet.' });
+        }
+
+        const pdfMerge = require('../utils/pdfMerge');
+        let merged = sources.length === 1 ? sources[0] : (await pdfMerge.mergeToBuffer(sources)).buffer;
+        const name = `${String(docs[0].document_name || 'Document').replace(/[^\w\s.-]+/g, '').trim() || 'Document'}.pdf`;
+        if (password) {
+            merged = await protectWithPassword(merged, password, { Title: name.replace(/\.pdf$/i, '') });
+        }
+        await requestHelpers.logRequestEvent(id, { description: `Signed documents downloaded${include === 'both' ? ' with the certificate of completion' : ''}`, req });
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+        res.send(merged);
+    } catch (err) {
+        console.error('Bundle download error:', err);
+        res.status(500).json({ success: false, error: 'The download could not be prepared.' });
+    }
+});
+
+// @route   GET /api/documents/:id/activity
+// @desc    Everything that happened to one request, for the Activity history panel: who did it, what action it
+//          was, and the sentence describing it. `?format=csv` downloads the same rows.
+router.get('/:id/activity', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const [docs] = await db.query('SELECT id, document_name, user_id FROM documents WHERE id = ?', [id]);
+        if (docs.length === 0) return res.status(404).json({ success: false, error: 'Document not found' });
+
+        const owner = await requestHelpers.getRequestSender(docs[0]);
+        const recipients = await requestHelpers.getRecipients(id);
+        const byId = new Map(recipients.map((r) => [String(r.id), r]));
+
+        const [events] = await db.query(
+            'SELECT id, recipient_id, event_type, ip_address, user_agent, created_at FROM signature_events WHERE document_id = ? ORDER BY id ASC',
+            [id]
+        ).catch(() => [[]]);
+        const [lines] = await db.query(
+            'SELECT id, activity_description, ip_address, created_at FROM activity_history WHERE document_id = ? ORDER BY id ASC',
+            [id]
+        ).catch(() => [[]]);
+
+        // The readable sentence carries the detail; the event row carries the action, the actor and the IP
+        const ACTIONS = {
+            sent: 'LINK EMAILED',
+            reminded: 'REMINDER SENT',
+            viewed: 'VIEWED',
+            terms_agreed: 'TERMS AGREED',
+            signed: 'SIGNING SUCCESS',
+            declined: 'DECLINED',
+            email_failed: 'EMAIL FAILED',
+            recalled: 'RECALLED',
+            delegated: 'REASSIGNED'
+        };
+        const actorFor = (description = '') => {
+            const match = /\(([^)@\s]+@[^)\s]+)\)/.exec(description);
+            if (match) {
+                const recipient = recipients.find((r) => String(r.email).toLowerCase() === match[1].toLowerCase());
+                return recipient?.name || match[1];
+            }
+            if (/emailed to|was sent|reminder/i.test(description)) return 'System Generated';
+            return owner.name || 'BexSign';
+        };
+        const actionFor = (description = '') => {
+            const text = description.toLowerCase();
+            if (text.includes('created as draft') || text.includes('drafted')) return 'DRAFTED';
+            if (text.includes('agreed to the electronic record')) return 'TERMS AGREED';
+            if (text.includes('reminder')) return 'REMINDER SENT';
+            if (text.includes('emailed') || text.includes('sent for signature')) return 'LINK EMAILED';
+            if (text.includes('viewed')) return 'VIEWED';
+            if (text.includes('declined')) return 'DECLINED';
+            if (text.includes('signed') || text.includes('approved')) return 'SIGNING SUCCESS';
+            if (text.includes('completed')) return 'COMPLETED';
+            if (text.includes('recall')) return 'RECALLED';
+            if (text.includes('restarted') || text.includes('correct')) return 'UPDATED';
+            if (text.includes('download')) return 'DOWNLOADED';
+            return 'UPDATED';
+        };
+
+        const rows = [
+            ...lines.map((row) => ({
+                at: row.created_at,
+                by: actorFor(row.activity_description),
+                action: actionFor(row.activity_description),
+                activity: row.activity_description,
+                ip: row.ip_address || null
+            })),
+            // Events without a matching sentence (older rows) still appear
+            ...events
+                .filter((event) => !lines.some((row) => Math.abs(new Date(row.created_at) - new Date(event.created_at)) < 2000))
+                .map((event) => {
+                    const recipient = byId.get(String(event.recipient_id));
+                    return {
+                        at: event.created_at,
+                        by: recipient?.name || recipient?.email || owner.name || 'BexSign',
+                        action: ACTIONS[event.event_type] || String(event.event_type || '').toUpperCase(),
+                        activity: `${recipient ? `${recipient.name || recipient.email}: ` : ''}${String(event.event_type || '').replace(/_/g, ' ')}`,
+                        ip: event.ip_address || null
+                    };
+                })
+        ].sort((a, b) => new Date(a.at) - new Date(b.at));
+
+        if (String(req.query.format || '').toLowerCase() === 'csv') {
+            const escape = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+            const csv = ['Time of activity,Performed by,Action,Activity,IP address']
+                .concat(rows.map((row) => [requestHelpers.formatDisplayDate(row.at, true), row.by, row.action, row.activity, row.ip || ''].map(escape).join(',')))
+                .join('\n');
+            res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+            res.setHeader('Content-Disposition', `attachment; filename="activity-${id}.csv"`);
+            return res.send(csv);
+        }
+        res.json({ success: true, documentName: docs[0].document_name, total: rows.length, activity: rows });
+    } catch (err) {
+        console.error('Activity history error:', err);
+        res.status(500).json({ success: false, error: 'The activity history could not be loaded.' });
+    }
+});
+
+// @route   GET /api/documents/:id/signing-flow
+// @desc    How this request is sent (order and field visibility), which step it is waiting on, and every signing
+//          email it has sent so far (document_signing_flow + signing_email_dispatch)
+router.get('/:id/signing-flow', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const [docs] = await db.query('SELECT id, document_name, status, signing_order FROM documents WHERE id = ?', [id]);
+        if (docs.length === 0) return res.status(404).json({ success: false, error: 'Document not found' });
+        const flow = await signingFlow.getSigningFlow(id, docs[0]);
+        const recipients = await requestHelpers.getRecipients(id);
+        const group = requestHelpers.getActiveSigningGroup(recipients, flow.isSequential);
+        res.json({
+            success: true,
+            flow,
+            modes: signingFlow.SIGNING_FLOW_MODES,
+            waitingOn: group.map((r) => ({ id: r.id, name: r.name, email: r.email, step: r.signing_order_index, status: r.status })),
+            upNext: recipients
+                .filter((r) => requestHelpers.isSigningRole(r.role)
+                    && !['signed', 'declined'].includes(r.status)
+                    && !group.some((g) => g.id === r.id))
+                .map((r) => ({ id: r.id, name: r.name, email: r.email, step: r.signing_order_index })),
+            emails: await signingFlow.getDispatchLog(id)
+        });
+    } catch (err) {
+        console.error('Signing flow error:', err);
+        res.status(500).json({ success: false, error: 'The signing flow could not be loaded.' });
+    }
+});
+
+// @route   PUT /api/documents/:id/signing-flow
+// @desc    Change the signing flow of a request that has not been sent yet
+router.put('/:id/signing-flow', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const [docs] = await db.query('SELECT id, status FROM documents WHERE id = ?', [id]);
+        if (docs.length === 0) return res.status(404).json({ success: false, error: 'Document not found' });
+        if (String(docs[0].status || '').toLowerCase() !== 'draft') {
+            return res.status(409).json({ success: false, error: 'The signing flow can only be changed while the request is a draft.' });
+        }
+        const flow = await signingFlow.saveSigningFlow(id, req.body?.mode || req.body?.signingMode, { userId: req.user?.id || null });
+        res.json({ success: true, flow });
+    } catch (err) {
+        console.error('Signing flow save error:', err);
+        res.status(500).json({ success: false, error: 'The signing flow could not be saved.' });
     }
 });
 
@@ -1492,37 +1794,105 @@ router.get('/:id/certificate-data', async (req, res) => {
             console.warn('Activity history query notice:', histErr.message);
         }
 
+        // The certificate is evidence: every value comes from the request itself, and anything that never
+        // happened is reported as "-" instead of being invented.
+        const recipients = await requestHelpers.getRecipients(id);
+        const files = await requestHelpers.getDocumentFiles(id);
+        const flow = await signingFlow.getSigningFlow(id, doc);
+        const [events] = await db.query(
+            'SELECT recipient_id, event_type, ip_address, user_agent, created_at FROM signature_events WHERE document_id = ? ORDER BY id ASC',
+            [id]
+        ).catch(() => [[]]);
+
+        // What each signer actually signed with: the signature stored on their own signature field
+        const [fieldRows] = await db.query(
+            "SELECT recipient_id, field_type, options FROM document_fields WHERE document_id = ? AND field_type IN ('Signature', 'Initial')",
+            [id]
+        ).catch(() => [[]]);
+        const signedWith = new Map();
+        fieldRows.forEach((row) => {
+            const opts = requestHelpers.parseJsonInput(row.options, {}) || {};
+            if (!opts.signedAt) return;
+            const key = String(opts.signerEmail || '').toLowerCase() || `id:${row.recipient_id}`;
+            if (!signedWith.has(key)) {
+                signedWith.set(key, {
+                    image: opts.signatureImage || '',
+                    style: opts.signatureStyle || 'font-signature-1',
+                    name: opts.signerName || '',
+                    onPaper: Boolean(opts.signedOnPaper)
+                });
+            }
+        });
+
+        const stamp = (value) => (value ? requestHelpers.formatDisplayDate(value, true) : '-');
+        const deviceOf = (userAgent) => {
+            if (!userAgent) return '-';
+            if (/Mobile|Android|iPhone|iPad/i.test(userAgent)) return 'Mobile';
+            return 'Web';
+        };
+        const roleOf = (r) => {
+            const label = String(r.role_label || '').trim();
+            if (label) return label;
+            if (r.role === 'approver') return 'Approver';
+            if (r.role === 'viewer') return 'Receives a copy';
+            if (r.role === 'reviewer') return 'Reviewer';
+            return 'Signer';
+        };
+
+        const signerRows = recipients.map((r) => {
+            const mine = events.filter((e) => String(e.recipient_id) === String(r.id));
+            const signedEvent = [...mine].reverse().find((e) => e.event_type === 'signed');
+            const used = signedWith.get(String(r.email || '').toLowerCase()) || signedWith.get(`id:${r.id}`) || {};
+            return {
+                id: r.id,
+                name: r.name || r.email,
+                email: r.email,
+                role: roleOf(r),
+                status: r.status,
+                order: r.signing_order_index || 1,
+                // What this recipient actually signed with: their drawn or uploaded image, or - when they typed
+                // their name - the exact style they chose, so the certificate shows the same signature they used
+                signatureImage: used.image || r.signature_image || '',
+                signatureStyle: used.style || 'font-signature-1',
+                signedName: used.name || r.name || r.email,
+                signedOnPaper: Boolean(used.onPaper || r.physical_copy_path),
+                emailedOn: stamp(r.sent_at),
+                viewedOn: stamp(r.viewed_at),
+                termsAgreedOn: stamp(r.consent_at),
+                signedOn: stamp(r.signed_at),
+                declinedOn: stamp(r.declined_at),
+                declineReason: r.decline_reason || '',
+                accessedFrom: (r.signed_ip || signedEvent?.ip_address || '-').toString().replace(/^::ffff:/, ''),
+                deviceUsed: deviceOf(r.signed_user_agent || signedEvent?.user_agent),
+                authenticationType: 'Email link'
+            };
+        });
+
+        const isSigningRole = (r) => ['Signer', 'Needs to sign', 'In-person signer'].includes(r.role) || /sign/i.test(r.role);
         const certificateData = {
-            documentId: doc.bexsign_doc_id || `361682B4-Z_-TPGJ5TMDVLEYSYWJSHXZUCDEMHV156UKVOTAC7-S`,
-            documentName: doc.document_name || doc.title || "This is vnc's doc",
+            documentId: doc.bexsign_doc_id || '-',
+            documentName: doc.document_name || doc.title || 'Document',
             owner: doc.owner || doc.owner_email || '-',
             ownerEmail: doc.owner_email || '-',
             organization: doc.owner_company || 'BexSign',
-            orgAddress: '5908 Breckenridge Pkwy, Tampa, Florida, United States 33610',
-            sentOn: doc.created_at ? new Date(doc.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' EDT' : 'Sep 1, 2026 14:51:34 EDT',
-            completedOn: doc.completed_at ? new Date(doc.completed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' EDT' : 'Sep 1, 2026 15:07:13 EDT',
-            signOrder: doc.signing_order === 'sequential' ? 'Sequential' : 'Sequential',
-            noOfDocuments: 1,
-            timeZone: 'America/Detroit (GMT-04:00)',
-            signersCount: 1,
-            receivesCopyCount: 0,
-            approversCount: 0,
+            orgAddress: doc.owner_company ? '' : '',
+            sentOn: stamp(doc.sent_at || doc.created_at),
+            completedOn: stamp(doc.completed_at),
+            signOrder: flow.label,
+            signOrderShort: flow.short,
+            noOfDocuments: files.length || 1,
+            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local time',
+            signersCount: signerRows.filter(isSigningRole).length,
+            receivesCopyCount: signerRows.filter((r) => /copy/i.test(r.role)).length,
+            approversCount: signerRows.filter((r) => /approver/i.test(r.role)).length,
             witnessesCount: 0,
-            recipientReviewersCount: 0,
-            status: doc.status || 'Completed',
-            isPhysicallySigned: doc.file_path && doc.file_path.includes('signed'),
-            signer: {
-                name: doc.signer_name || 'Vimal Chavda',
-                email: doc.recipient_email || 'vimal@bexcodeservices.com',
-                signatureImage: doc.signature_image || '',
-                emailedOn: 'Sep 1, 2026 14:51:34 EDT',
-                viewedOn: doc.status === 'Completed' ? 'Sep 1, 2026 14:55:50 EDT' : '-',
-                termsAgreedOn: doc.status === 'Completed' ? 'Sep 1, 2026 15:00:43 EDT' : '-',
-                signedOn: doc.signed_at ? new Date(doc.signed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' EDT' : 'Sep 1, 2026 15:07:14 EDT',
-                accessedFrom: '106.205.245.235',
-                deviceUsed: 'Web',
-                authenticationType: 'None'
-            },
+            recipientReviewersCount: signerRows.filter((r) => /review/i.test(r.role)).length,
+            status: doc.status || '-',
+            isPhysicallySigned: signerRows.some((r) => r.signedOnPaper),
+            documents: files.map((f) => ({ name: f.file_name })),
+            recipients: signerRows,
+            // Kept for older callers that expect a single signer
+            signer: signerRows.find((r) => r.status === 'signed') || signerRows[0] || null,
             history: history || []
         };
 

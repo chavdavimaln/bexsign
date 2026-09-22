@@ -36,6 +36,7 @@ import {
 } from 'lucide-react';
 import NotificationBell from './notifications/NotificationBell';
 import { PermissionsProvider, usePermissions } from '../utils/permissions';
+import { API_BASE } from '../utils/api';
 
 /**
  * Sidebar menu. Groups open one at a time (opening a group closes the one that was open, at every level), and the
@@ -47,8 +48,7 @@ const NAV_SECTIONS = [
     title: 'Overview',
     items: [
       { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, to: '/dashboard', match: ['/'] },
-      { key: 'notifications', label: 'Notifications', icon: Bell, to: '/notifications' },
-      { key: 'users', label: 'Users & Roles', icon: Users, to: '/users', perm: 'users.view' }
+      { key: 'notifications', label: 'Notifications', icon: Bell, to: '/notifications' }
     ]
   },
   {
@@ -66,7 +66,6 @@ const NAV_SECTIONS = [
             children: [
               { label: 'All Documents', to: '/documents/all', match: ['/documents'], icon: FolderOpen, count: 'all' },
               { label: 'All Sent', to: '/documents/sent/all', icon: Send },
-              { label: 'Create Document', to: '/documents/create', icon: Plus, tone: 'accent' },
               { label: 'Scheduled', to: '/documents/sent/scheduled', dot: '#0ea5e9', count: 'scheduled' },
               { label: 'In Progress', to: '/documents/sent/in-progress', dot: '#f59e0b', count: 'in progress' },
               { label: 'Completed', to: '/documents/sent/completed', dot: '#10b981', count: 'completed' },
@@ -115,7 +114,7 @@ const NAV_SECTIONS = [
             icon: Building2,
             children: [
               { label: 'General', to: '/settings/general', match: ['/settings'], icon: SlidersHorizontal },
-              { label: 'Users & Roles', to: '/settings/users', icon: Users, perm: 'users.view' },
+              { label: 'Users & Roles', to: '/users', match: ['/settings/users'], icon: Users, perm: 'users.view' },
               { label: 'Roles & Permissions', to: '/settings/permissions', icon: KeyRound, perm: ['roles.manage', 'users.view'] },
               { label: 'Integrations', to: '/settings/integrations', icon: Layers },
               { label: 'Contacts', to: '/settings/contacts', icon: Contact },
@@ -158,9 +157,21 @@ const NAV_SECTIONS = [
         icon: PenTool,
         children: [
           { label: 'My Signatures', to: '/signatures', match: ['/settings/signatures'], icon: PenTool },
-          { label: 'Send for Signatures', to: '/send-for-signatures', icon: Send },
-          { label: 'Sign Yourself', to: '/sign-yourself', icon: Plus, tone: 'accent' },
-          { label: 'Use Template', to: '/templates', icon: FileBox, perm: 'templates.view' }
+          { label: 'Send for Signatures', to: '/documents/create', match: ['/send-for-signatures'], icon: Send },
+          {
+            key: 'sign-yourself',
+            label: 'Sign Yourself',
+            icon: Plus,
+            tone: 'accent',
+            children: [
+              { label: 'All documents', to: '/sign-yourself/all', match: ['/sign-yourself'], icon: FileText },
+              { label: 'New document', to: '/sign-yourself/new', icon: Plus },
+              { label: 'Generated', to: '/sign-yourself/documents', dot: '#94a3b8' },
+              { label: 'Ready to sign', to: '/sign-yourself/ready', dot: '#f59e0b' },
+              { label: 'Signed', to: '/sign-yourself/signed', dot: '#10b981' },
+              { label: 'Shared', to: '/sign-yourself/shared', dot: '#6366f1' }
+            ]
+          }
         ]
       }
     ]
@@ -286,7 +297,7 @@ function AppLayout() {
   const [statusCounts, setStatusCounts] = useState({});
   useEffect(() => {
     let cancelled = false;
-    fetch('http://localhost:5000/api/documents')
+    fetch(`${API_BASE}/documents`)
       .then((res) => res.json())
       .then((data) => {
         if (cancelled || !Array.isArray(data?.documents)) return;

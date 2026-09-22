@@ -4,6 +4,7 @@ import { generateAndDownloadPdf } from '../utils/pdfGenerator';
 import { downloadAllSignedDocuments } from '../utils/signedPdf';
 import { generateBexsignId } from '../utils/documentId';
 import { getDocumentOwner } from '../utils/currentUser';
+import { API_BASE, API_ORIGIN } from '../utils/api';
 
 export default function DocumentVersionsModal({ doc, onClose, onViewVersion }) {
   const [versions, setVersions] = useState([]);
@@ -16,7 +17,7 @@ export default function DocumentVersionsModal({ doc, onClose, onViewVersion }) {
     const fetchVersions = async () => {
       try {
         if (doc?.id) {
-          const res = await fetch(`http://localhost:5000/api/documents/${doc.id}/versions`);
+          const res = await fetch(`${API_BASE}/documents/${doc.id}/versions`);
           const json = await res.json();
           if (json.success && json.versions && json.versions.length > 0) {
             setVersions(json.versions);
@@ -53,7 +54,7 @@ export default function DocumentVersionsModal({ doc, onClose, onViewVersion }) {
       try {
         await downloadAllSignedDocuments(doc.id);
       } catch (err) {
-        window.alert(err instanceof TypeError ? 'Could not reach the BexSign server at http://localhost:5000.' : err.message);
+        window.alert(err instanceof TypeError ? `Could not reach the BexSign server at ${API_ORIGIN}.` : err.message);
       }
       return;
     }

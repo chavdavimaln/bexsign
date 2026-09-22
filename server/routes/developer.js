@@ -76,6 +76,183 @@ router.get('/events', (req, res) => {
 
 // @route   GET /api/developer/meta
 // @desc    Scopes, events and API status for the Developer API page
+/**
+ * Creates an API key and returns the secret once. Shared by the two token screens: a short-lived token for trying
+ * the API out, and a long-lived one for a deployed integration.
+ */
+async function issueKey(req, { name, environment, scopes, expiresInDays, minutes = null }) {
+  const uniqueScopes = [...new Set(scopes)];
+  for (let tries = 0; tries < 3; tries += 1) {
+    const secret = crypto.randomBytes(32).toString('hex');
+    const fullKey = `${environment === 'sandbox' ? 'bxs_test_' : 'bxs_live_'}${secret}`;
+    const prefix = fullKey.slice(0, 13);
+    const masked = `${prefix}…${fullKey.slice(-4)}`;
+    const expirySql = minutes
+      ? 'DATE_ADD(NOW(), INTERVAL ? MINUTE)'
+      : (expiresInDays ? 'DATE_ADD(NOW(), INTERVAL ? DAY)' : 'NULL');
+    const expiryParams = minutes ? [minutes] : (expiresInDays ? [expiresInDays] : []);
+    try {
+      const [result] = await db.query(
+        `INSERT INTO api_keys (user_id, name, api_key, permissions, key_prefix, key_hash, environment, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ${expirySql})`,
+        [req.user.id, name, masked, JSON.stringify(uniqueScopes), prefix, hashKey(fullKey), environment, ...expiryParams]
+      );
+      return { id: result.insertId, fullKey, masked, scopes: uniqueScopes };
+    } catch (err) {
+      if (err.code !== 'ER_DUP_ENTRY') throw err;
+    }
+  }
+  return null;
+}
+
+// @route   POST /api/developer/tokens/temporary
+// @desc    A token for trying the API out, valid for one hour. Never use it in a deployed system.
+router.post('/tokens/temporary', requirePermission('api.keys'), async (req, res) => {
+  try {
+    const settings = await getDeveloperSettings();
+    const environment = settings.sandbox_mode ? 'sandbox' : 'live';
+    const minutes = Math.min(240, Math.max(15, parseInt(req.body?.minutes, 10) || 60));
+    const scopes = Array.isArray(req.body?.scopes) && req.body.scopes.length ? req.body.scopes : SCOPE_KEYS;
+    const scopeError = validateScopes(scopes);
+    if (scopeError) return res.status(400).json({ success: false, error: scopeError });
+
+    const created = await issueKey(req, {
+      name: `Development token ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`,
+      environment,
+      scopes,
+      minutes
+    });
+    if (!created) return res.status(500).json({ success: false, error: 'A unique token could not be generated. Try again.' });
+
+    await logActivity({ req, category: 'api', action: 'Generated a development API token', entityType: 'api_key', entityId: created.id, details: { minutes, environment } });
+    res.status(201).json({
+      success: true,
+      message: `Token generated. It is valid for ${minutes} minutes and is shown only once.`,
+      token: created.fullKey,
+      expiresInMinutes: minutes,
+      environment,
+      scopes: created.scopes,
+      id: created.id
+    });
+  } catch (err) {
+    console.error('[Developer] temporary token failed:', err);
+    res.status(500).json({ success: false, error: 'The development token could not be generated.' });
+  }
+});
+
+// @route   POST /api/developer/tokens/deployment
+// @desc    A long-lived token for a deployed integration, with the scopes and expiry the developer chooses.
+router.post('/tokens/deployment', requirePermission('api.keys'), async (req, res) => {
+  try {
+    const [name, nameError] = validateName(req.body?.name || 'Deployment token');
+    if (nameError) return res.status(400).json({ success: false, error: nameError });
+    const scopes = Array.isArray(req.body?.scopes) && req.body.scopes.length ? req.body.scopes : SCOPE_KEYS;
+    const scopeError = validateScopes(scopes);
+    if (scopeError) return res.status(400).json({ success: false, error: scopeError });
+    const raw = req.body?.expiresInDays;
+    const expiresInDays = raw === undefined || raw === null || raw === '' || Number(raw) === 0 ? null : Number(raw);
+    if (expiresInDays !== null && (!Number.isInteger(expiresInDays) || expiresInDays < 1 || expiresInDays > 730)) {
+      return res.status(400).json({ success: false, error: 'Expiry must be a whole number of days from 1 to 730, or empty for a token that never expires.' });
+    }
+
+    const created = await issueKey(req, { name, environment: 'live', scopes, expiresInDays });
+    if (!created) return res.status(500).json({ success: false, error: 'A unique token could not be generated. Try again.' });
+
+    await logActivity({ req, category: 'api', action: `Generated the deployment token "${name}"`, entityType: 'api_key', entityId: created.id, details: { expiresInDays, scopes } });
+    await notify({
+      userIds: [req.user.id],
+      category: 'api',
+      severity: 'warning',
+      title: 'Deployment API token created',
+      message: `"${name}" can call the BexSign API as you${expiresInDays ? ` for ${expiresInDays} days` : ' until it is revoked'}. Revoke it if you did not create it.`,
+      link: API_KEY_LINK,
+      entityType: 'api_key',
+      entityId: created.id
+    });
+    res.status(201).json({
+      success: true,
+      message: 'Deployment token created. Copy it now: it will not be shown again.',
+      token: created.fullKey,
+      expiresInDays,
+      scopes: created.scopes,
+      id: created.id
+    });
+  } catch (err) {
+    console.error('[Developer] deployment token failed:', err);
+    res.status(500).json({ success: false, error: 'The deployment token could not be generated.' });
+  }
+});
+
+// @route   GET /api/developer/templates
+// @desc    Templates the caller can send through the API, with the details a request needs.
+router.get('/templates', requirePermission('api.keys'), async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      `SELECT id, title, description, category, is_shared, usage_count, updated_at
+       FROM templates WHERE user_id = ? OR is_shared = 1 ORDER BY title ASC LIMIT 200`,
+      [req.user.id]
+    );
+    res.json({ success: true, templates: rows });
+  } catch (err) {
+    console.error('[Developer] templates failed:', err);
+    res.status(500).json({ success: false, error: 'Templates could not be loaded.' });
+  }
+});
+
+// @route   GET /api/developer/templates/:id
+// @desc    What to pass to the API to send this template out for signature.
+router.get('/templates/:id', requirePermission('api.keys'), async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT id, title, description, category, content, is_shared, user_id FROM templates WHERE id = ?',
+      [req.params.id]
+    );
+    const template = rows[0];
+    if (!template) return res.status(404).json({ success: false, error: 'Template not found.' });
+    if (template.user_id !== req.user.id && !template.is_shared) {
+      return res.status(403).json({ success: false, error: 'This template belongs to another user and is not shared.' });
+    }
+    const [roles] = await db.query('SELECT role_name, signing_order_index FROM template_roles WHERE template_id = ? ORDER BY signing_order_index ASC', [template.id])
+      .catch(() => [[]]);
+    const [fields] = await db.query('SELECT role_name, field_type, is_required FROM template_fields WHERE template_id = ?', [template.id])
+      .catch(() => [[]]);
+    const placeholders = [...new Set(String(template.content || '').match(/\[[^\]\n]{2,60}\]/g) || [])];
+
+    res.json({
+      success: true,
+      template: {
+        id: template.id,
+        name: template.title,
+        description: template.description,
+        category: template.category,
+        shared: Boolean(template.is_shared),
+        roles: roles.map((r) => ({ name: r.role_name, order: r.signing_order_index })),
+        fields: fields.map((f) => ({ role: f.role_name, type: f.field_type, required: Boolean(f.is_required) })),
+        placeholders
+      },
+      sampleRequest: {
+        method: 'POST',
+        path: '/api/v1/documents',
+        headers: { Authorization: 'Bearer bxs_live_...', 'Content-Type': 'application/json' },
+        body: {
+          templateId: template.id,
+          documentName: template.title,
+          recipients: (roles.length ? roles.map((r) => r.role_name) : ['Signer']).map((role, index) => ({
+            name: 'Recipient name',
+            email: 'recipient@example.com',
+            role,
+            signingOrder: index + 1
+          })),
+          fieldValues: placeholders.reduce((acc, key) => ({ ...acc, [key.replace(/[[\]]/g, '')]: 'value' }), {})
+        }
+      }
+    });
+  } catch (err) {
+    console.error('[Developer] template details failed:', err);
+    res.status(500).json({ success: false, error: 'The template details could not be loaded.' });
+  }
+});
+
 router.get('/meta', async (req, res) => {
   try {
     const settings = await getDeveloperSettings();

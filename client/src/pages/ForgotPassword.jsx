@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Mail, CheckCircle2, AlertCircle, ArrowLeft } from 'lucide-react';
+import { API_BASE, API_ORIGIN } from '../utils/api';
 
 /** "Forgot password?": emails a one-time link to reset the password of a BexSign account. */
 export default function ForgotPassword() {
@@ -14,7 +15,7 @@ export default function ForgotPassword() {
     setError('');
     setSending(true);
     try {
-      const res = await fetch('http://localhost:5000/api/send-reset-email', {
+      const res = await fetch(`${API_BASE}/send-reset-email`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: email.trim() })
@@ -26,7 +27,7 @@ export default function ForgotPassword() {
       setSentMessage(data.message || `A password reset link has been emailed to ${email.trim()}.`);
     } catch (err) {
       setError(err instanceof TypeError
-        ? 'Could not reach the BexSign server at http://localhost:5000, so no email was sent. Make sure it is running, then try again.'
+        ? `Could not reach the BexSign server at ${API_ORIGIN}, so no email was sent. Make sure it is running, then try again.`
         : err.message);
     } finally {
       setSending(false);

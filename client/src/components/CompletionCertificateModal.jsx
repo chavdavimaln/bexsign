@@ -4,6 +4,7 @@ import { generateBexsignId } from '../utils/documentId';
 import { generateCompletionCertificatePdf } from '../utils/pdfGenerator';
 import { getDocumentOwner } from '../utils/currentUser';
 import { downloadCompletionCertificate } from '../utils/signedPdf';
+import { API_BASE } from '../utils/api';
 
 export default function CompletionCertificateModal({ doc, onClose }) {
   const [certData, setCertData] = useState(null);
@@ -11,34 +12,34 @@ export default function CompletionCertificateModal({ doc, onClose }) {
 
   const documentName = doc?.document_name || doc?.title || doc?.name || "This is vnc's doc";
   const docId = doc?.bexsign_doc_id || generateBexsignId(doc?.id || 1);
-  const signerName = doc?.signer_name || 'Vimal Chavda';
-  const signerEmail = doc?.recipient_email || 'vimal@bexcodeservices.com';
+  const signerName = doc?.signer_name || '';
+  const signerEmail = doc?.recipient_email || '';
   const owner = getDocumentOwner(doc);
   const ownerName = owner.name;
   const ownerEmail = owner.email;
   const organization = owner.company || 'BexSign';
-  const orgAddress = '5908 Breckenridge Pkwy, Tampa, Florida, United States 33610';
+  const orgAddress = '';
   const isPhysicallySigned = Boolean(doc?.file_path && doc?.file_path.includes('signed'));
   const savedSig = doc?.signature_image || localStorage.getItem(`bexsign_doc_${doc?.id}_signature`) || '';
 
-  const sentDate = doc?.created_at
-    ? new Date(doc.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' EDT'
-    : 'Sep 1, 2026 14:51:34 EDT';
-
-  const completedDate = doc?.completed_at
-    ? new Date(doc.completed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' EDT'
-    : (doc?.signed_at ? new Date(doc.signed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' EDT' : 'Sep 1, 2026 15:07:13 EDT');
-
-  const signedDate = doc?.signed_at
-    ? new Date(doc.signed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' EDT'
-    : 'Sep 1, 2026 15:07:14 EDT';
+  // A certificate is evidence: a value that does not exist is shown as "-", never invented
+  const stamp = (value) => {
+    if (!value) return '-';
+    const d = new Date(value);
+    return Number.isNaN(d.getTime())
+      ? String(value)
+      : d.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  };
+  const sentDate = stamp(doc?.sent_at || doc?.created_at);
+  const completedDate = stamp(doc?.completed_at || doc?.signed_at);
+  const signedDate = stamp(doc?.signed_at);
 
   useEffect(() => {
     // Optionally fetch live certificate data from backend API
     const loadData = async () => {
       try {
         if (doc?.id) {
-          const res = await fetch(`http://localhost:5000/api/documents/${doc.id}/certificate-data`);
+          const res = await fetch(`${API_BASE}/documents/${doc.id}/certificate-data`);
           const json = await res.json();
           if (json.success && json.certificate) {
             setCertData(json.certificate);
@@ -53,6 +54,41 @@ export default function CompletionCertificateModal({ doc, onClose }) {
     loadData();
   }, [doc?.id]);
 
+  // What the server recorded for this request; the props are only a first paint before it arrives
+  const summary = {
+    sentOn: certData?.sentOn || sentDate,
+    completedOn: certData?.completedOn || completedDate,
+    signOrder: certData?.signOrder || '-',
+    noOfDocuments: certData?.noOfDocuments ?? 1,
+    timeZone: certData?.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || '-',
+    signersCount: certData?.signersCount ?? 0,
+    receivesCopyCount: certData?.receivesCopyCount ?? 0,
+    approversCount: certData?.approversCount ?? 0,
+    witnessesCount: certData?.witnessesCount ?? 0,
+    recipientReviewersCount: certData?.recipientReviewersCount ?? 0
+  };
+  const recipientList = certData?.recipients?.length
+    ? certData.recipients
+    : (signerName
+      ? [{
+        id: 'local',
+        name: signerName,
+        email: signerEmail,
+        role: 'Signer',
+        emailedOn: sentDate,
+        viewedOn: '-',
+        termsAgreedOn: '-',
+        signedOn: signedDate,
+        accessedFrom: '-',
+        deviceUsed: '-',
+        authenticationType: 'Email link',
+        signatureImage: savedSig,
+        signatureStyle: doc?.signature_style || 'font-signature-1',
+        signedName: signerName,
+        signedOnPaper: isPhysicallySigned
+      }]
+      : []);
+
   const handleDownloadPdf = async () => {
     // Completed requests: the locked certificate issued by the server (with document fingerprints)
     if (String(doc?.status || '').toLowerCase() === 'completed' && doc?.id) {
@@ -63,21 +99,24 @@ export default function CompletionCertificateModal({ doc, onClose }) {
         console.warn('Certificate download fallback:', err);
       }
     }
+    // Fallback copy (the request is not completed yet, or the server file could not be fetched): still the real
+    // recipient and the signature they actually used
+    const primary = recipientList.find((r) => r.signedOn && r.signedOn !== '-') || recipientList[0] || {};
     generateCompletionCertificatePdf({
       documentName,
       docId,
-      signerName,
-      signerEmail,
-      ownerName,
-      ownerEmail,
-      organization,
-      orgAddress,
-      sentDate,
-      completedDate,
-      signedDate,
-      ipAddress: '106.205.245.235',
-      signatureImage: savedSig,
-      isPhysicallySigned
+      signerName: primary.name || signerName,
+      signerEmail: primary.email || signerEmail,
+      ownerName: certData?.owner || ownerName,
+      ownerEmail: certData?.ownerEmail || ownerEmail,
+      organization: certData?.organization || organization,
+      orgAddress: certData?.orgAddress || orgAddress,
+      sentDate: summary.sentOn,
+      completedDate: summary.completedOn,
+      signedDate: primary.signedOn || signedDate,
+      ipAddress: primary.accessedFrom || '-',
+      signatureImage: primary.signatureImage || savedSig,
+      isPhysicallySigned: Boolean(primary.signedOnPaper || isPhysicallySigned)
     });
   };
 
@@ -168,94 +207,94 @@ export default function CompletionCertificateModal({ doc, onClose }) {
                   </p>
                   <div>
                     <span className="font-bold text-slate-900">Organization:</span>{' '}
-                    <span className="text-slate-800">{organization}</span>
-                    <div className="text-slate-600 pl-4">{orgAddress}</div>
+                    <span className="text-slate-800">{certData?.organization || organization}</span>
+                    {(certData?.orgAddress || orgAddress) && (
+                      <div className="text-slate-600 pl-4">{certData?.orgAddress || orgAddress}</div>
+                    )}
                   </div>
                 </div>
 
-                {/* 2-Column Metadata Grid */}
-                <div className="grid grid-cols-2 gap-4 pt-3 text-xs">
+                {/* Summary of the request, from the request itself */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-3 text-xs">
                   <div className="space-y-1">
-                    <p><span className="font-bold text-slate-900">Sent on:</span> {sentDate}</p>
-                    <p><span className="font-bold text-slate-900">Completed on:</span> {completedDate}</p>
-                    <p><span className="font-bold text-slate-900">Sign order:</span> Sequential</p>
-                    <p><span className="font-bold text-slate-900">No. of documents:</span> 1</p>
-                    <p><span className="font-bold text-slate-900">Time zone:</span> America/Detroit (GMT-04:00)</p>
+                    <p><span className="font-bold text-slate-900">Sent on:</span> {summary.sentOn}</p>
+                    <p><span className="font-bold text-slate-900">Completed on:</span> {summary.completedOn}</p>
+                    <p><span className="font-bold text-slate-900">Sign order:</span> {summary.signOrder}</p>
+                    <p><span className="font-bold text-slate-900">No. of documents:</span> {summary.noOfDocuments}</p>
+                    <p><span className="font-bold text-slate-900">Time zone:</span> {summary.timeZone}</p>
                   </div>
                   <div className="space-y-1">
-                    <p><span className="font-bold text-slate-900">Signers:</span> 1</p>
-                    <p><span className="font-bold text-slate-900">Receives a copy:</span> 0</p>
-                    <p><span className="font-bold text-slate-900">Approvers:</span> 0</p>
-                    <p><span className="font-bold text-slate-900">Witnesses:</span> 0</p>
-                    <p><span className="font-bold text-slate-900">Recipient reviewers:</span> 0</p>
+                    <p><span className="font-bold text-slate-900">Signers:</span> {summary.signersCount}</p>
+                    <p><span className="font-bold text-slate-900">Receives a copy:</span> {summary.receivesCopyCount}</p>
+                    <p><span className="font-bold text-slate-900">Approvers:</span> {summary.approversCount}</p>
+                    <p><span className="font-bold text-slate-900">Witnesses:</span> {summary.witnessesCount}</p>
+                    <p><span className="font-bold text-slate-900">Recipient reviewers:</span> {summary.recipientReviewersCount}</p>
                   </div>
                 </div>
               </div>
 
-              {/* Recipients Section */}
-              <div className="space-y-4">
+              {/* Recipients: every one of them, with the signature they actually signed with */}
+              <div className="space-y-5">
                 <h2 className="text-base font-bold text-[#0284c7]">Recipients</h2>
 
-                {/* Signer Block */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-1">
-                  {/* Left: Signer Identity */}
-                  <div className="space-y-3">
-                    <div className="flex items-start gap-3">
-                      <div className="text-[#0284c7] flex flex-col items-center">
-                        <div className="w-8 h-8 rounded border border-sky-300 bg-sky-50 flex items-center justify-center">
-                          <CheckCircle2 size={16} />
-                        </div>
-                        <span className="text-[10px] font-bold mt-0.5">Signer</span>
-                      </div>
-                      <div>
-                        <p className="font-bold text-sm text-slate-900">{signerName}</p>
-                        <p className="text-xs text-slate-600 font-mono">{signerEmail}</p>
-                      </div>
-                    </div>
-
-                    {/* Left Audit Details */}
-                    <div className="space-y-1 text-xs pt-2">
-                      <p><span className="font-bold text-slate-700">Emailed on:</span> {sentDate}</p>
-                      <p><span className="font-bold text-slate-700">Viewed on:</span> {isPhysicallySigned ? '-' : 'Sep 1, 2026 14:55:50 EDT'}</p>
-                      <p><span className="font-bold text-slate-700">Terms agreed on:</span> {isPhysicallySigned ? '-' : 'Sep 1, 2026 15:00:43 EDT'}</p>
-                      {!isPhysicallySigned && (
-                        <p><span className="font-bold text-slate-700">Signed on:</span> {signedDate}</p>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Right: Signature Display & Access Info */}
-                  <div className="space-y-3">
-                    {!isPhysicallySigned ? (
-                      <>
-                        <h3 className="text-xs font-bold text-[#0284c7]">Signature</h3>
-                        <div className="h-16 flex items-center">
-                          {savedSig && savedSig.startsWith('data:') ? (
-                            <img src={savedSig} alt="Signature" className="max-h-14 max-w-[200px] object-contain" />
-                          ) : (
-                            <div className="font-serif italic font-bold text-2xl text-slate-900 border-b border-slate-400 pb-0.5 px-2">
-                              {signerName}
-                            </div>
-                          )}
-                        </div>
-                      </>
-                    ) : null}
-
-                    {/* Right Audit Details */}
-                    <div className="space-y-1 text-xs pt-2">
-                      <p><span className="font-bold text-slate-700">Accessed from:</span> 106.205.245.235</p>
-                      <p><span className="font-bold text-slate-700">Device used:</span> Web</p>
-                      <p><span className="font-bold text-slate-700">Authentication type:</span> None</p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Physical Signature Note (if applicable) */}
-                {isPhysicallySigned && (
-                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-700 mt-4">
-                    The signer has signed this document physically. It was uploaded on {completedDate} by {ownerEmail}.
-                  </div>
+                {recipientList.length === 0 && (
+                  <p className="text-xs text-slate-500">This request has no recipients.</p>
                 )}
+
+                {recipientList.map((rec, index) => (
+                  <div key={rec.id || rec.email || index} className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-1 border-t border-slate-100 first:border-t-0 pt-4 first:pt-1">
+                    {/* Who they are and what they did */}
+                    <div className="space-y-3">
+                      <div className="flex items-start gap-3">
+                        <div className="text-[#0284c7] flex flex-col items-center shrink-0">
+                          <div className="w-8 h-8 rounded border border-sky-300 bg-sky-50 flex items-center justify-center">
+                            <CheckCircle2 size={16} />
+                          </div>
+                          <span className="text-[10px] font-bold mt-0.5">{rec.role || 'Signer'}</span>
+                        </div>
+                        <div className="min-w-0">
+                          <p className="font-bold text-sm text-slate-900 break-words">{rec.name}</p>
+                          <p className="text-xs text-slate-600 font-mono break-all">{rec.email}</p>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1 text-xs pt-2">
+                        <p><span className="font-bold text-slate-700">Emailed on:</span> {rec.emailedOn}</p>
+                        <p><span className="font-bold text-slate-700">Viewed on:</span> {rec.viewedOn}</p>
+                        <p><span className="font-bold text-slate-700">Terms agreed on:</span> {rec.termsAgreedOn}</p>
+                        <p><span className="font-bold text-slate-700">Signed on:</span> {rec.signedOn}</p>
+                        {rec.declinedOn && rec.declinedOn !== '-' && (
+                          <p className="text-rose-700"><span className="font-bold">Declined on:</span> {rec.declinedOn}{rec.declineReason ? ` - ${rec.declineReason}` : ''}</p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* The signature itself */}
+                    <div className="space-y-3">
+                      <h3 className="text-xs font-bold text-[#0284c7]">Signature</h3>
+                      <div className="min-h-16 flex items-center">
+                        {rec.signedOnPaper ? (
+                          <p className="text-xs text-slate-600">Signed on paper; the scanned copy is part of this request.</p>
+                        ) : rec.signatureImage && String(rec.signatureImage).startsWith('data:') ? (
+                          <img src={rec.signatureImage} alt={`Signature of ${rec.name}`} className="max-h-14 max-w-[220px] object-contain" />
+                        ) : rec.signedOn && rec.signedOn !== '-' ? (
+                          // Typed signature: rendered in the very style the signer chose
+                          <span className={`text-2xl text-slate-900 border-b border-slate-400 pb-0.5 px-2 ${rec.signatureStyle || 'font-signature-1'}`}>
+                            {rec.signedName || rec.name}
+                          </span>
+                        ) : (
+                          <p className="text-xs text-slate-400">Not signed yet.</p>
+                        )}
+                      </div>
+
+                      <div className="space-y-1 text-xs pt-2">
+                        <p><span className="font-bold text-slate-700">Accessed from:</span> {rec.accessedFrom}</p>
+                        <p><span className="font-bold text-slate-700">Device used:</span> {rec.deviceUsed}</p>
+                        <p><span className="font-bold text-slate-700">Authentication type:</span> {rec.authenticationType}</p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           </div>

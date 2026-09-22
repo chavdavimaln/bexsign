@@ -200,11 +200,7 @@ router.post('/create', uploadTemplateFile, async (req, res) => {
         const [rows] = await db.query(`${SELECT_TEMPLATES} WHERE t.id = ?`, [result.insertId]);
         const saved = toTemplate(rows[0]);
         await logActivity({ req, userId, userEmail: saved.ownerEmail, category: 'template', action: `Created template "${input.title}"`, entityType: 'template', entityId: result.insertId });
-        try {
-            Promise.resolve(dispatchWebhookEvent('template.created', {
-                template: { id: saved.id, title: saved.title, category: saved.category, shared: saved.isShared, ownerId: saved.userId }
-            })).catch(() => {});
-        } catch (e) {}
+        dispatchWebhookEvent('template.created', { templateId: saved.id });
         if (input.isShared) {
             await notify({
                 permission: 'templates.view',

@@ -23,6 +23,8 @@ import EmailInvitationPreview from './pages/EmailInvitationPreview';
 import DocumentsList from './pages/DocumentsList';
 import PublicSigning from './pages/PublicSigning';
 import SignYourself from './pages/SignYourself';
+import SelfSignCreate from './pages/selfsign/SelfSignCreate';
+import SelfSignDetail from './pages/selfsign/SelfSignDetail';
 import BulkSend from './pages/BulkSend';
 import Templates from './pages/Templates';
 import Reports from './pages/Reports';
@@ -92,11 +94,19 @@ export default function App() {
           <Route path="/documents/:id/send" element={<SendForSignatures />} />
           <Route path="/documents/:id/email-preview" element={<EmailInvitationPreview />} />
 
-          {/* Quick Actions Shortcuts */}
-          <Route path="/send-for-signatures" element={<SendForSignatures />} />
+          {/* Older links keep working, but every page lives at one address so the sidebar highlights one entry */}
+          <Route path="/send-for-signatures" element={<Navigate to="/documents/create" replace />} />
+
+          {/* Sign yourself: the hub and its tabs, the step-by-step create flow, one document, and the field editor */}
           <Route path="/sign-yourself" element={<SignYourself />} />
+          <Route path="/sign-yourself/new" element={<SelfSignCreate />} />
+          <Route path="/sign-yourself/new/:id" element={<SelfSignCreate />} />
+          <Route path="/sign-yourself/doc/:id" element={<SelfSignDetail />} />
+          <Route path="/sign-yourself/doc/:id/history" element={<SelfSignDetail />} />
+          <Route path="/sign-yourself/prepare/:id" element={<DocumentEditor />} />
+          <Route path="/sign-yourself/:tab" element={<SignYourself />} />
           <Route path="/signatures" element={<SignaturesModule />} />
-          <Route path="/settings/signatures" element={<SignaturesModule />} />
+          <Route path="/settings/signatures" element={<Navigate to="/signatures" replace />} />
 
           {/* Templates & Reports */}
           <Route path="/templates" element={<Templates />} />
@@ -108,7 +118,7 @@ export default function App() {
 
           {/* Settings: organization, account, security & logs, developer */}
           <Route path="/users" element={<UserManagement />} />
-          <Route path="/settings/users" element={<UserManagement />} />
+          <Route path="/settings/users" element={<Navigate to="/users" replace />} />
           <Route path="/others/:tab" element={<OthersRedirect />} />
           <Route path="/settings" element={<Navigate to="/settings/general" replace />} />
           <Route path="/settings/general" element={<GeneralSettings />} />

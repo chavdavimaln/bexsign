@@ -1,10 +1,10 @@
 import React, { useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { API_BASE, API_ORIGIN } from '../utils/api';
 import {
   ShieldCheck, ShieldX, UploadCloud, FileCheck2, Fingerprint, Loader2, RotateCcw, Lock, ArrowLeft
 } from 'lucide-react';
 
-const API_BASE = 'http://localhost:5000/api';
 
 const KIND_LABELS = {
   signed: 'Signed document',
@@ -55,7 +55,7 @@ export default function VerifyDocument() {
       setResult(data);
     } catch (err) {
       setError(err instanceof TypeError
-        ? 'Could not reach the BexSign server at http://localhost:5000. Make sure it is running, then try again.'
+        ? `Could not reach the BexSign server at ${API_ORIGIN}. Make sure it is running, then try again.`
         : err.message);
     } finally {
       setIsChecking(false);

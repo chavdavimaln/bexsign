@@ -1,5 +1,7 @@
 # BexSign UI Pages & Modules Reference Manual
 
+> **Current reference:** [02 — Project Structure](02-project-structure.md) lists every page and where it lives.
+
 This manual documents all user interface screens and frontend workflows in **BexSign**.
 
 ---

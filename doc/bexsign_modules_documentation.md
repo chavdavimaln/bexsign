@@ -1,5 +1,9 @@
 # BexSign - Complete System & Modules Documentation
 
+> **Start here instead:** [00 — Documentation index](00-index.md). This page is the wide overview; the modules
+> added since (signing flows, signatures, Sign yourself, verify & confirm, permissions, notifications, reports,
+> security logs, developer API) each have their own page.
+
 ## 1. Executive Summary & Architecture Overview
 
 **BexSign** is a enterprise-grade electronic document signing and lifecycle management application inspired by Zoho Sign. It provides secure document creation, multi-recipient field positioning, color-coded assignee tracking, compliant digital signature stamping, automated reminder scheduling, physical document upload, and automated email dispatch via Gmail SMTP.

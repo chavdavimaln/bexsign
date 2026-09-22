@@ -1,12 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { X, Download, Printer, Upload, PenTool, FileText, AlertTriangle, Clock, CheckCircle2, UserPlus, Loader2 } from 'lucide-react';
+import { API_BASE, API_ORIGIN } from '../utils/api';
 
 /**
  * The actions a recipient can take while signing (Zoho Sign "More actions"): read the disclosure, fill and sign
  * in one step, assign the signing to someone else, sign on paper, decline, skip, or look at the document history.
  */
 
-const API_BASE = 'http://localhost:5000/api';
 
 const formatDateTime = (value) => {
   if (!value) return '-';
@@ -402,7 +402,7 @@ export function HistoryModal({ documentId, signerEmail, onClose }) {
         else setError(json.error || 'The document history could not be loaded.');
       })
       .catch(() => {
-        if (!cancelled) setError('Could not reach the BexSign server at http://localhost:5000.');
+        if (!cancelled) setError(`Could not reach the BexSign server at ${API_ORIGIN}.`);
       });
     return () => {
       cancelled = true;

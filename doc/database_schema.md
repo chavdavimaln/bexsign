@@ -1,41 +1,12 @@
-# BexSign Database Documentation (`db_bex_sign`)
+# Database Schema — moved
 
-The database consists of 4 primary MySQL tables:
+This file used to describe four tables and is out of date (it still calls the password column `password`; it is
+`password_hash`, and the database now has more than fifty tables).
 
-1. **`users`**
-   - `id` (INT AUTO_INCREMENT PRIMARY KEY)
-   - `first_name` (VARCHAR(100) NOT NULL)
-   - `last_name` (VARCHAR(100) NOT NULL)
-   - `email` (VARCHAR(150) UNIQUE NOT NULL)
-   - `password` (VARCHAR(255) NOT NULL - Bcrypt Hashed)
-   - `company` (VARCHAR(150))
-   - `job_title` (VARCHAR(100))
-   - `date_format` (VARCHAR(50) DEFAULT 'MM/dd/yyyy')
-   - `time_zone` (VARCHAR(100) DEFAULT 'Asia/Kolkata')
-   - `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+**The current, complete reference is [16 — Database](16-database.md)**: every table, which module owns it, who
+writes it, and how the schema is created and patched at boot.
 
-2. **`documents`**
-   - `id` (INT AUTO_INCREMENT PRIMARY KEY)
-   - `user_id` (INT, FOREIGN KEY -> users.id ON DELETE CASCADE)
-   - `document_name` (VARCHAR(255) NOT NULL)
-   - `file_path` (VARCHAR(255) NOT NULL)
-   - `folder_name` (VARCHAR(100) DEFAULT 'Unsorted')
-   - `status` (ENUM: 'Draft', 'In Progress', 'Completed', 'Declined', 'Expired', 'Recalled', 'Scheduled' DEFAULT 'Draft')
-   - `recipient_email` (VARCHAR(150))
-   - `template_used` (VARCHAR(150))
-   - `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+Related:
 
-3. **`templates`**
-   - `id` (INT AUTO_INCREMENT PRIMARY KEY)
-   - `user_id` (INT, FOREIGN KEY -> users.id ON DELETE CASCADE)
-   - `template_name` (VARCHAR(255) NOT NULL)
-   - `file_path` (VARCHAR(255) NOT NULL)
-   - `active_sign_forms` (INT DEFAULT 0)
-   - `last_modified` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP)
-
-4. **`activity_history`**
-   - `id` (INT AUTO_INCREMENT PRIMARY KEY)
-   - `document_id` (INT, FOREIGN KEY -> documents.id ON DELETE CASCADE)
-   - `activity_description` (TEXT NOT NULL)
-   - `ip_address` (VARCHAR(45))
-   - `time_of_activity` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+- [database_handling_installation.md](database_handling_installation.md) — creating the database and loading a dump
+- [21 — Live Server Deployment](21-live-server-deployment.md) — database setup on a server, backups

@@ -1,10 +1,10 @@
+import { API_BASE } from './api';
 /**
  * Every PDF of a sent request is produced by the server: signed documents, certificates and in-progress copies.
  * Their pages are flattened into images, the file is encrypted (printing only) and certified, and its SHA-256
  * fingerprint is recorded for "Verify document", so a downloaded or printed copy cannot be edited.
  */
 
-const API_BASE = 'http://localhost:5000/api';
 
 async function fetchLockedPdf(url, options) {
   const res = await fetch(url, options);

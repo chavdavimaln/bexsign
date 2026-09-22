@@ -389,8 +389,9 @@ ET`);
     };
 
     for (const field of allFields) {
-      // Another recipient's masked field never appears in this copy
-      if (field.isAssignedToOther) continue;
+      // Another recipient's masked field never appears in this copy. A field they already completed does,
+      // when the request shares completed fields with the next recipient.
+      if (field.isAssignedToOther && !field.completedByOther) continue;
 
       if (isSignatureField(field)) {
         const ownSignature = getFieldSignatureImage(field);

@@ -298,6 +298,25 @@ function ensurePlatformSchema() {
       // Seed the permission catalog and default role grants (existing grants are kept)
       const { seedPermissions } = require('./permissions');
       await seedPermissions();
+      // Signing flow tables (document_signing_flow, signing_email_dispatch)
+      const signingFlow = require('./signingFlow');
+      await signingFlow.ensureSigningFlowSchema();
+      // Module tables that would otherwise only appear the first time someone opens the module
+      await require('./signatureStore').ensureSignatureSchema();
+      await require('./selfSign').ensureSelfSignSchema();
+      await require('./documentVerification').ensureVerificationSchema();
+      // The organization default moves from 'parallel' / 'sequential' to a signing flow key
+      await db.query(
+        `UPDATE general_settings SET default_signing_order = ?
+         WHERE default_signing_order = 'sequential'`,
+        ['sequential_shared']
+      );
+      await db.query(
+        `UPDATE general_settings SET default_signing_order = ?
+         WHERE default_signing_order = 'parallel'`,
+        [signingFlow.DEFAULT_SIGNING_MODE]
+      );
+      await db.query("ALTER TABLE general_settings MODIFY COLUMN default_signing_order VARCHAR(30) DEFAULT 'sequential_shared'");
     })().catch((err) => {
       schemaPromise = null;
       throw err;

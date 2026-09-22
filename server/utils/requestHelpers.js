@@ -9,7 +9,7 @@ const db = require('../db');
 
 const SIGNING_ROLES = ['signer', 'approver'];
 const ROLE_LABELS = ['Needs to sign', 'In-person signer', 'Approver', 'Receives a copy'];
-const RECIPIENT_COLUMNS = 'id, document_id, name, email, role, role_label, delivery_mode, private_note, signing_order_index, status, sent_at, viewed_at, signed_at, signed_ip, signature_image, declined_at, decline_reason, physical_copy_path, delegated_from, delegated_reason';
+const RECIPIENT_COLUMNS = 'id, document_id, name, email, role, role_label, delivery_mode, private_note, signing_order_index, status, sent_at, viewed_at, signed_at, signed_ip, signature_image, declined_at, decline_reason, physical_copy_path, delegated_from, delegated_reason, consent_at, consent_ip';
 
 function mapRecipientRole(label) {
   const low = String(label || '').toLowerCase();
@@ -73,6 +73,9 @@ function ensureRequestSchema() {
         ['document_recipients', 'signed_user_agent', 'VARCHAR(255) NULL'],
         ['document_recipients', 'signature_image', 'LONGTEXT NULL'],
         // Actions a recipient can take while signing: decline, assign to someone else, sign on paper
+        // Electronic Record and Signature Disclosure: when this recipient agreed to sign electronically
+        ['document_recipients', 'consent_at', 'DATETIME NULL'],
+        ['document_recipients', 'consent_ip', 'VARCHAR(45) NULL'],
         ['document_recipients', 'declined_at', 'DATETIME NULL'],
         ['document_recipients', 'decline_reason', 'TEXT NULL'],
         ['document_recipients', 'physical_copy_path', 'VARCHAR(255) NULL'],
@@ -202,9 +205,11 @@ const FIELD_SIGNING_KEYS = ['signatureImage', 'signatureStyle', 'signerName', 's
 async function restartSigningRound(documentId) {
   await ensureRequestSchema();
   await db.query(
+    // A new round is a new document to agree to, so the disclosure consent is asked for again
     `UPDATE document_recipients
      SET status = 'pending', sent_at = NULL, viewed_at = NULL, signed_at = NULL,
-         signed_ip = NULL, signed_user_agent = NULL, signature_image = NULL
+         signed_ip = NULL, signed_user_agent = NULL, signature_image = NULL,
+         consent_at = NULL, consent_ip = NULL
      WHERE document_id = ?`,
     [documentId]
   );
@@ -468,14 +473,20 @@ function formatDisplayDate(value, withTime = false) {
 }
 
 /**
- * Recipients who can sign now: every pending signer/approver. With "Send in order" (sequential) they are listed by
- * signing step, so the invitations go out one after another (step 1, then 2, then 3...) without waiting for an
- * earlier recipient to sign first.
+ * Recipients whose turn it is right now.
+ *
+ * "All at once" (parallel): every pending signer/approver.
+ * "In order" (sequential): only the earliest pending signing step. Step 2 is emailed after step 1 has finished,
+ * step 3 after step 2, and so on. Recipients that share a step receive the request together and sign in parallel
+ * within that step.
  */
 function getActiveSigningGroup(recipients, isSequential) {
   const pending = recipients.filter((r) => isSigningRole(r.role) && !['signed', 'declined'].includes(r.status));
-  if (!isSequential) return pending;
-  return [...pending].sort((a, b) => ((a.signing_order_index || 1) - (b.signing_order_index || 1)) || (a.id - b.id));
+  if (!isSequential || pending.length === 0) return pending;
+  const currentStep = Math.min(...pending.map((r) => r.signing_order_index || 1));
+  return pending
+    .filter((r) => (r.signing_order_index || 1) === currentStep)
+    .sort((a, b) => a.id - b.id);
 }
 
 function getClientBaseUrl() {
@@ -521,8 +532,9 @@ async function logRequestEvent(documentId, { recipientId = null, eventType = nul
  * Email the signing invitation (or a reminder) to a group of recipients.
  * Invitations move the recipient from pending to sent; every attempt is logged in the audit trail.
  */
-async function sendSigningInvitations(doc, group, { req = null, isReminder = false } = {}) {
+async function sendSigningInvitations(doc, group, { req = null, isReminder = false, triggerSource = null } = {}) {
   const { sendSignatureRequestEmail, sendReminderEmail } = require('./emailService');
+  const { recordDispatch, setCurrentStep } = require('./signingFlow');
   const sender = await getRequestSender(doc);
   const files = await getDocumentFiles(doc.id);
   const documentNames = files.map((f) => f.file_name);
@@ -551,6 +563,17 @@ async function sendSigningInvitations(doc, group, { req = null, isReminder = fal
         [r.id]
       );
     }
+    // Signing flow tables: one row per signing email, and the step the request is waiting on
+    await recordDispatch({
+      documentId: doc.id,
+      recipient: r,
+      stepIndex: r.signing_order_index || 1,
+      emailType: isReminder ? 'reminder' : 'invitation',
+      triggerSource: triggerSource || (isReminder ? 'reminder' : 'send'),
+      status: result.success ? 'sent' : 'failed',
+      error: result.success ? null : result.error
+    });
+    if (result.success && !isReminder) await setCurrentStep(doc.id, r.signing_order_index || 1);
     // In-app notifications: the recipient (if they have an account) and, when the email failed, the sender
     try {
       const { notify } = require('./platformEvents');

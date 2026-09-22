@@ -22,6 +22,9 @@ const { finalizeCompletedRequest } = require('../utils/requestCompletion');
 const { isUsableSignature } = require('../utils/signatureValidation');
 const { emitDocumentWebhook, notifyDocumentOwner, notifyRecipientUsers } = require('../utils/documentEvents');
 const { logFailedAccess } = require('../utils/platformEvents');
+const signingFlow = require('../utils/signingFlow');
+const documentVerification = require('../utils/documentVerification');
+const signatureStore = require('../utils/signatureStore');
 
 /**
  * Everything that happens once a recipient has completed their part: their field values are stored, they are
@@ -111,6 +114,24 @@ async function completeRecipientSigning({
         } catch (eSig) {}
     }
 
+    // "Where have I used this signature?" - one row per document a saved signature signed
+    try {
+        await signatureStore.recordSignatureUsage({
+            ownerEmail: recipient.email,
+            signatureImage: signatureData,
+            signatureStyle: style,
+            documentId: docId,
+            documentName: doc.document_name || null,
+            context: 'signing_request',
+            recipientId: recipient.id,
+            signerName: name,
+            signerEmail: recipient.email,
+            ip
+        });
+    } catch (eUsage) {
+        console.warn('[Signatures] usage not recorded:', eUsage.message);
+    }
+
     // 3. Request status
     recipients = await requestHelpers.getRecipients(docId);
     const pendingSigners = recipients.filter((r) => requestHelpers.isSigningRole(r.role) && r.status !== 'signed');
@@ -165,13 +186,16 @@ async function completeRecipientSigning({
             console.error('Completion email error:', eComplete);
             completion = { emailed: [], failed: [{ error: eComplete.message }], files: [], certificatePath: null };
         }
+        // When the sender asked for a final check, the request now waits to be verified and confirmed
+        await documentVerification.onRequestCompleted(docId, { req });
     } else {
-        // 4. Email any signer who has not received the request yet (e.g. their invitation failed when it was sent)
+        // 4. "In order": the recipients whose turn it is now (the next step) receive the request. In "all at once"
+        //    this only covers a signer whose invitation failed earlier.
         const [freshDocs] = await db.query('SELECT * FROM documents WHERE id = ?', [docId]);
-        const isSequential = doc.signing_order === 'sequential';
-        const nextGroup = requestHelpers.getActiveSigningGroup(recipients, isSequential).filter((r) => !r.sent_at);
+        const flow = await signingFlow.getSigningFlow(docId, doc);
+        const nextGroup = requestHelpers.getActiveSigningGroup(recipients, flow.isSequential).filter((r) => !r.sent_at);
         if (nextGroup.length > 0) {
-            const results = await requestHelpers.sendSigningInvitations(freshDocs[0], nextGroup, { req });
+            const results = await requestHelpers.sendSigningInvitations(freshDocs[0], nextGroup, { req, triggerSource: flow.isSequential ? 'next_in_order' : 'catch_up' });
             nextRecipients = results.filter((r) => r.success).map((r) => ({ name: r.name, email: r.email }));
         }
         if (sender.email && sender.email.toLowerCase() !== String(recipient.email).toLowerCase()) {
@@ -244,12 +268,13 @@ async function loadSigningContext({ documentId, token, email, req = null }) {
     }
     if (recipient.status === 'signed') return { error: { status: 409, message: 'You have already signed this document.' } };
 
-    const isSequential = doc.signing_order === 'sequential';
+    const flow = await signingFlow.getSigningFlow(docId, doc);
+    const isSequential = flow.isSequential;
     const activeGroup = requestHelpers.getActiveSigningGroup(recipients, isSequential);
     if (!activeGroup.some((r) => r.id === recipient.id)) {
         return { error: { status: 409, message: `It is not your turn yet. Waiting for ${activeGroup.map((r) => r.name || r.email).join(', ')}.` } };
     }
-    return { docId, doc, recipients, recipient, isSequential };
+    return { docId, doc, recipients, recipient, isSequential, flow };
 }
 
 // @route   POST /api/signatures/decline
@@ -487,19 +512,20 @@ router.get('/token/:token', async (req, res) => {
     try {
         const queryEmail = (req.query.email || req.query.signerEmail || '').trim().toLowerCase();
 
-        // Query recipient by secure token or ID or matching document + email
-        let recipientQuery = `SELECT r.*, d.document_name as document_title, d.file_path, d.status as document_status 
-                              FROM document_recipients r 
-                              JOIN documents d ON r.document_id = d.id 
-                              WHERE r.secure_token = ? OR r.id = ?`;
-        let recipientParams = [token, parseInt(token) || 0];
-
-        if (queryEmail) {
-            recipientQuery += ` OR (r.document_id = ? AND LOWER(r.email) = ?)`;
-            recipientParams.push(parseInt(token) || 0, queryEmail);
+        // The signing link carries the document id and the recipient's email, so that pair is matched first:
+        // a recipient row whose id happens to equal the document id must never win over it.
+        const linkDocId = parseInt(token) || 0;
+        const SELECT_RECIPIENT = `SELECT r.*, d.document_name as document_title, d.file_path, d.status as document_status
+                              FROM document_recipients r
+                              JOIN documents d ON r.document_id = d.id
+                              WHERE `;
+        let recipients = [];
+        if (queryEmail && linkDocId) {
+            [recipients] = await db.query(`${SELECT_RECIPIENT} r.document_id = ? AND LOWER(r.email) = ?`, [linkDocId, queryEmail]);
         }
-
-        const [recipients] = await db.query(recipientQuery, recipientParams);
+        if (!recipients.length) {
+            [recipients] = await db.query(`${SELECT_RECIPIENT} r.secure_token = ? OR r.id = ?`, [token, linkDocId]);
+        }
 
         if (!recipients || recipients.length === 0) {
             // Check if document ID was passed directly
@@ -508,8 +534,11 @@ router.get('/token/:token', async (req, res) => {
             const doc = docs[0] || {};
             const email = queryEmail || doc.recipient_email || 'vimal@bexcodeservices.com';
             const isCompleted = (doc.status === 'Completed');
-            const existingSig = await getEmployeeSignatureByEmail(email) || await getEmployeeSignatureByEmail('vimal@bexcodeservices.com');
+            // Only this signer's own saved signature is offered: nobody is ever prefilled with someone else's
+            const existingSig = await getEmployeeSignatureByEmail(email);
 
+            const flow = await signingFlow.getSigningFlow(docId, doc);
+            const showPrevious = flow.showPreviousFields;
             const [fieldRows] = await db.query('SELECT * FROM document_fields WHERE document_id = ? ORDER BY id ASC', [docId]);
             const fieldsList = fieldRows.map(r => {
                 let parsedOpts = {};
@@ -524,8 +553,10 @@ router.get('/token/:token', async (req, res) => {
                     isAssignedToOther = true;
                 }
 
-                // Zoho Sign privacy: mask other recipient's values while document is in process
-                const shouldMask = !isCompleted && isAssignedToOther;
+                // Other recipients' values stay private while the request is in progress. "In order, showing completed
+                // fields" is the exception: what an earlier recipient already filled in is shown to the next one, read-only.
+                const completedByOther = isAssignedToOther && showPrevious && Boolean(parsedOpts.signedAt);
+                const shouldMask = !isCompleted && isAssignedToOther && !completedByOther;
                 let resolvedVal = parsedOpts.value !== undefined ? parsedOpts.value : (r.field_type === 'Sign date' ? new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '');
                 if (shouldMask) resolvedVal = '';
 
@@ -542,6 +573,8 @@ router.get('/token/:token', async (req, res) => {
                     value: resolvedVal,
                     required: Boolean(r.is_required),
                     isAssignedToOther,
+                    completedByOther,
+                    readOnly: completedByOther,
                     assignee: parsedOpts.assignee || '',
                     assigneeEmail: parsedOpts.assigneeEmail || '',
                     ...parsedOpts,
@@ -549,8 +582,8 @@ router.get('/token/:token', async (req, res) => {
                 };
             });
 
-            // Zoho Sign privacy: other recipients' fields are not sent while the request is in progress
-            const visibleFields = isCompleted ? fieldsList : fieldsList.filter((f) => !f.isAssignedToOther);
+            // Fields of recipients who have not signed yet are never sent to this recipient
+            const visibleFields = isCompleted ? fieldsList : fieldsList.filter((f) => !f.isAssignedToOther || f.completedByOther);
             const fieldsByDoc = {};
             visibleFields.forEach(f => {
                 const dIdx = f.docIndex !== undefined ? f.docIndex : 0;
@@ -573,12 +606,15 @@ router.get('/token/:token', async (req, res) => {
                 fields: visibleFields,
                 fieldsByDoc,
                 fieldCount: fieldsList.length,
-                existingSignature: existingSig
+                existingSignature: existingSig,
+                signingFlow: { mode: flow.mode, label: flow.label, showPreviousFields: flow.showPreviousFields }
             });
         }
 
         const recipient = recipients[0];
         const isCompleted = (recipient.document_status === 'Completed');
+        const flow = await signingFlow.getSigningFlow(recipient.document_id);
+        const showPrevious = flow.showPreviousFields;
         const [fieldRows] = await db.query(
             `SELECT * FROM document_fields WHERE document_id = ? ORDER BY id ASC`,
             [recipient.document_id]
@@ -595,17 +631,21 @@ router.get('/token/:token', async (req, res) => {
             const curRecEmail = (recipient.email || '').toLowerCase();
             const curRecName = (recipient.name || '').toLowerCase().trim();
 
+            // Email decides who owns the field; the recipient row is next, and the assignee label is the last
+            // resort. A matching email is never overruled by a different display name.
             let isAssignedToOther = false;
-            if (fieldAssigneeEmail && curRecEmail && fieldAssigneeEmail !== curRecEmail) {
-                isAssignedToOther = true;
-            } else if (fieldRecipientId && String(fieldRecipientId) !== String(recipient.id)) {
-                isAssignedToOther = true;
-            } else if (fieldAssigneeName && curRecName && fieldAssigneeName !== curRecName) {
-                isAssignedToOther = true;
+            if (fieldAssigneeEmail && curRecEmail) {
+                isAssignedToOther = fieldAssigneeEmail !== curRecEmail;
+            } else if (fieldRecipientId) {
+                isAssignedToOther = String(fieldRecipientId) !== String(recipient.id);
+            } else if (fieldAssigneeName && curRecName) {
+                isAssignedToOther = fieldAssigneeName !== curRecName;
             }
 
-            // Zoho Sign privacy: mask other recipient's values while document is in process
-            const shouldMask = !isCompleted && isAssignedToOther;
+            // Other recipients' values stay private while the request is in progress. "In order, showing completed
+            // fields" is the exception: what an earlier recipient already filled in is shown to the next one, read-only.
+            const completedByOther = isAssignedToOther && showPrevious && Boolean(parsedOpts.signedAt);
+            const shouldMask = !isCompleted && isAssignedToOther && !completedByOther;
             let resolvedVal = parsedOpts.value !== undefined ? parsedOpts.value : (r.field_type === 'Sign date' ? new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '');
             if (shouldMask) resolvedVal = '';
 
@@ -622,6 +662,8 @@ router.get('/token/:token', async (req, res) => {
                 value: resolvedVal,
                 required: Boolean(r.is_required),
                 isAssignedToOther,
+                completedByOther,
+                readOnly: completedByOther,
                 assignee: parsedOpts.assignee || 'Other Signer',
                 assigneeEmail: parsedOpts.assigneeEmail || '',
                 ...parsedOpts,
@@ -629,8 +671,8 @@ router.get('/token/:token', async (req, res) => {
             };
         });
 
-        // Zoho Sign privacy: other recipients' fields are not sent while the request is in progress
-        const visibleFields = isCompleted ? fieldsList : fieldsList.filter((f) => !f.isAssignedToOther);
+        // Fields of recipients who have not signed yet are never sent to this recipient
+        const visibleFields = isCompleted ? fieldsList : fieldsList.filter((f) => !f.isAssignedToOther || f.completedByOther);
         const fieldsByDoc = {};
         visibleFields.forEach(f => {
             const dIdx = f.docIndex !== undefined ? f.docIndex : 0;
@@ -638,8 +680,8 @@ router.get('/token/:token', async (req, res) => {
             fieldsByDoc[dIdx].push(f);
         });
 
-        // Auto-fetch signature from employee_signatures by email
-        const existingSig = await getEmployeeSignatureByEmail(recipient.email) || await getEmployeeSignatureByEmail('vimal@bexcodeservices.com');
+        // The recipient's own saved signature, if they have one. Never another person's.
+        const existingSig = await getEmployeeSignatureByEmail(recipient.email);
 
         res.json({
             success: true,
@@ -647,7 +689,8 @@ router.get('/token/:token', async (req, res) => {
             fields: visibleFields,
             fieldsByDoc,
             fieldCount: fieldsList.length,
-            existingSignature: existingSig
+            existingSignature: existingSig,
+            signingFlow: { mode: flow.mode, label: flow.label, showPreviousFields: flow.showPreviousFields }
         });
     } catch (err) {
         console.error('Error fetching signing token session:', err);
@@ -705,6 +748,42 @@ router.post('/save', async (req, res) => {
 
 // @route   POST /api/signatures/viewed
 // @desc    Record that a recipient opened the signing page (Zoho Sign "Viewed" status)
+// @route   POST /api/signatures/consent
+// @desc    The recipient agreed to the Electronic Record and Signature Disclosure. Recorded once, with the time
+//          and IP address, so the audit trail and the certificate can show that they consented before signing.
+router.post('/consent', async (req, res) => {
+    const docId = parseInt(req.body.documentId) || 0;
+    const email = String(req.body.email || req.body.signerEmail || '').trim().toLowerCase();
+    if (!docId || !email) {
+        return res.status(400).json({ success: false, error: 'documentId and email are required.' });
+    }
+    try {
+        await requestHelpers.ensureRequestSchema();
+        const recipients = await requestHelpers.getRecipients(docId);
+        const recipient = recipients.find((r) => String(r.email).toLowerCase() === email);
+        if (!recipient) {
+            await logFailedAccess({ req, email, source: 'signing_link', reason: 'Consent given by an email that is not a recipient', documentId: docId });
+            return res.status(403).json({ success: false, error: 'This email address is not a recipient of the document.' });
+        }
+        if (recipient.consent_at) {
+            return res.json({ success: true, alreadyAgreed: true, consentAt: recipient.consent_at });
+        }
+        const ip = requestHelpers.getRequestIp(req);
+        await db.query('UPDATE document_recipients SET consent_at = NOW(), consent_ip = ? WHERE id = ?', [ip, recipient.id]);
+        await requestHelpers.logRequestEvent(docId, {
+            recipientId: recipient.id,
+            eventType: 'terms_agreed',
+            description: `${recipient.name || recipient.email} (${recipient.email}) agreed to the Electronic Record and Signature Disclosure`,
+            req
+        });
+        const [rows] = await db.query('SELECT consent_at FROM document_recipients WHERE id = ?', [recipient.id]);
+        res.json({ success: true, consentAt: rows[0]?.consent_at || new Date() });
+    } catch (err) {
+        console.error('Consent error:', err);
+        res.status(500).json({ success: false, error: 'Your agreement could not be recorded. Please try again.' });
+    }
+});
+
 router.post('/viewed', async (req, res) => {
     const docId = parseInt(req.body.documentId) || 0;
     const email = String(req.body.email || '').trim().toLowerCase();
@@ -819,8 +898,8 @@ router.post('/submit', async (req, res) => {
             return res.json({ success: true, alreadySigned: true, completed: false, message: 'You have already signed this document.' });
         }
 
-        const isSequential = doc.signing_order === 'sequential';
-        const activeGroup = requestHelpers.getActiveSigningGroup(recipients, isSequential);
+        const submitFlow = await signingFlow.getSigningFlow(docId, doc);
+        const activeGroup = requestHelpers.getActiveSigningGroup(recipients, submitFlow.isSequential);
         if (!activeGroup.some((r) => r.id === recipient.id)) {
             return res.status(409).json({
                 success: false,

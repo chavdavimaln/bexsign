@@ -15,8 +15,8 @@ import {
 } from 'lucide-react';
 import { showPopupAlert } from '../components/GlobalAlertModal';
 import { getLoggedInUser } from '../utils/currentUser';
+import { API_BASE, API_ORIGIN } from '../utils/api';
 
-const API_BASE = 'http://localhost:5000/api';
 
 // POSTs JSON and returns { ok, status, data }; `ok` is false for HTTP errors and { success: false } answers
 async function postJson(url, body) {
@@ -181,7 +181,7 @@ export default function MyProfile() {
       }
     } catch (err) {
       setErrorMsg(err instanceof TypeError
-        ? 'Could not reach the BexSign server at http://localhost:5000. Make sure it is running, then try again.'
+        ? `Could not reach the BexSign server at ${API_ORIGIN}. Make sure it is running, then try again.`
         : `Error updating password: ${err.message}`);
     } finally {
       setPasswordLoading(false);
@@ -203,7 +203,7 @@ export default function MyProfile() {
       }
     } catch (err) {
       const error = err instanceof TypeError
-        ? 'Could not reach the BexSign server at http://localhost:5000, so no email was sent. Make sure it is running, then try again.'
+        ? `Could not reach the BexSign server at ${API_ORIGIN}, so no email was sent. Make sure it is running, then try again.`
         : `Error requesting password reset email: ${err.message}`;
       setErrorMsg(error);
       showPopupAlert(error, { title: 'Email not sent', type: 'error' });

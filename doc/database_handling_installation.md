@@ -1,5 +1,8 @@
 # Database Setup & MySQL Schema Guide (`db_bex_sign`)
 
+> **Current reference:** [01 — Installation](01-installation.md) for a local setup and
+> [16 — Database](16-database.md) for the schema. The database creates its own tables at boot.
+
 This manual details how to configure the MySQL database using phpMyAdmin or node command scripts.
 
 ---

@@ -122,12 +122,12 @@ export default function NotificationSettings() {
                     {c.id === 'security' ? (
                       <span className="text-[11px] text-slate-500 flex items-center gap-1" title="Security alerts always appear in the app"><Lock size={12} /> Always</span>
                     ) : (
-                      <Toggle checked={draft[c.id]?.inApp !== false} onChange={(v) => setChannel(c.id, 'inApp', v)} label={`${c.label} in app`} />
+                      <Toggle hideLabel checked={draft[c.id]?.inApp !== false} onChange={(v) => setChannel(c.id, 'inApp', v)} label={`${c.label} in app`} />
                     )}
                   </div>
                   <div className="flex sm:justify-center items-center gap-2">
                     <span className="sm:hidden text-xs text-slate-500 w-16">Email</span>
-                    <Toggle checked={Boolean(draft[c.id]?.email)} onChange={(v) => setChannel(c.id, 'email', v)} label={`${c.label} by email`} />
+                    <Toggle hideLabel checked={Boolean(draft[c.id]?.email)} onChange={(v) => setChannel(c.id, 'email', v)} label={`${c.label} by email`} />
                   </div>
                 </li>
               ))}

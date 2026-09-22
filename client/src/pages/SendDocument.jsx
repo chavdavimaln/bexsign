@@ -5,6 +5,7 @@ import SignatureStamp from '../components/SignatureStamp';
 import { generateBexsignId } from '../utils/documentId';
 import { generateAndDownloadPdf } from '../utils/pdfGenerator';
 import { showPopupAlert } from '../components/GlobalAlertModal';
+import { API_BASE } from '../utils/api';
 
 export default function SendDocument() {
   const { id } = useParams();
@@ -42,7 +43,7 @@ export default function SendDocument() {
 
   const fetchDraftDetails = async () => {
     try {
-      const res = await fetch(`http://localhost:5000/api/documents/${id}`);
+      const res = await fetch(`${API_BASE}/documents/${id}`);
       const data = await res.json();
       if (data.success && data.document) {
         setDocumentName(data.document.document_name || data.document.title || 'Document');
@@ -85,7 +86,7 @@ export default function SendDocument() {
 
   const handleConfirmAndSend = async () => {
     try {
-      await fetch(`http://localhost:5000/api/documents/send/${id || 1}`, {
+      await fetch(`${API_BASE}/documents/send/${id || 1}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

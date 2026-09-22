@@ -2,8 +2,30 @@
  * fetch wrapper for the BexSign API: sends the signed-in user's token, parses JSON and turns failures into Error
  * objects with the server's message (or a clear "server not reachable" message).
  */
-export const API_ORIGIN = 'http://localhost:5000';
+/**
+ * Where the BexSign API lives.
+ *   VITE_API_URL   set it in client/.env (local) or in the build environment (live) to point anywhere,
+ *                  e.g. https://sign.example.com or https://api.example.com
+ *   not set        development falls back to the local server on port 5000; a production build talks to
+ *                  the origin it is served from, so one deployment works behind any domain without rebuilding paths.
+ */
+function resolveApiOrigin() {
+  const configured = (import.meta.env?.VITE_API_URL || '').trim();
+  if (configured) return configured.replace(/\/+$/, '');
+  if (import.meta.env?.DEV) return 'http://localhost:5000';
+  if (typeof window !== 'undefined' && window.location?.origin) return window.location.origin;
+  return '';
+}
+
+export const API_ORIGIN = resolveApiOrigin();
 export const API_BASE = `${API_ORIGIN}/api`;
+
+/** Absolute URL for a file the server stores (e.g. "/uploads/x.pdf"); absolute URLs are returned unchanged. */
+export function apiUrl(pathname = '') {
+  const value = String(pathname || '');
+  if (/^https?:\/\//i.test(value)) return value;
+  return `${API_ORIGIN}${value.startsWith('/') ? '' : '/'}${value}`;
+}
 
 export function authHeaders() {
   try {

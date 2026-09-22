@@ -73,11 +73,15 @@ export default function BexDocumentSheet({
 }) {
   const displayDocId = bexsignDocId || (typeof docId === 'string' && docId.startsWith('BEX-') ? docId : generateBexsignId(docId));
 
-  // While signing, only the viewer's own fields are shown (Zoho Sign privacy); completed documents show every field
-  const visibleFields = (placedFields || []).filter((field) => isCompleted || !(
+  // While signing, a recipient sees their own fields. With "In order, showing completed fields" they also see what
+  // the recipients before them filled in (field.completedByOther); completed documents show every field.
+  const visibleFields = (placedFields || []).filter((field) => isCompleted || field.completedByOther || !(
     field.isAssignedToOther ||
     (field.assigneeEmail && signerEmail && field.assigneeEmail.toLowerCase() !== signerEmail.toLowerCase())
   ));
+
+  // A field an earlier recipient completed is shown filled in and can never be edited by this signer
+  const isLocked = (field) => Boolean(isCompleted || field?.completedByOther);
 
   const inputClass = (paddingLeft = 'pl-3') => `w-full py-2.5 ${paddingLeft} pr-7 text-xs border border-dashed border-emerald-500 rounded-lg bg-emerald-50/40 hover:bg-emerald-50 focus:bg-white focus:border-solid focus:border-[#007355] focus:ring-2 focus:ring-emerald-100 outline-none font-semibold text-slate-800 placeholder:text-slate-400 placeholder:font-medium transition shadow-2xs`;
   const valueClass = 'text-xs font-semibold text-slate-800 px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg min-h-[38px] break-words';
@@ -139,35 +143,39 @@ export default function BexDocumentSheet({
     );
   };
 
-  const renderSignature = (field, { key, id, fieldSignature = '', fieldSigner = signerName, hint = 'Signature', required = true }) => (
-    <div key={key} id={id} className="relative sm:col-span-2" title={hint}>
-      {signaturePlaced || isCompleted || signatureImage || fieldSignature ? (
+  const renderSignature = (field, { key, id, fieldSignature = '', fieldSigner = signerName, hint = 'Signature', required = true }) => {
+    const locked = isLocked(field);
+    // An earlier recipient's field shows their signature, never this signer's
+    const shownSignature = fieldSignature || (field?.completedByOther ? '' : signatureImage);
+    return (
+    <div key={key} id={id} className="relative sm:col-span-2" title={field?.completedByOther ? `${hint} · signed by ${fieldSigner}` : hint}>
+      {signaturePlaced || locked || shownSignature ? (
         <div className="relative inline-block">
           <div
-            onClick={!isCompleted && onOpenSignatureModal ? onOpenSignatureModal : undefined}
+            onClick={!locked && onOpenSignatureModal ? onOpenSignatureModal : undefined}
             className={`p-3 bg-white border border-slate-200 rounded-lg transition shadow-2xs w-fit ${
-              !isCompleted && onOpenSignatureModal ? 'cursor-pointer hover:border-[#1c4b82]' : ''
+              !locked && onOpenSignatureModal ? 'cursor-pointer hover:border-[#1c4b82]' : ''
             }`}
           >
             <SignatureStamp
               signerName={fieldSigner}
-              signatureImage={fieldSignature || signatureImage}
+              signatureImage={shownSignature}
               signatureStyle={signatureStyle}
               docId={displayDocId}
             />
-            {!isCompleted && onOpenSignatureModal && (
+            {!locked && onOpenSignatureModal && (
               <p className="text-[10px] text-emerald-700 font-bold mt-1.5 print:hidden">
                 ✓ Signature Placed (Click to modify)
               </p>
             )}
-            {isCompleted && (
+            {locked && (
               <div className="flex items-center gap-1 text-[10px] text-emerald-700 font-bold mt-1.5 print:hidden">
                 <CheckCircle2 size={12} />
                 <span>Digitally Certified & Verified</span>
               </div>
             )}
           </div>
-          {showTooltips && !isCompleted && allFieldsComplete && (
+          {showTooltips && !locked && allFieldsComplete && (
             <div className="absolute left-full top-2 ml-4 p-2.5 bg-slate-900 text-white rounded-lg shadow-xl text-xs font-semibold whitespace-nowrap hidden sm:flex items-center gap-2 z-20 print:hidden pointer-events-none">
               <span>You've successfully filled all fields. Click Finish to complete.</span>
             </div>
@@ -195,7 +203,8 @@ export default function BexDocumentSheet({
         </div>
       )}
     </div>
-  );
+    );
+  };
 
   return (
     <div
@@ -234,7 +243,7 @@ export default function BexDocumentSheet({
               if (/<[a-z][\s\S]*>/i.test(fullContent)) {
                 return (
                   <div
-                    className="text-xs text-slate-700 leading-relaxed font-sans space-y-2"
+                    className="text-xs text-slate-700 leading-relaxed font-sans space-y-2 bex-rich-text"
                     dangerouslySetInnerHTML={{ __html: fullContent }}
                   />
                 );
@@ -316,7 +325,7 @@ export default function BexDocumentSheet({
                   const emailValue = field.value !== undefined && field.value !== 'Email' ? field.value : signerEmail;
                   return (
                     <div key={key} id={id} className="w-full sm:w-64 relative" title={hint}>
-                      {!isCompleted ? (
+                      {!isLocked(field) ? (
                         <>
                           <input
                             type="email"
@@ -340,7 +349,7 @@ export default function BexDocumentSheet({
                   const dateVal = field.value || new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
                   return (
                     <div key={key} id={id} className="w-full sm:w-64 relative" title={hint}>
-                      {!isCompleted ? (
+                      {!isLocked(field) ? (
                         <>
                           <input
                             type="text"
@@ -372,7 +381,7 @@ export default function BexDocumentSheet({
 
                   return (
                     <div key={key} id={id} className="w-full sm:col-span-2" title={hint}>
-                      {!isCompleted ? (
+                      {!isLocked(field) ? (
                         <div className="flex items-center gap-1.5">
                           <div
                             role="group"
@@ -446,7 +455,7 @@ export default function BexDocumentSheet({
                   const checked = field.value === true || field.value === 'true';
                   return (
                     <div key={key} id={id} className="flex items-center gap-1.5 min-h-[38px]" title={hint}>
-                      {!isCompleted ? (
+                      {!isLocked(field) ? (
                         <>
                           <input
                             type="checkbox"
@@ -473,7 +482,7 @@ export default function BexDocumentSheet({
                 // Default Text / Full name / Job title / Company
                 return (
                   <div key={key} id={id} className="w-full sm:w-64 relative" title={hint}>
-                    {!isCompleted ? (
+                    {!isLocked(field) ? (
                       <>
                         <input
                           type="text"

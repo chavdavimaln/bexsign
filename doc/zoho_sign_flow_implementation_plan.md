@@ -1,5 +1,8 @@
 # BexSign – Zoho Sign "Send for signatures" Flow: Implementation Plan
 
+> **Historical.** This plan has been implemented. The behaviour it describes is documented in
+> [06 — Send for Signatures](06-sending-signatures.md) and [08 — Signing](08-signing.md).
+
 Reference: Zoho Sign request flow — **Add documents → Add recipients → Add fields (per document, per recipient) → Send → Recipients sign (in order) → Completed documents + certificate emailed to everyone**.
 
 ## 0. Findings (root causes of the reported error)

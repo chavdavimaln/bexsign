@@ -15,6 +15,8 @@ import {
   Info
 } from 'lucide-react';
 import { TEMPLATE_CATEGORIES, getCategory } from '../../utils/templateLibrary';
+import { API_BASE } from '../../utils/api';
+export { API_BASE };
 
 const ICONS = {
   briefcase: Briefcase,
@@ -28,7 +30,6 @@ const ICONS = {
   truck: Truck
 };
 
-export const API_BASE = 'http://localhost:5000/api';
 
 // Saved templates (My templates) use the look of the category they were saved under
 const CUSTOM_CATEGORY = {

@@ -771,7 +771,7 @@ async function activityBranches(query, skip = null) {
     const params = [];
     if (userId) {
       where.push('(d.user_id = ? OR ah.activity_description LIKE ?)');
-      params.push(userId, like(userEmail || ' '));
+      params.push(userId, like(userEmail || '\u0000'));
     }
     if (user) {
       where.push("(ah.activity_description LIKE ? OR o.email LIKE ? OR CONCAT_WS(' ', o.first_name, o.last_name) LIKE ?)");

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { KeyRound, Webhook, Activity, BookOpen, Code2, Settings2, TriangleAlert, FlaskConical } from 'lucide-react';
+import { KeyRound, Webhook, Activity, BookOpen, Code2, Settings2, TriangleAlert, FlaskConical, FileBox } from 'lucide-react';
 import { PageHeader, Tabs, ErrorBanner, useToast } from '../../components/ui/kit';
 import { apiFetch } from '../../utils/api';
 import { usePermissions } from '../../utils/permissions';
@@ -8,6 +8,8 @@ import ApiKeysPanel from '../../components/developer/ApiKeysPanel';
 import WebhooksPanel from '../../components/developer/WebhooksPanel';
 import ApiLogsPanel from '../../components/developer/ApiLogsPanel';
 import ApiDocsPanel from '../../components/developer/ApiDocsPanel';
+import ApiTokensPanel from '../../components/developer/ApiTokensPanel';
+import TemplateDetailsPanel from '../../components/developer/TemplateDetailsPanel';
 
 /**
  * Developer API: API keys, webhooks, request logs and the API documentation. Each tab needs its own permission
@@ -16,6 +18,8 @@ import ApiDocsPanel from '../../components/developer/ApiDocsPanel';
 
 const TABS = [
   { id: 'keys', label: 'API keys', icon: KeyRound, permission: 'api.keys' },
+  { id: 'tokens', label: 'API tokens', icon: FlaskConical, permission: 'api.keys' },
+  { id: 'templates', label: 'Template details', icon: FileBox, permission: 'api.keys' },
   { id: 'webhooks', label: 'Webhooks', icon: Webhook, permission: 'api.webhooks' },
   { id: 'logs', label: 'Request logs', icon: Activity, permission: 'api.logs' },
   { id: 'docs', label: 'Documentation', icon: BookOpen }
@@ -79,6 +83,8 @@ export default function DeveloperApi() {
         {active === 'keys' && <ApiKeysPanel meta={meta} showToast={showToast} />}
         {active === 'webhooks' && <WebhooksPanel meta={meta} showToast={showToast} />}
         {active === 'logs' && <ApiLogsPanel />}
+        {active === 'tokens' && <ApiTokensPanel meta={meta} showToast={showToast} />}
+        {active === 'templates' && <TemplateDetailsPanel />}
         {active === 'docs' && <ApiDocsPanel meta={meta} />}
       </div>
       {toast}

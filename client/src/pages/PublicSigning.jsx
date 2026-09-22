@@ -12,6 +12,7 @@ import { getDefaultDocContent } from '../utils/documentDefaults';
 import { applySignerDefaults } from '../utils/documentFields';
 import { canvasHasInk, isTypedSignatureValid, typedSignatureImage } from '../utils/signatureInk';
 import { downloadSignedDocument, printLockedDocument } from '../utils/signedPdf';
+import { API_BASE, API_ORIGIN } from '../utils/api';
 import {
   TermsModal,
   QuickFillModal,
@@ -221,7 +222,7 @@ export default function PublicSigning() {
       // 2. Fetch server database state (only this recipient's fields are returned while in progress)
       let doc = null;
       try {
-        const res = await fetch(`http://localhost:5000/api/documents/${docId}${activeUserEmail ? `?email=${encodeURIComponent(activeUserEmail)}` : ''}`);
+        const res = await fetch(`${API_BASE}/documents/${docId}${activeUserEmail ? `?email=${encodeURIComponent(activeUserEmail)}` : ''}`);
         const data = await res.json();
         if (data.success && data.document) {
           doc = data.document;
@@ -231,7 +232,7 @@ export default function PublicSigning() {
       // Fallback: fetch via token route if document was not found directly
       if (!doc || !doc.id) {
         try {
-          const resToken = await fetch(`http://localhost:5000/api/signatures/token/${docId}?email=${encodeURIComponent(activeUserEmail || 'vimal@bexcodeservices.com')}`);
+          const resToken = await fetch(`${API_BASE}/signatures/token/${docId}?email=${encodeURIComponent(activeUserEmail || 'vimal@bexcodeservices.com')}`);
           const tokenData = await resToken.json();
           if (tokenData.success) {
             doc = {
@@ -272,6 +273,10 @@ export default function PublicSigning() {
         if (matched && matched.name) {
           setTypedName(matched.name);
         }
+        // Somebody who already agreed to the disclosure is not asked again
+        if (matched && (matched.consent_at || matched.consentAt)) {
+          setAgreedConsent(true);
+        }
         if (matched) {
           const signingRoles = ['signer', 'approver'];
           const pending = realRecipients.filter((r) => signingRoles.includes(r.role || 'signer') && !['signed', 'declined'].includes(r.status));
@@ -283,7 +288,7 @@ export default function PublicSigning() {
             remaining: pending.filter((r) => r.id !== matched.id).map((r) => r.name || r.email)
           });
           if (doc.status !== 'Completed') {
-            fetch('http://localhost:5000/api/signatures/viewed', {
+            fetch(`${API_BASE}/signatures/viewed`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ documentId: docId, email: matched.email })
@@ -372,8 +377,9 @@ export default function PublicSigning() {
           // Auto-fetch saved signature from portal directory for existing user (manager, leader, team member, anyone)
           const targetEmail = activeUserEmail || doc.recipient_email || 'vimal@bexcodeservices.com';
           const targetName = activeUserName || doc.signer_name || 'Vimal Chavda';
+          // Only the signer's own saved signature is prefilled; another person's is never offered
           const savedSig = await fetchSignatureForEmail(targetEmail)
-            || (signerEmailParam ? null : (await fetchSignatureForEmail(doc.recipient_email) || await fetchSignatureForEmail('vimal@bexcodeservices.com')));
+            || (signerEmailParam || !doc.recipient_email ? null : await fetchSignatureForEmail(doc.recipient_email));
           if (savedSig && (savedSig.signature_image || savedSig.signature_id || savedSig.employee_name)) {
             if (savedSig.employee_name) setTypedName(savedSig.employee_name);
             else if (targetName) setTypedName(targetName);
@@ -530,7 +536,7 @@ export default function PublicSigning() {
         localStorage.setItem(sigKey('sigstyle'), selectedStyle);
       }
 
-      await fetch('http://localhost:5000/api/signatures/save', {
+      await fetch(`${API_BASE}/signatures/save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -577,7 +583,7 @@ export default function PublicSigning() {
         { title: 'Download Complete', type: 'success' }
       );
     } catch (err) {
-      showPopupAlert(err instanceof TypeError ? 'Could not reach the BexSign server at http://localhost:5000.' : err.message, { title: 'Download Error', type: 'error' });
+      showPopupAlert(err instanceof TypeError ? `Could not reach the BexSign server at ${API_ORIGIN}.` : err.message, { title: 'Download Error', type: 'error' });
     }
   };
 
@@ -588,13 +594,22 @@ export default function PublicSigning() {
         await printLockedDocument(docId, { index, email: documentDetails.recipient });
       }
     } catch (err) {
-      showPopupAlert(err instanceof TypeError ? 'Could not reach the BexSign server at http://localhost:5000.' : err.message, { title: 'Print failed', type: 'error' });
+      showPopupAlert(err instanceof TypeError ? `Could not reach the BexSign server at ${API_ORIGIN}.` : err.message, { title: 'Print failed', type: 'error' });
     }
   };
 
   const handleAgreeAndContinue = () => {
     setAgreedConsent(true);
     setValidationError('');
+    // Recorded on the server with the time and IP, so the audit trail and the certificate can show the consent
+    const consentEmail = documentDetails.recipient || '';
+    if (docId && consentEmail) {
+      fetch(`${API_BASE}/signatures/consent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ documentId: docId, email: consentEmail })
+      }).catch(() => {});
+    }
     const sigElement = document.getElementById('signature-field-container');
     if (sigElement) {
       sigElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -753,7 +768,7 @@ export default function PublicSigning() {
         }
       }
 
-      const res = await fetch('http://localhost:5000/api/signatures/submit', {
+      const res = await fetch(`${API_BASE}/signatures/submit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -846,7 +861,7 @@ export default function PublicSigning() {
   const signingActionEmail = documentDetails.recipient || signerEmailParam;
 
   const callSigningAction = async (path, body) => {
-    const res = await fetch(`http://localhost:5000/api/signatures/${path}`, {
+    const res = await fetch(`${API_BASE}/signatures/${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ documentId: docId, token: docId, signerEmail: signingActionEmail, ...body })
@@ -856,7 +871,7 @@ export default function PublicSigning() {
     return data;
   };
 
-  const actionErrorText = (err) => (err instanceof TypeError ? 'Could not reach the BexSign server at http://localhost:5000.' : err.message);
+  const actionErrorText = (err) => (err instanceof TypeError ? `Could not reach the BexSign server at ${API_ORIGIN}.` : err.message);
 
   const handleDeclineDocument = async (reason) => {
     setActionBusy('decline');
@@ -897,7 +912,7 @@ export default function PublicSigning() {
       form.append('signerEmail', signingActionEmail || '');
       form.append('signerName', typedName || '');
       form.append('fields', JSON.stringify(Object.values(fieldsByDoc).flat().filter(isMyField)));
-      const res = await fetch('http://localhost:5000/api/signatures/physical-copy', { method: 'POST', body: form });
+      const res = await fetch(`${API_BASE}/signatures/physical-copy`, { method: 'POST', body: form });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.success === false) throw new Error(data.error || `The upload failed (HTTP ${res.status}).`);
       setShowPhysicalModal(false);
@@ -1177,7 +1192,7 @@ export default function PublicSigning() {
               onClick={async () => {
                 const targetEmail = documentDetails.recipient || 'vimal@bexcodeservices.com';
                 try {
-                  const res = await fetch(`http://localhost:5000/api/documents/${docId}/email-copy`, {
+                  const res = await fetch(`${API_BASE}/documents/${docId}/email-copy`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ emails: [targetEmail], note: 'Here is your certified signed copy.' })

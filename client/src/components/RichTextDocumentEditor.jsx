@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getLoggedInUser } from '../utils/currentUser';
+import { API_BASE } from '../utils/api';
 import {
   ArrowLeft,
   Sparkles,
@@ -204,7 +205,7 @@ export default function RichTextDocumentEditor({ onBack }) {
     }
 
     try {
-      const res = await fetch('http://localhost:5000/api/documents/upload', {
+      const res = await fetch(`${API_BASE}/documents/upload`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -562,7 +563,7 @@ export default function RichTextDocumentEditor({ onBack }) {
               suppressContentEditableWarning
               onInput={updateCounts}
               onKeyUp={updateCounts}
-              className="w-full min-h-[920px] outline-none font-sans text-slate-800 text-sm leading-relaxed cursor-text"
+              className="w-full min-h-[920px] outline-none font-sans text-slate-800 text-sm leading-relaxed cursor-text bex-rich-text"
               style={{ fontFamily, fontSize: `${fontSize}px` }}
             >
               <p className="text-slate-400 italic">

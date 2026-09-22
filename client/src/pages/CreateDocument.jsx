@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { HardDrive, Cloud, FileBox, Layers, Upload, ArrowRight, CheckCircle2, FileEdit } from 'lucide-react';
 import RichTextDocumentEditor from '../components/RichTextDocumentEditor';
+import { API_BASE } from '../utils/api';
 
 export default function CreateDocument() {
   const [activeTab, setActiveTab] = useState('desktop'); // desktop, cloud, template, mailmerge, editor
@@ -32,7 +33,7 @@ export default function CreateDocument() {
       formData.append('documentName', documentName || 'New Contract Document');
       if (file) formData.append('documentFile', file);
 
-      const res = await fetch('http://localhost:5000/api/documents/upload', {
+      const res = await fetch(`${API_BASE}/documents/upload`, {
         method: 'POST',
         body: formData
       });

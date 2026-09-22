@@ -6,32 +6,18 @@ const db = require('../db');
 const { notify } = require('./platformEvents');
 const { dispatchWebhookEvent } = require('./webhooks');
 
-const documentSummary = (doc) => ({
-  id: doc.id,
-  name: doc.document_name || 'Document',
-  status: doc.status || null,
-  sentAt: doc.sent_at || null,
-  completedAt: doc.completed_at || null,
-  ownerId: doc.user_id || null
-});
-
-const recipientSummary = (r) => (r ? {
-  id: r.id || null,
-  name: r.name || null,
-  email: r.email || null,
-  role: r.role_label || r.role || null,
-  status: r.status || null
-} : undefined);
-
-/** Webhook event (document.sent, document.viewed, document.signed, document.completed, document.declined, document.recalled). */
+/**
+ * Webhook event (document.sent, document.viewed, document.signed, document.completed, document.declined,
+ * document.recalled). The dispatcher loads the document, its owner and recipients by id and adds the recipient.
+ */
 function emitDocumentWebhook(event, doc, extra = {}) {
+  if (!doc?.id) return;
   try {
-    Promise.resolve(dispatchWebhookEvent(event, {
-      document: documentSummary(doc),
-      ...(extra.recipient ? { recipient: recipientSummary(extra.recipient) } : {}),
-      ...(extra.recipients ? { recipients: extra.recipients.map(recipientSummary) } : {}),
+    dispatchWebhookEvent(event, {
+      documentId: doc.id,
+      ...(extra.recipient?.email ? { recipientEmail: extra.recipient.email } : {}),
       ...(extra.reason ? { reason: extra.reason } : {})
-    })).catch(() => {});
+    });
   } catch (err) {
     console.warn('[Webhooks] event not dispatched:', err.message);
   }
@@ -80,4 +66,4 @@ async function notifyRecipientUsers(doc, recipients, { title, message = '', seve
   });
 }
 
-module.exports = { emitDocumentWebhook, notifyDocumentOwner, notifyRecipientUsers, documentSummary };
+module.exports = { emitDocumentWebhook, notifyDocumentOwner, notifyRecipientUsers };

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { AlertTriangle, Copy, FileLock2, Loader2, X, ArrowRight } from 'lucide-react';
 import { createEditableCopy, previewCopyName } from '../utils/signedPdf';
 import { getLoggedInUser } from '../utils/currentUser';
+import { API_ORIGIN } from '../utils/api';
 
 /**
  * Editing a sent or completed request never changes it: after confirmation an editable draft copy is created
@@ -31,7 +32,7 @@ export default function EditCopyModal({ doc, onClose, onCopied }) {
       onCopied(data.newDocumentId, data.documentName);
     } catch (err) {
       setError(err instanceof TypeError
-        ? 'Could not reach the BexSign server at http://localhost:5000. Make sure it is running, then try again.'
+        ? `Could not reach the BexSign server at ${API_ORIGIN}. Make sure it is running, then try again.`
         : err.message);
       setIsCreating(false);
     }

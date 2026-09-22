@@ -9,6 +9,25 @@ import {
 import { generateBexsignId } from '../utils/documentId';
 import { getDocumentOwner } from '../utils/currentUser';
 import EditCopyModal from '../components/EditCopyModal';
+import CompletionCertificateModal from '../components/CompletionCertificateModal';
+import FormDataModal from '../components/FormDataModal';
+import DocumentVersionsModal from '../components/DocumentVersionsModal';
+import {
+  DownloadOptionsModal,
+  EmailDocumentModal,
+  ActivityHistoryModal,
+  LegalDisclosureModal
+} from '../components/documents/documentActionModals';
+import {
+  downloadAllSignedDocuments,
+  downloadCompletionCertificate,
+  printAllLockedDocuments,
+  createEditableCopy
+} from '../utils/signedPdf';
+import { getLoggedInUser } from '../utils/currentUser';
+import { showPopupAlert } from '../components/GlobalAlertModal';
+import DocumentVerificationPanel from '../components/DocumentVerificationPanel';
+import { API_BASE } from '../utils/api';
 
 const formatDateTime = (value) => {
   if (!value) return '-';
@@ -41,6 +60,10 @@ export default function DocumentDetails() {
   const docId = parseInt(id) || 1;
   const [placeholderBexsignId] = useState(() => generateBexsignId(docId));
   const [serverBexsignId, setServerBexsignId] = useState('');
+  // Which action dialog is open: download | email | activity | certificate | formData | versions | legal
+  const [actionModal, setActionModal] = useState(null);
+  const [rawRecipients, setRawRecipients] = useState([]);
+  const [actionBusy, setActionBusy] = useState('');
   const fullBexsignId = serverBexsignId || placeholderBexsignId;
 
   // Filled from the request saved on the server; the owner is the user who created the request
@@ -61,13 +84,14 @@ export default function DocumentDetails() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch(`http://localhost:5000/api/documents/${docId}`)
+    fetch(`${API_BASE}/documents/${docId}`)
       .then((res) => res.json())
       .then((data) => {
         const doc = data?.document;
         if (cancelled || !data?.success || !doc) return;
         const owner = getDocumentOwner(doc);
         if (doc.bexsign_doc_id) setServerBexsignId(doc.bexsign_doc_id);
+        setRawRecipients((doc.recipients || []).filter((r) => !r.isFallback));
         setDocument({
           id: doc.id || docId,
           name: doc.document_name || `Document ${docId}`,
@@ -121,7 +145,7 @@ export default function DocumentDetails() {
     setActiveMenu(false);
     showToast('Document moved to trash.');
     try {
-      await fetch(`http://localhost:5000/api/trash/move/${id}`, {
+      await fetch(`${API_BASE}/trash/move/${id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       });
@@ -129,6 +153,69 @@ export default function DocumentDetails() {
       console.error('Error moving doc to trash:', e);
     }
     navigate('/documents/all');
+  };
+
+  const status = String(document.status || '').toLowerCase();
+  const isDraft = status === 'draft';
+  const isCompleted = status === 'completed';
+  const isInProgress = status === 'in progress' || status === 'scheduled';
+
+  /** Downloads every signed document of the request (one file each). */
+  const handleQuickDownload = async () => {
+    setActiveMenu(false);
+    setActionBusy('download');
+    try {
+      const names = await downloadAllSignedDocuments(docId);
+      showToast(`Downloaded ${names.length} document${names.length === 1 ? '' : 's'}.`);
+    } catch (err) {
+      showPopupAlert(err.message || 'The document could not be downloaded.', { title: 'Download failed', type: 'error' });
+    } finally {
+      setActionBusy('');
+    }
+  };
+
+  /** Prints the locked PDFs, never the web page, so a printed copy is never editable. */
+  const handlePrint = async () => {
+    setActiveMenu(false);
+    setActionBusy('print');
+    try {
+      await printAllLockedDocuments(docId);
+    } catch (err) {
+      showPopupAlert(err.message || 'The document could not be printed.', { title: 'Print failed', type: 'error' });
+    } finally {
+      setActionBusy('');
+    }
+  };
+
+  /** "Edit as new": the original is untouched, a draft copy opens for editing. */
+  const handleEditAsNew = async () => {
+    setActiveMenu(false);
+    setActionBusy('copy');
+    try {
+      const copy = await createEditableCopy(docId, getLoggedInUser()?.id);
+      showToast('A draft copy was created.');
+      navigate(`/documents/${copy.id || copy.documentId}/send`);
+    } catch (err) {
+      showPopupAlert(err.message || 'The copy could not be created.', { title: 'Copy failed', type: 'error' });
+    } finally {
+      setActionBusy('');
+    }
+  };
+
+  /** Re-emails the recipients whose turn it is. */
+  const handleRemindAll = async () => {
+    setActiveMenu(false);
+    setActionBusy('remind');
+    try {
+      const res = await fetch(`${API_BASE}/documents/${docId}/remind`, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success === false) throw new Error(data.error || `HTTP ${res.status}`);
+      showToast(data.message || 'Reminder emailed.');
+    } catch (err) {
+      showPopupAlert(err.message || 'The reminder could not be sent.', { title: 'Reminder failed', type: 'error' });
+    } finally {
+      setActionBusy('');
+    }
   };
 
   // Completion: share of signers/approvers who have signed
@@ -141,7 +228,7 @@ export default function DocumentDetails() {
   const handleSendReminder = async (rec) => {
     setRemindingId(rec.id);
     try {
-      const res = await fetch(`http://localhost:5000/api/documents/${docId}/remind`, { method: 'POST' });
+      const res = await fetch(`${API_BASE}/documents/${docId}/remind`, { method: 'POST' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.success === false) throw new Error(data.error || `HTTP ${res.status}`);
       showToast(`Reminder emailed to ${rec.name}.`);
@@ -175,45 +262,57 @@ export default function DocumentDetails() {
 
           <button
             onClick={() => navigate(`/documents/${document.id}/view`)}
-            className="flex items-center gap-1.5 px-3 py-1.5 hover:bg-slate-100 rounded-lg text-xs font-bold text-slate-700 transition"
+            className="flex items-center gap-1.5 px-3 py-1.5 hover:bg-slate-100 rounded-lg text-xs font-bold text-slate-700 transition cursor-pointer"
           >
             <Eye size={16} className="text-slate-500" /> View document
           </button>
 
           <button
             onClick={() => {
-              // A sent or completed request is never edited in place: editing creates a draft copy
-              if (String(document.status || '').toLowerCase() === 'draft') navigate(`/documents/${document.id}/edit`);
+              // A sent or completed request is never edited in place: editing creates a draft copy that is
+              // sent again, so a signature can never be attached to text that changed after it was signed.
+              if (isDraft) navigate(`/documents/${document.id}/edit`);
               else setShowEditCopy(true);
             }}
-            className="flex items-center gap-1.5 px-3 py-1.5 hover:bg-slate-100 rounded-lg text-xs font-bold text-slate-700 transition"
+            className="flex items-center gap-1.5 px-3 py-1.5 hover:bg-slate-100 rounded-lg text-xs font-bold text-slate-700 transition cursor-pointer"
           >
             <Edit size={16} className="text-slate-500" /> Edit
           </button>
 
-          <button
-            onClick={() => {
-              showToast('Document in correction state.');
-              navigate(`/documents/${document.id}/send`);
-            }}
-            className="flex items-center gap-1.5 px-3 py-1.5 hover:bg-slate-100 rounded-lg text-xs font-bold text-slate-700 transition"
-          >
-            <FileCheck size={16} className="text-slate-500" /> Correct document
-          </button>
+          {isCompleted && (
+            <button
+              onClick={() => setActionModal('certificate')}
+              className="flex items-center gap-1.5 px-3 py-1.5 hover:bg-slate-100 rounded-lg text-xs font-bold text-slate-700 transition cursor-pointer"
+            >
+              <ShieldCheck size={16} className="text-slate-500" /> Completion certificate
+            </button>
+          )}
 
-          <button
-            onClick={() => setExtendModal(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 hover:bg-slate-100 rounded-lg text-xs font-bold text-slate-700 transition"
-          >
-            <Clock size={16} className="text-slate-500" /> Extend
-          </button>
+          {!isDraft && (
+            <button
+              onClick={() => setActionModal('email')}
+              className="flex items-center gap-1.5 px-3 py-1.5 hover:bg-slate-100 rounded-lg text-xs font-bold text-slate-700 transition cursor-pointer"
+            >
+              <Send size={16} className="text-slate-500" /> Email document
+            </button>
+          )}
 
-          {/* More actions dropdown */}
+          {isInProgress && (
+            <button
+              onClick={() => setExtendModal(true)}
+              className="hidden md:flex items-center gap-1.5 px-3 py-1.5 hover:bg-slate-100 rounded-lg text-xs font-bold text-slate-700 transition cursor-pointer"
+            >
+              <Clock size={16} className="text-slate-500" /> Extend
+            </button>
+          )}
+
+          {/* Everything else, in the order the actions are usually needed */}
           <div className="relative">
             <button
               onClick={() => setActiveMenu(!activeMenu)}
-              className="p-1.5 hover:bg-slate-200 rounded-lg text-slate-600 transition"
+              className="p-1.5 hover:bg-slate-200 rounded-lg text-slate-600 transition cursor-pointer"
               title="More actions"
+              aria-label="More actions"
             >
               <MoreVertical size={16} />
             </button>
@@ -221,25 +320,52 @@ export default function DocumentDetails() {
             {activeMenu && (
               <>
                 <div className="fixed inset-0 z-20" onClick={() => setActiveMenu(false)} />
-                <div className="absolute left-0 mt-1 w-52 bg-white border border-slate-200 rounded-xl shadow-xl z-30 py-1 text-xs font-semibold text-slate-700">
-                  <button onClick={() => { showToast(`Reminder emailed to pending signers`); setActiveMenu(false); }} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2">
-                    <Bell size={14} /> Send reminder
-                  </button>
-                  <button onClick={() => { showToast(`Auto-reminder schedule updated`); setActiveMenu(false); }} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2">
-                    <Sliders size={14} /> Reminder settings
-                  </button>
-                  <button onClick={() => { showToast(`Downloading document PDF...`); setActiveMenu(false); }} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2">
+                <div className="absolute left-0 mt-1 w-60 bg-white border border-slate-200 rounded-xl shadow-xl z-30 py-1 text-xs font-semibold text-slate-700">
+                  <button onClick={() => { setActiveMenu(false); setActionModal('download'); }} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2 cursor-pointer">
                     <Download size={14} /> Download
                   </button>
-                  <button onClick={() => { showToast(`Sending document to printer...`); setActiveMenu(false); }} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2">
-                    <Printer size={14} /> Print
+                  {!isDraft && (
+                    <button onClick={handleEditAsNew} disabled={actionBusy === 'copy'} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2 cursor-pointer disabled:opacity-60">
+                      <Copy size={14} /> {actionBusy === 'copy' ? 'Creating copy...' : 'Edit as new'}
+                    </button>
+                  )}
+                  <button onClick={handlePrint} disabled={actionBusy === 'print'} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2 cursor-pointer disabled:opacity-60">
+                    <Printer size={14} /> {actionBusy === 'print' ? 'Preparing...' : 'Print'}
                   </button>
-                  <button onClick={handleCopyDocId} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2">
-                    <Copy size={14} /> Copy Document ID
+                  <button onClick={() => { setActiveMenu(false); setActionModal('formData'); }} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2 cursor-pointer">
+                    <FileText size={14} /> Form data
                   </button>
-                  <div className="border-t my-1" />
-                  <button onClick={handleMoveToTrash} className="w-full px-3 py-2 hover:bg-rose-50 text-rose-600 flex items-center gap-2">
-                    <Trash2 size={14} /> Move to Trash
+                  <button onClick={() => { setActiveMenu(false); setActionModal('activity'); }} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2 cursor-pointer">
+                    <Info size={14} /> Activity history
+                  </button>
+                  <button onClick={() => { setActiveMenu(false); setActionModal('versions'); }} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2 cursor-pointer">
+                    <Clock size={14} /> Versions
+                  </button>
+                  <button onClick={() => { setActiveMenu(false); setActionModal('legal'); }} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2 cursor-pointer">
+                    <ShieldCheck size={14} /> View legal disclosure
+                  </button>
+                  <button onClick={handleCopyDocId} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2 cursor-pointer">
+                    <Copy size={14} /> Copy document ID
+                  </button>
+
+                  {isInProgress && (
+                    <>
+                      <div className="border-t border-slate-100 my-1" />
+                      <button onClick={handleRemindAll} disabled={actionBusy === 'remind'} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2 cursor-pointer disabled:opacity-60">
+                        <Bell size={14} /> {actionBusy === 'remind' ? 'Sending...' : 'Send reminder'}
+                      </button>
+                      <button onClick={() => { setActiveMenu(false); navigate(`/documents/${document.id}/send`); }} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2 cursor-pointer">
+                        <FileCheck size={14} /> Correct document
+                      </button>
+                      <button onClick={() => { setActiveMenu(false); setExtendModal(true); }} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2 cursor-pointer md:hidden">
+                        <Clock size={14} /> Extend
+                      </button>
+                    </>
+                  )}
+
+                  <div className="border-t border-slate-100 my-1" />
+                  <button onClick={handleMoveToTrash} className="w-full px-3 py-2 hover:bg-rose-50 text-rose-600 flex items-center gap-2 cursor-pointer">
+                    <Trash2 size={14} /> Delete
                   </button>
                 </div>
               </>
@@ -326,6 +452,9 @@ export default function DocumentDetails() {
           </div>
         </div>
       </div>
+
+      {/* Verify & confirm the completed document (only for completed requests that asked for it) */}
+      <DocumentVerificationPanel documentId={docId} documentStatus={document.status} onToast={showToast} />
 
       {/* Recipient Status Section (Matching Image 2 + Task 4 Requirements) */}
       <div className="space-y-4">
@@ -511,6 +640,38 @@ export default function DocumentDetails() {
             setShowEditCopy(false);
             navigate(`/documents/${newId}/send`);
           }}
+        />
+      )}
+
+      {/* The action bar's dialogs */}
+      {actionModal === 'download' && (
+        <DownloadOptionsModal document={document} onClose={() => setActionModal(null)} onToast={showToast} />
+      )}
+      {actionModal === 'email' && (
+        <EmailDocumentModal document={document} onClose={() => setActionModal(null)} onToast={showToast} />
+      )}
+      {actionModal === 'activity' && (
+        <ActivityHistoryModal document={document} onClose={() => setActionModal(null)} onToast={showToast} />
+      )}
+      {actionModal === 'legal' && (
+        <LegalDisclosureModal document={document} recipients={rawRecipients} onClose={() => setActionModal(null)} />
+      )}
+      {actionModal === 'certificate' && (
+        <CompletionCertificateModal
+          doc={{ id: document.id, document_name: document.name, status: document.status }}
+          onClose={() => setActionModal(null)}
+        />
+      )}
+      {actionModal === 'formData' && (
+        <FormDataModal
+          doc={{ id: document.id, document_name: document.name }}
+          onClose={() => setActionModal(null)}
+        />
+      )}
+      {actionModal === 'versions' && (
+        <DocumentVersionsModal
+          doc={{ id: document.id, document_name: document.name }}
+          onClose={() => setActionModal(null)}
         />
       )}
 

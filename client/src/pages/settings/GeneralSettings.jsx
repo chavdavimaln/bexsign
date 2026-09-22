@@ -18,7 +18,11 @@ const DEFAULT_OPTIONS = {
   dateFormats: ['MMM dd, yyyy', 'dd MMM yyyy', 'dd/MM/yyyy', 'MM/dd/yyyy', 'yyyy-MM-dd', 'dd-MM-yyyy', 'dd.MM.yyyy'],
   timeFormats: ['12h', '24h'],
   languages: [{ value: 'en', label: 'English' }],
-  signingOrders: ['parallel', 'sequential']
+  signingOrders: [
+    { value: 'sequential_shared', label: 'In order, showing completed fields', hint: 'Each recipient is emailed once the previous one has signed, and sees the fields they completed.' },
+    { value: 'sequential_private', label: 'In order, fields private', hint: 'Each recipient is emailed once the previous one has signed, and nobody sees the other recipients’ fields.' },
+    { value: 'parallel_private', label: 'Everyone at once', hint: 'All recipients receive the request at the same time and only see their own fields.' }
+  ]
 };
 const SESSION_TIMEOUTS = [[15, '15 minutes'], [30, '30 minutes'], [60, '1 hour'], [120, '2 hours'], [240, '4 hours'], [480, '8 hours'], [720, '12 hours'], [1440, '24 hours']];
 const BRAND_SWATCHES = ['#007355', '#e71414', '#2563eb', '#7c3aed', '#ea580c', '#0f172a'];
@@ -126,7 +130,13 @@ export default function GeneralSettings() {
       const s = normalize(data.settings);
       setSaved(s);
       setForm(s);
-      setOptions({ ...DEFAULT_OPTIONS, ...(data.options || {}) });
+      const loaded = { ...DEFAULT_OPTIONS, ...(data.options || {}) };
+      // A server from before the three signing flows sends plain strings
+      const legacy = { parallel: 'parallel_private', sequential: 'sequential_shared' };
+      loaded.signingOrders = (loaded.signingOrders || []).map((o) => (typeof o === 'string'
+        ? (DEFAULT_OPTIONS.signingOrders.find((m) => m.value === (legacy[o] || o)) || { value: o, label: o, hint: '' })
+        : o));
+      setOptions(loaded);
       setMeta({ updatedAt: data.updatedAt, updatedBy: data.updatedBy });
     } catch (err) {
       setLoadError(err.message);
@@ -337,10 +347,7 @@ export default function GeneralSettings() {
           <fieldset className="sm:col-span-2">
             <legend className="block text-xs font-bold text-slate-700 mb-1">Default signing order</legend>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {[
-                ['parallel', 'Everyone at once', 'All recipients receive the request at the same time.'],
-                ['sequential', 'In order', 'Recipients receive it one after another, in the listed order.']
-              ].map(([value, label, hint]) => (
+              {(options.signingOrders || []).map(({ value, label, hint }) => (
                 <label key={value} className={`flex items-start gap-2.5 p-3 rounded-xl border transition ${form.default_signing_order === value ? 'border-[#007355] bg-emerald-50' : 'border-slate-300'} ${canEdit ? 'cursor-pointer' : 'opacity-70'}`}>
                   <input type="radio" name="gs-signing-order" value={value} checked={form.default_signing_order === value} onChange={() => set('default_signing_order', value)} disabled={!canEdit} className="mt-0.5 accent-[#007355]" />
                   <span>

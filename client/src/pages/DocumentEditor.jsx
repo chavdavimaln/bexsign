@@ -67,10 +67,13 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { showPopupAlert } from '../components/GlobalAlertModal';
+import { getLoggedInUser } from '../utils/currentUser';
+import { getSelfSignByDocument, completeSelfSign, prepareSelfSign } from '../components/selfsign/selfSignApi';
 import { getDefaultDocContent, DEFAULT_DOCUMENT_TEXTS } from '../utils/documentDefaults';
 import { generateAndDownloadPdf } from '../utils/pdfGenerator';
 import TemplatePickerModal from '../components/templates/TemplatePickerModal';
 import { countTemplateUse } from '../components/templates/templateUi';
+import { API_BASE, API_ORIGIN } from '../utils/api';
 import {
   PAGE,
   EDITOR_BASE_FONT,
@@ -102,6 +105,12 @@ export default function DocumentEditor() {
   const canvasRef = useRef(null);
   const stampFileInputRef = useRef(null);
   const docTextContentRef = useRef(null);
+
+  // "Sign yourself" opens this same editor at /sign-yourself/prepare/:id. The only signer is the logged-in user,
+  // and the request is never emailed: the primary action signs the document and finishes the self-sign flow.
+  const isSelfSign = location.pathname.startsWith('/sign-yourself/prepare');
+  const [selfSignRecord, setSelfSignRecord] = useState(null);
+  const [selfSignBusy, setSelfSignBusy] = useState(false);
 
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [showActionsMenu, setShowActionsMenu] = useState(false);
@@ -1046,6 +1055,11 @@ export default function DocumentEditor() {
         }
       }
     } catch (e) {}
+    // Signing yourself: the only recipient is the signed-in user
+    const me = getLoggedInUser();
+    if (me?.email) {
+      return [toEditorRecipient({ id: me.id || 1, name: me.name || me.email.split('@')[0], email: me.email, role: 'Needs to sign' }, 0)];
+    }
     return [toEditorRecipient({ id: 1, name: 'Vimal Chavda', email: 'vimal@bexcodeservices.com', role: 'Needs to sign' }, 0)];
   });
 
@@ -1065,6 +1079,7 @@ export default function DocumentEditor() {
   const [requestStatus, setRequestStatus] = useState('Draft');
   // 'sequential' = "Send in order" (step by step), 'parallel' = everyone is emailed at once
   const [signingOrderMode, setSigningOrderMode] = useState('sequential');
+  const [signingFlowMode, setSigningFlowMode] = useState('sequential_shared');
   const [bexsignDocId, setBexsignDocId] = useState('');
   const [initialLoadDone, setInitialLoadDone] = useState(!id);
   const [showDiscardModal, setShowDiscardModal] = useState(false);
@@ -1292,12 +1307,13 @@ export default function DocumentEditor() {
 
   const fetchDocumentDetails = async () => {
     try {
-      const res = await fetch(`http://localhost:5000/api/documents/${id}`);
+      const res = await fetch(`${API_BASE}/documents/${id}`);
       const data = await res.json();
       if (data.success && data.document) {
         const doc = data.document;
         if (doc.status) setRequestStatus(doc.status);
         if (doc.signing_order) setSigningOrderMode(doc.signing_order === 'parallel' ? 'parallel' : 'sequential');
+        if (doc.signing_mode || doc.signing_flow?.mode) setSigningFlowMode(doc.signing_mode || doc.signing_flow.mode);
         if (doc.bexsign_doc_id) setBexsignDocId(doc.bexsign_doc_id);
 
         // Documents: server rows carry the file ids that keep fields attached to the right document
@@ -1625,7 +1641,7 @@ export default function DocumentEditor() {
     localStorage.setItem(`bexsign_doc_${id}_fields`, JSON.stringify(Object.values(fieldsPayload).flat()));
 
     try {
-      const res = await fetch(`http://localhost:5000/api/documents/${id}/save`, {
+      const res = await fetch(`${API_BASE}/documents/${id}/save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1660,6 +1676,42 @@ export default function DocumentEditor() {
     }
   };
   saveDraftRef.current = handleSaveDraft;
+
+  // "Sign yourself": load the self-sign record this document belongs to, so the editor knows where to finish
+  useEffect(() => {
+    if (!isSelfSign || !id) return undefined;
+    let cancelled = false;
+    getSelfSignByDocument(id)
+      .then((data) => {
+        if (!cancelled) setSelfSignRecord(data?.selfSign || data?.record || null);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [isSelfSign, id]);
+
+  /** Places the fields, signs the document as the logged-in user and finishes the self-sign flow. */
+  const handleSignYourself = async () => {
+    if (selfSignBusy) return;
+    const fieldsPayload = buildFieldsPayload();
+    const placed = Object.values(fieldsPayload).flat();
+    if (placed.length === 0) {
+      showPopupAlert('Add at least one field (a signature, a date, your name...) before signing.', { title: 'Nothing to sign', type: 'warning' });
+      return;
+    }
+    setSelfSignBusy(true);
+    try {
+      await handleSaveDraft({ silent: true });
+      const record = selfSignRecord || (await getSelfSignByDocument(id).then((d) => d?.selfSign || d?.record || null).catch(() => null));
+      if (!record?.id) throw new Error('This document is not part of a Sign yourself flow.');
+      await prepareSelfSign(record.id).catch(() => {});
+      await completeSelfSign(record.id, {});
+      navigate(`/sign-yourself/doc/${record.id}`);
+    } catch (e) {
+      showPopupAlert(e.message || 'The document could not be signed.', { title: 'Signing failed', type: 'error' });
+    } finally {
+      setSelfSignBusy(false);
+    }
+  };
 
   // Auto-save the draft (fields per document) shortly after every change
   useEffect(() => {
@@ -1713,13 +1765,19 @@ export default function DocumentEditor() {
     const signers = recipientList.filter((r) => r.role !== 'Receives a copy');
     const stepOfRecipient = (r) => r.signingOrder || 1;
     const isParallel = signingOrderMode === 'parallel';
-    // Every signer is emailed when the request is sent; "Send in order" emails them one after another by step
+    // Sending a request that was sent before restarts the round, so everyone counts as waiting again
+    const isResend = Boolean(requestStatus) && requestStatus !== 'Draft';
+    const waiting = isResend ? signers : signers.filter((r) => !['signed', 'declined'].includes(r.status));
+    const ordered = [...waiting].sort((a, b) => stepOfRecipient(a) - stepOfRecipient(b));
+    const firstStep = ordered.length > 0 ? stepOfRecipient(ordered[0]) : 1;
+    // "Send in order": only the first step is emailed now, the next step follows once this one has signed
     return {
       isParallel,
-      now: isParallel ? signers : [...signers].sort((a, b) => stepOfRecipient(a) - stepOfRecipient(b)),
+      sharesFields: !isParallel && signingFlowMode === 'sequential_shared',
+      now: isParallel ? waiting : ordered.filter((r) => stepOfRecipient(r) === firstStep),
+      later: isParallel ? [] : ordered.filter((r) => stepOfRecipient(r) !== firstStep),
       alreadySigned: recipientList.filter((r) => r.status === 'signed'),
-      // A request that was sent before starts a new signing round when it is sent again
-      isResend: Boolean(requestStatus) && requestStatus !== 'Draft'
+      isResend
     };
   })();
 
@@ -1752,7 +1810,7 @@ export default function DocumentEditor() {
     localStorage.setItem(`bexsign_doc_${id}_recipients`, JSON.stringify(recipientList));
 
     try {
-      const res = await fetch(`http://localhost:5000/api/documents/send/${id}`, {
+      const res = await fetch(`${API_BASE}/documents/send/${id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1794,7 +1852,7 @@ export default function DocumentEditor() {
     } catch (err) {
       // fetch rejects with a TypeError only when the server could not be reached at all
       const message = err instanceof TypeError
-        ? 'Could not reach the BexSign server at http://localhost:5000, so the document was not sent and no emails went out. Make sure the server is running, then try again.'
+        ? `Could not reach the BexSign server at ${API_ORIGIN}, so the document was not sent and no emails went out. Make sure the server is running, then try again.`
         : err.message;
       showPopupAlert(message, { title: 'Send failed', type: 'error' });
     } finally {
@@ -1807,7 +1865,7 @@ export default function DocumentEditor() {
     if (requestStatus !== 'Draft' || !id) return;
     discardedRef.current = true;
     try {
-      await fetch(`http://localhost:5000/api/documents/${id}?permanent=true`, { method: 'DELETE' });
+      await fetch(`${API_BASE}/documents/${id}?permanent=true`, { method: 'DELETE' });
     } catch (e) {}
     ['documents', 'recipients', 'fields_by_doc', 'fields', 'is_new', 'settings', 'extra_pages'].forEach((key) => {
       localStorage.removeItem(`bexsign_doc_${id}_${key}`);
@@ -2235,12 +2293,26 @@ export default function DocumentEditor() {
           </div>
 
           <button
-            onClick={handleContinueToSend}
+            onClick={() => (isSelfSign
+              ? navigate(selfSignRecord?.id ? `/sign-yourself/doc/${selfSignRecord.id}` : '/sign-yourself')
+              : handleContinueToSend())}
             className="hidden sm:flex px-3.5 py-1.5 border border-slate-700 text-slate-300 rounded text-xs font-semibold hover:bg-slate-800 items-center gap-1 transition"
           >
             <span>Back</span>
           </button>
 
+          {isSelfSign ? (
+            // Signing yourself: no recipients, no emails - place the fields and finish
+            <button
+              onClick={handleSignYourself}
+              disabled={selfSignBusy}
+              className="bg-[#007355] hover:bg-[#005c44] disabled:opacity-60 disabled:cursor-not-allowed text-white px-3 sm:px-4 py-1.5 rounded text-xs font-extrabold flex items-center gap-1.5 shadow-md transition cursor-pointer"
+              title="Sign this document with your saved signature and finish"
+            >
+              <PenTool size={13} />
+              <span>{selfSignBusy ? 'Signing...' : 'Sign & finish'}</span>
+            </button>
+          ) : (
           <div className="relative flex items-center">
             <button
               onClick={openSendConfirm}
@@ -2273,6 +2345,7 @@ export default function DocumentEditor() {
               </div>
             )}
           </div>
+          )}
           <button
             type="button"
             onClick={() => {
@@ -2562,7 +2635,7 @@ export default function DocumentEditor() {
                         {/* Full Document Clauses & Text */}
                         <div className="text-xs text-slate-700 leading-relaxed font-sans select-text">
                           {/<[a-z][\s\S]*>/i.test(currentDocument.documentText || '') ? (
-                            <div dangerouslySetInnerHTML={{ __html: currentDocument.documentText }} className="space-y-2" />
+                            <div dangerouslySetInnerHTML={{ __html: currentDocument.documentText }} className="space-y-2 bex-rich-text" />
                           ) : (
                             <div className="whitespace-pre-line">
                               {currentDocument.documentText || getDefaultDocContent(currentDocument.name, currentDocument.customMessage)}
@@ -4991,7 +5064,7 @@ export default function DocumentEditor() {
                           wordBreak: 'break-word',
                           overflowWrap: 'anywhere'
                         }}
-                        className="focus:outline-none selection:bg-emerald-200 text-slate-800 cursor-text select-text"
+                        className="focus:outline-none selection:bg-emerald-200 text-slate-800 cursor-text select-text bex-rich-text"
                       />
                     </div>
                   </div>
@@ -5353,7 +5426,9 @@ export default function DocumentEditor() {
                           ) : (
                             <span
                               className={`inline-flex items-center justify-center min-w-6 h-6 px-1.5 rounded-full text-[10px] font-bold ${emailedNow ? 'bg-[#007355] text-white' : 'bg-slate-100 text-slate-600 border border-slate-200'}`}
-                              title={emailedNow ? (sendPlan.isParallel ? 'Emailed as soon as you send' : `Emailed as soon as you send, as number ${rec.signingOrder || 1} in the order`) : 'Not emailed'}
+                              title={emailedNow
+                                ? (sendPlan.isParallel ? 'Emailed as soon as you send' : `Emailed as soon as you send, as number ${rec.signingOrder || 1} in the order`)
+                                : (sendPlan.isParallel ? 'Not emailed' : `Emailed once number ${Math.max((rec.signingOrder || 1) - 1, 1)} has signed`)}
                             >
                               {sendPlan.isParallel ? 'All' : rec.signingOrder || 1}
                             </span>
@@ -5389,13 +5464,26 @@ export default function DocumentEditor() {
                   {sendPlan.isParallel ? (
                     <>
                       <strong className="text-slate-800">Everyone at once:</strong> {sendPlan.now.map((r) => r.name || r.email).join(', ')}
+                      <br />
+                      <span className="text-slate-500">They can sign in any order and only see their own fields.</span>
                     </>
                   ) : (
                     <>
-                      <strong className="text-slate-800">Emailed now, one after another:</strong>{' '}
+                      <strong className="text-slate-800">Emailed now:</strong>{' '}
                       {sendPlan.now.map((r) => `${r.signingOrder || 1}. ${r.name || r.email}`).join(', ') || '-'}
                       <br />
-                      <span className="text-slate-500">Nobody waits for an earlier recipient to sign.</span>
+                      {sendPlan.later.length > 0 && (
+                        <>
+                          <strong className="text-slate-800">Then, each one after the previous has signed:</strong>{' '}
+                          {sendPlan.later.map((r) => `${r.signingOrder || 1}. ${r.name || r.email}`).join(', ')}
+                          <br />
+                        </>
+                      )}
+                      <span className="text-slate-500">
+                        {sendPlan.sharesFields
+                          ? 'Each recipient opens the document with the fields the earlier recipients completed.'
+                          : 'Recipients only see their own fields.'}
+                      </span>
                     </>
                   )}
                 </p>

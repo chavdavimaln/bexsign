@@ -190,10 +190,15 @@ export function Field({ label, hint, children, required = false }) {
 
 export const inputClass = 'w-full px-3 py-2 text-sm border border-slate-300 rounded-xl bg-white text-slate-900 focus:outline-none focus:border-[#007355] focus:ring-2 focus:ring-emerald-100 disabled:bg-slate-50 disabled:text-slate-500';
 
-export function Toggle({ checked, onChange, label, description, disabled = false }) {
+/**
+ * A switch with its label beside it. In a table, where the column header already says what the switch is for,
+ * pass `hideLabel` so the label stays available to screen readers without crowding the cell.
+ */
+export function Toggle({ checked, onChange, label, description, disabled = false, hideLabel = false }) {
   return (
-    <label className={`flex items-start justify-between gap-4 ${disabled ? 'opacity-60' : 'cursor-pointer'}`}>
-      {(label || description) && (
+    <label className={`flex items-start ${hideLabel ? 'justify-center' : 'justify-between'} gap-4 ${disabled ? 'opacity-60' : 'cursor-pointer'}`}>
+      {hideLabel && label && <span className="sr-only">{label}</span>}
+      {!hideLabel && (label || description) && (
         <span className="min-w-0">
           {label && <span className="block text-sm font-semibold text-slate-800">{label}</span>}
           {description && <span className="block text-xs text-slate-500 mt-0.5">{description}</span>}

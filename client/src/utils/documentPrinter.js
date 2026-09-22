@@ -63,7 +63,7 @@ export function printDocumentSheet({
       <div class="fields-grid">
         ${allFields.map((f) => {
           // Another recipient's masked field never appears in this copy
-          if (f.isAssignedToOther) return '';
+          if (f.isAssignedToOther && !f.completedByOther) return '';
           if (isSignatureField(f)) {
             const ownSignature = getFieldSignatureImage(f);
             // One signature box per signer: another recipient's unsigned signature field is left out (no empty box)
