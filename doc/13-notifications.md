@@ -19,7 +19,7 @@ Pages: `client/src/pages/Notifications.jsx`, `client/src/pages/settings/Notifica
 | `security` | failed sign-ins, signing links opened by a non-recipient, repeated failures |
 | `template` | a shared template was created |
 | `report` | a scheduled report ran |
-| `api` | API key and webhook events |
+| `api` | API key and webhook events; an OAuth app registered in your name ([25](25-oauth-apps.md)) |
 | `system` | announcements and broadcasts |
 
 Each notification carries a severity (`info`, `success`, `warning`, `error`), a link to the thing it is about, and

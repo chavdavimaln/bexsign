@@ -527,6 +527,8 @@ async function updateSignature(user, id, body = {}) {
 /** Deletes one of the caller's own signatures and keeps the legacy directory in step. */
 async function deleteSignature(user, id) {
   const current = await requireOwnedSignature(user, id);
+  // Kept in the trash so it can be restored
+  await require('./trashStore').trashSignature(current, user);
   await db.query('DELETE FROM user_signatures WHERE id = ?', [current.id]);
   if (current.legacy_employee_id) {
     await db.query('DELETE FROM employee_signatures WHERE id = ?', [current.legacy_employee_id]);

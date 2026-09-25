@@ -35,6 +35,7 @@ import TemplatePickerModal from '../components/templates/TemplatePickerModal';
 import { apiFetch } from '../utils/api';
 import { templatesToDocuments, countTemplateUse, countPlaceholders } from '../components/templates/templateUi';
 import { API_BASE } from '../utils/api';
+import PasswordInput from '../components/ui/PasswordInput';
 
 // Zoho Sign limits
 const MAX_RECIPIENTS = 25;
@@ -236,11 +237,12 @@ export default function SendForSignatures() {
   // Signing flow (document_signing_flow): in order + completed fields shown is the default for a new request
   const [sendInOrder, setSendInOrder] = useState(true);
   const [showPreviousFields, setShowPreviousFields] = useState(true);
+  // "Send document" from Contacts opens this page with that person as the first recipient
   const [recipients, setRecipients] = useState(() => [
     {
       id: 1,
-      email: currentUser.email,
-      name: currentUser.name,
+      email: location.state?.recipient?.email || currentUser.email,
+      name: location.state?.recipient?.email ? (location.state.recipient.name || '') : currentUser.name,
       role: 'Needs to sign',
       deliveryMode: 'Email',
       auth: 'Email OTP',
@@ -943,8 +945,30 @@ export default function SendForSignatures() {
     setRecipients(normalizeRecipientSteps(recipients.filter((_, idx) => idx !== index)));
   };
 
+  // Contacts (Settings > Contacts) suggested while typing an email; picking one fills in the name
+  const [contactSuggestions, setContactSuggestions] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch('/contacts/suggest?limit=300')
+      .then((data) => {
+        if (!cancelled) setContactSuggestions(data.contacts || []);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const updateRecipientField = (index, field, value) => {
-    setRecipients((prev) => prev.map((r, idx) => (idx === index ? { ...r, [field]: value } : r)));
+    const contact = field === 'email'
+      ? contactSuggestions.find((c) => String(c.email).toLowerCase() === String(value).trim().toLowerCase())
+      : null;
+    setRecipients((prev) => prev.map((r, idx) => {
+      if (idx !== index) return r;
+      const next = { ...r, [field]: value };
+      if (contact && !String(r.name || '').trim()) next.name = contact.name;
+      return next;
+    }));
   };
 
   // Typing a step number: recipients with the same number receive the email at the same time
@@ -1707,6 +1731,11 @@ export default function SendForSignatures() {
 
           {/* Recipient Rows (Matching Screenshot 4 Blue Left Accent Bar) */}
           <div className="space-y-2.5">
+            <datalist id="bexsign-contact-emails">
+              {contactSuggestions.map((c) => (
+                <option key={c.id} value={c.email}>{c.company ? `${c.name} · ${c.company}` : c.name}</option>
+              ))}
+            </datalist>
             {recipients.map((rec, index) => (
               <div
                 key={rec.id}
@@ -1780,6 +1809,7 @@ export default function SendForSignatures() {
                   <input
                     type="email"
                     placeholder="Email"
+                    list="bexsign-contact-emails"
                     value={rec.email}
                     onChange={(e) => updateRecipientField(index, 'email', e.target.value)}
                     aria-invalid={Boolean(recipientIssues[index])}
@@ -2175,8 +2205,8 @@ export default function SendForSignatures() {
               {recipients[activeCustomizeIndex].auth === 'Offline Passcode' && (
                 <div>
                   <label className="block font-semibold text-slate-700 mb-1">Access Passcode</label>
-                  <input
-                    type="password"
+                  <PasswordInput
+                    iconSize={14}
                     placeholder="Enter recipient access passcode"
                     value={recipients[activeCustomizeIndex].passcode || ''}
                     onChange={(e) => updateRecipientField(activeCustomizeIndex, 'passcode', e.target.value)}

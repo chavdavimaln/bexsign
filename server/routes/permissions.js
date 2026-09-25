@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
-const { authenticateUser } = require('../middleware/authMiddleware');
+const { authenticateUser, requireSignedIn } = require('../middleware/authMiddleware');
 const {
   CATALOG,
   MODULE_LABELS,
@@ -22,7 +22,8 @@ router.use(async (req, res, next) => {
     res.status(500).json({ success: false, error: 'The permission tables could not be prepared.' });
   }
 });
-router.use(authenticateUser);
+// Signed-in users only (a request without a sign-in is refused)
+router.use(authenticateUser, requireSignedIn);
 
 const catalogByModule = () => {
   const modules = [];
@@ -290,7 +291,8 @@ router.put('/users/:id/overrides', requirePermission('roles.manage'), async (req
 });
 
 // @route PUT /api/permissions/users/:id/role { role }
-router.put('/users/:id/role', requirePermission('roles.manage', 'users.edit'), async (req, res) => {
+// Changing a role changes what someone may do: only people who manage roles and permissions
+router.put('/users/:id/role', requirePermission('roles.manage'), async (req, res) => {
   const role = normalizeRole(req.body.role);
   try {
     const [roles] = await db.query('SELECT role_name FROM roles WHERE role_key = ?', [role]);

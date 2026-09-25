@@ -51,6 +51,7 @@ import {
   shareSelfSign,
   downloadSelfSign
 } from '../components/selfsign/selfSignApi';
+import { usePermissions } from '../utils/permissions';
 
 const TABS = [
   { id: 'all', label: 'All', icon: Layers, stage: 'all' },
@@ -80,6 +81,10 @@ export default function SignYourself() {
   const navigate = useNavigate();
   const { tab: tabParam } = useParams();
   const activeTab = TABS.some((t) => t.id === tabParam) ? tabParam : 'all';
+  const { can } = usePermissions();
+  const canCreate = can('documents.create');
+  const canDownload = can('documents.download');
+  const canDelete = can('documents.delete');
 
   const [toast, showToast] = useToast();
   const [state, setState] = useState({ status: 'loading', items: [], total: 0, stats: {}, error: '' });
@@ -179,16 +184,18 @@ export default function SignYourself() {
 
   const actionsFor = (item) => [
     { label: 'Open', icon: Eye, onClick: () => openDetail(item) },
-    { label: item.stage === 'signed' ? 'View fields' : (item.hasFields ? 'Edit fields' : 'Add fields'), icon: PenTool, onClick: () => openPrepare(item) },
-    { label: 'Rename', icon: Pencil, onClick: () => setRenaming(item), hidden: item.stage === 'signed' },
-    { label: item.stage === 'signed' ? 'Download signed PDF' : 'Download a copy', icon: Download, onClick: () => runDownload(item) },
-    { label: 'Email a copy', icon: Mail, onClick: () => setSharing(item) },
+    // The field editor route requires 'documents.create', even just to view the fields of a signed document
+    { label: item.stage === 'signed' ? 'View fields' : (item.hasFields ? 'Edit fields' : 'Add fields'), icon: PenTool, onClick: () => openPrepare(item), hidden: !canCreate },
+    { label: 'Rename', icon: Pencil, onClick: () => setRenaming(item), hidden: item.stage === 'signed' || !canCreate },
+    { label: item.stage === 'signed' ? 'Download signed PDF' : 'Download a copy', icon: Download, onClick: () => runDownload(item), hidden: !canDownload },
+    { label: 'Email a copy', icon: Mail, onClick: () => setSharing(item), hidden: !canDownload },
     { label: 'History', icon: History, onClick: () => navigate(`/sign-yourself/doc/${item.id}/history`) },
-    { label: 'Delete', icon: Trash2, danger: true, onClick: () => setDeleting(item) }
+    { label: 'Delete', icon: Trash2, danger: true, onClick: () => setDeleting(item), hidden: !canDelete }
   ];
 
   const primaryFor = (item) => {
-    if (item.stage === 'signed') return { label: 'Download', icon: Download, variant: 'secondary', onClick: runDownload };
+    if (item.stage === 'signed') return canDownload ? { label: 'Download', icon: Download, variant: 'secondary', onClick: runDownload } : null;
+    if (!canCreate) return null;
     if (item.stage === 'prepared') return { label: 'Sign now', icon: FileSignature, onClick: openPrepare };
     return { label: 'Add fields', icon: PenTool, variant: 'secondary', onClick: openPrepare };
   };
@@ -203,7 +210,7 @@ export default function SignYourself() {
         actions={(
           <>
             <Button variant="secondary" icon={RefreshCw} onClick={load} busy={state.status === 'refreshing'}>Refresh</Button>
-            <Button icon={Plus} onClick={() => navigate('/sign-yourself/new')}>New self-sign document</Button>
+            {canCreate && <Button icon={Plus} onClick={() => navigate('/sign-yourself/new')}>New self-sign document</Button>}
           </>
         )}
       />
@@ -235,7 +242,7 @@ export default function SignYourself() {
               icon={Inbox}
               title={EMPTY_STATES[activeTab].title}
               description={debounced ? `Nothing matches "${debounced}".` : EMPTY_STATES[activeTab].description}
-              action={<Button icon={Plus} onClick={() => navigate('/sign-yourself/new')}>Start a self-sign document</Button>}
+              action={canCreate ? <Button icon={Plus} onClick={() => navigate('/sign-yourself/new')}>Start a self-sign document</Button> : null}
             />
           )}
 
@@ -276,9 +283,11 @@ export default function SignYourself() {
             </li>
           ))}
         </ol>
-        <div className="mt-4">
-          <Button icon={ArrowRight} onClick={() => navigate('/sign-yourself/new')}>Start now</Button>
-        </div>
+        {canCreate && (
+          <div className="mt-4">
+            <Button icon={ArrowRight} onClick={() => navigate('/sign-yourself/new')}>Start now</Button>
+          </div>
+        )}
       </Card>
 
       <RenameModal
@@ -294,7 +303,7 @@ export default function SignYourself() {
       <ConfirmDialog
         open={Boolean(deleting)}
         title="Delete this self-sign document?"
-        message={`"${deleting?.title || ''}" and its documents, fields and history are removed for good. This cannot be undone.`}
+        message={`"${deleting?.title || ''}" and its documents, fields and history are moved to the trash. You can restore it from Settings > Trash.`}
         confirmLabel="Delete"
         danger
         busy={busy}

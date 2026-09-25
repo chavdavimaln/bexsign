@@ -673,7 +673,12 @@ function generateCompletionCertificatePdf({
         doc.font('Helvetica-Bold').fontSize(10).fillColor(COLORS.text).text(`${idx + 1}. ${r.name || r.email}`, left, blockTop, { width: width - 190 });
         doc.font('Helvetica').fontSize(8.5).fillColor(COLORS.muted).text(`${r.email}   |   ${r.role_label || 'Needs to sign'}`, { width: width - 190 });
         doc.moveDown(0.3);
-        const detailRows = [
+        // "Receives a copy" recipients never sign, so the signing timeline rows and the signature box don't apply
+        const isCopy = r.role === 'viewer' || r.role === 'reviewer';
+        // The copy is the completion email this certificate goes out with, so before delivery it reads "sent on completion"
+        const detailRows = isCopy ? [
+          ['Status', r.sent_at ? 'COPY SENT' : 'SENT ON COMPLETION']
+        ] : [
           ['Status', String(r.status || 'pending').toUpperCase()],
           ['Emailed on', formatDateTime(r.sent_at)],
           ['Viewed on', formatDateTime(r.viewed_at)],
@@ -694,7 +699,7 @@ function generateCompletionCertificatePdf({
         const sigImage = imageBufferFromDataUrl(r.signature_image);
         const boxX = left + width - 180;
         const boxY = blockTop + 4;
-        if (r.role !== 'viewer' && r.role !== 'reviewer') {
+        if (!isCopy) {
           doc.rect(boxX, boxY, 180, 60).strokeColor(COLORS.border).lineWidth(0.75).stroke();
           let drawn = false;
           if (sigImage) {
@@ -712,7 +717,7 @@ function generateCompletionCertificatePdf({
           }
         }
         doc.x = left;
-        doc.y = Math.max(textBottom, boxY + 64) + 8;
+        doc.y = (isCopy ? textBottom : Math.max(textBottom, boxY + 64)) + 8;
         doc.moveTo(left, doc.y).lineTo(left + width, doc.y).strokeColor(COLORS.soft).lineWidth(0.75).stroke();
         doc.moveDown(0.5);
       });

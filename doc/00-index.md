@@ -21,21 +21,24 @@ Start with [01 — Installation](01-installation.md); to put it on a server, go 
 | [08 — Signing](08-signing.md) | The recipient's experience |
 | [09 — Templates](09-templates.md) | The 100-template library and your own |
 | [10 — Reports](10-reports.md) | Overview, timeline, scheduled reports |
-| [11 — Contacts](11-contacts.md) | Address book |
+| [11 — Contacts](11-contacts.md) | Contact book: synced from sent requests, import/export, tags, recipient suggestions |
 | [12 — Signatures](12-signatures.md) | Your stamps, the team directory, usage history |
 | [13 — Notifications](13-notifications.md) | Bell, page, preferences |
 | [22 — Sign Yourself](22-sign-yourself.md) | Documents you sign on your own |
 | [23 — Verify & Confirm](23-verify-and-confirm.md) | The final check on a completed request |
+| [24 — Trash](24-trash.md) | Restore or permanently delete documents, self-sign documents, templates, signatures, contacts; retention |
+| [26 — Settings Navigation](26-settings-navigation.md) | The Settings sidebar, every settings route, old-link redirects |
 
 ## Platform and integration
 | | |
 |---|---|
-| [14 — Integrations](14-integrations.md) | Webhooks, the public API, what is not built yet |
+| [14 — Integrations](14-integrations.md) | Bexcode CRM, Google / Microsoft sign-in, Stripe Identity, Dropbox, Zapier, Slack, custom webhooks |
 | [15 — API Reference](15-api.md) | Every endpoint |
+| [25 — OAuth Apps](25-oauth-apps.md) | OAuth client credentials for external apps: tokens, revoke, introspect |
 | [16 — Database](16-database.md) | Every table, who writes it, how to query it |
 | [17 — Email](17-email.md) | SMTP, the messages, dry-run mode |
 | [18 — Storage and PDFs](18-storage.md) | Uploads, signed PDFs, certificates, fingerprints |
-| [19 — Security](19-security.md) | Roles, the 33 permissions, what is logged |
+| [19 — Security](19-security.md) | Roles, the 34 permissions, what is logged |
 
 ## Running it for real
 | | |

@@ -8,14 +8,15 @@
 const express = require('express');
 const multer = require('multer');
 const db = require('../db');
-const { authenticateUser } = require('../middleware/authMiddleware');
+const { authenticateUser, requireSignedIn } = require('../middleware/authMiddleware');
 const { requirePermission } = require('../utils/permissions');
 const { logActivity } = require('../utils/platformEvents');
 const { findFingerprint, ensureFingerprintTable } = require('../utils/pdfFingerprints');
 const { KIND_LABELS, ensureValiditySchema, recordValidityCheck, verifyPdfBuffer, describeIssuedFile } = require('../utils/validityLog');
 
 const router = express.Router();
-router.use(authenticateUser);
+// Signed-in users only (a request without a sign-in is refused)
+router.use(authenticateUser, requireSignedIn);
 
 const canFailed = requirePermission('security.failed_access');
 const canValidity = requirePermission('security.document_validity');

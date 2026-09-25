@@ -10,6 +10,7 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
+import OAuthCallback from './pages/OAuthCallback';
 
 // Dashboard & Core Pages
 import Dashboard from './pages/Dashboard';
@@ -28,9 +29,7 @@ import SelfSignDetail from './pages/selfsign/SelfSignDetail';
 import BulkSend from './pages/BulkSend';
 import Templates from './pages/Templates';
 import Reports from './pages/Reports';
-import Integrations from './pages/Integrations';
 import MyProfile from './pages/MyProfile';
-import Settings from './pages/Settings';
 import SignaturesModule from './pages/SignaturesModule';
 import UserManagement from './pages/UserManagement';
 import VerifyDocument from './pages/VerifyDocument';
@@ -45,6 +44,11 @@ import NotificationSettings from './pages/settings/NotificationSettings';
 import FailedAccess from './pages/settings/FailedAccess';
 import DocumentValidity from './pages/settings/DocumentValidity';
 import ActivityHistory from './pages/settings/ActivityHistory';
+import Integrations from './pages/settings/Integrations';
+import IntegrationDetail from './pages/settings/IntegrationDetail';
+import Contacts from './pages/settings/Contacts';
+import Trash from './pages/settings/Trash';
+import OAuthApps from './pages/settings/OAuthApps';
 
 // The former "Others" pages now live in Settings
 const OTHERS_REDIRECTS = {
@@ -67,6 +71,7 @@ export default function App() {
         <Route path="/register" element={<Register />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="/oauth/callback" element={<OAuthCallback />} />
 
         {/* Public Recipient Signing Token Route (Section 21 & 22 PDF Requirement) */}
         <Route path="/sign/:token" element={<PublicSigning />} />
@@ -81,17 +86,17 @@ export default function App() {
           {/* Document Workflows */}
           <Route path="/documents" element={<DocumentsList />} />
           <Route path="/documents/all" element={<DocumentsList />} />
-          <Route path="/documents/sent/bulk" element={<BulkSend />} />
+          <Route path="/documents/sent/bulk" element={<RequirePermission any={['documents.send']}><BulkSend /></RequirePermission>} />
           <Route path="/documents/sent/:statusFilter" element={<DocumentsList />} />
           <Route path="/documents/received" element={<DocumentsList />} />
           <Route path="/documents/received/:statusFilter" element={<DocumentsList />} />
-          <Route path="/documents/create" element={<SendForSignatures />} />
-          <Route path="/documents/create-editor" element={<RichTextDocumentEditor />} />
+          <Route path="/documents/create" element={<RequirePermission any={['documents.create']}><SendForSignatures /></RequirePermission>} />
+          <Route path="/documents/create-editor" element={<RequirePermission any={['documents.create']}><RichTextDocumentEditor /></RequirePermission>} />
           <Route path="/documents/:id" element={<DocumentDetails />} />
           <Route path="/documents/:id/details" element={<DocumentDetails />} />
-          <Route path="/documents/:id/edit" element={<DocumentEditor />} />
+          <Route path="/documents/:id/edit" element={<RequirePermission any={['documents.create']}><DocumentEditor /></RequirePermission>} />
           <Route path="/documents/:id/view" element={<DocumentViewer />} />
-          <Route path="/documents/:id/send" element={<SendForSignatures />} />
+          <Route path="/documents/:id/send" element={<RequirePermission any={['documents.create']}><SendForSignatures /></RequirePermission>} />
           <Route path="/documents/:id/email-preview" element={<EmailInvitationPreview />} />
 
           {/* Older links keep working, but every page lives at one address so the sidebar highlights one entry */}
@@ -99,17 +104,17 @@ export default function App() {
 
           {/* Sign yourself: the hub and its tabs, the step-by-step create flow, one document, and the field editor */}
           <Route path="/sign-yourself" element={<SignYourself />} />
-          <Route path="/sign-yourself/new" element={<SelfSignCreate />} />
-          <Route path="/sign-yourself/new/:id" element={<SelfSignCreate />} />
+          <Route path="/sign-yourself/new" element={<RequirePermission any={['documents.create']}><SelfSignCreate /></RequirePermission>} />
+          <Route path="/sign-yourself/new/:id" element={<RequirePermission any={['documents.create']}><SelfSignCreate /></RequirePermission>} />
           <Route path="/sign-yourself/doc/:id" element={<SelfSignDetail />} />
           <Route path="/sign-yourself/doc/:id/history" element={<SelfSignDetail />} />
-          <Route path="/sign-yourself/prepare/:id" element={<DocumentEditor />} />
+          <Route path="/sign-yourself/prepare/:id" element={<RequirePermission any={['documents.create']}><DocumentEditor /></RequirePermission>} />
           <Route path="/sign-yourself/:tab" element={<SignYourself />} />
           <Route path="/signatures" element={<SignaturesModule />} />
           <Route path="/settings/signatures" element={<Navigate to="/signatures" replace />} />
 
           {/* Templates & Reports */}
-          <Route path="/templates" element={<Templates />} />
+          <Route path="/templates" element={<RequirePermission any={['templates.view']}><Templates /></RequirePermission>} />
           <Route path="/reports" element={<RequirePermission any={['reports.view']}><Reports /></RequirePermission>} />
           <Route path="/reports/:tab" element={<RequirePermission any={['reports.view']}><Reports /></RequirePermission>} />
 
@@ -117,7 +122,7 @@ export default function App() {
           <Route path="/notifications" element={<Notifications />} />
 
           {/* Settings: organization, account, security & logs, developer */}
-          <Route path="/users" element={<UserManagement />} />
+          <Route path="/users" element={<RequirePermission any={['users.view']}><UserManagement /></RequirePermission>} />
           <Route path="/settings/users" element={<Navigate to="/users" replace />} />
           <Route path="/others/:tab" element={<OthersRedirect />} />
           <Route path="/settings" element={<Navigate to="/settings/general" replace />} />
@@ -125,15 +130,19 @@ export default function App() {
           <Route path="/settings/permissions" element={<RequirePermission any={['roles.manage', 'users.view']}><PermissionsPage /></RequirePermission>} />
           <Route path="/settings/profile" element={<MyProfile />} />
           <Route path="/settings/notifications" element={<NotificationSettings />} />
-          <Route path="/settings/contacts" element={<Settings />} />
-          <Route path="/settings/trash" element={<DocumentsList />} />
+          <Route path="/settings/contacts" element={<Contacts />} />
+          <Route path="/settings/trash" element={<Trash />} />
           <Route path="/settings/integrations" element={<Integrations />} />
+          <Route path="/settings/integrations/:key" element={<IntegrationDetail />} />
+          <Route path="/integrations" element={<Navigate to="/settings/integrations" replace />} />
           <Route path="/settings/failed-access" element={<RequirePermission any={['security.failed_access']}><FailedAccess /></RequirePermission>} />
           <Route path="/settings/document-validity" element={<RequirePermission any={['security.document_validity']}><DocumentValidity /></RequirePermission>} />
           <Route path="/settings/activity-history" element={<RequirePermission any={['security.activity_history']}><ActivityHistory /></RequirePermission>} />
           <Route path="/settings/developer" element={<RequirePermission any={['settings.developer']}><DeveloperSettings /></RequirePermission>} />
           <Route path="/settings/developer-api" element={<RequirePermission any={['api.keys', 'api.webhooks', 'api.logs']}><DeveloperApi /></RequirePermission>} />
-          <Route path="/settings/:tab" element={<Settings />} />
+          <Route path="/settings/developer/oauth-apps" element={<RequirePermission any={['api.keys']}><OAuthApps /></RequirePermission>} />
+          {/* Older tabbed settings links ("/settings/<anything>") land on General settings */}
+          <Route path="/settings/:tab" element={<Navigate to="/settings/general" replace />} />
         </Route>
 
         {/* Fallback Catch-all */}

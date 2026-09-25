@@ -6,13 +6,14 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
-const { authenticateUser } = require('../middleware/authMiddleware');
+const { authenticateUser, requireSignedIn } = require('../middleware/authMiddleware');
 const { requirePermission } = require('../utils/permissions');
 const { logActivity } = require('../utils/platformEvents');
 const data = require('../utils/reportData');
 const scheduler = require('../utils/reportScheduler');
 
-router.use(authenticateUser);
+// Signed-in users only (a request without a sign-in is refused)
+router.use(authenticateUser, requireSignedIn);
 
 const handle = (label, fn) => async (req, res) => {
   try {

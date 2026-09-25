@@ -55,6 +55,7 @@ import {
   downloadSelfSign,
   buildDocumentsForm
 } from '../../components/selfsign/selfSignApi';
+import { usePermissions } from '../../utils/permissions';
 
 const STEPS = [
   { id: 'add', label: 'Add documents', hint: 'Upload, template or new' },
@@ -71,6 +72,9 @@ export default function SelfSignCreate() {
   const { id: idParam } = useParams();
   const [params] = useSearchParams();
   const [toast, showToast] = useToast();
+  // The route itself requires 'documents.create'; downloading needs its own permission
+  const { can } = usePermissions();
+  const canDownload = can('documents.download');
 
   // Documents staged before the self-sign document exists on the server (step 1)
   const [staged, setStaged] = useState([]);
@@ -428,7 +432,7 @@ export default function SelfSignCreate() {
                     { label: 'Rename', icon: Pencil, onClick: () => setRenaming(doc) },
                     { label: 'Replace with a file', icon: Replace, onClick: () => { setReplaceTarget(doc); replaceInputRef.current?.click(); } },
                     { label: 'Replace with a template', icon: FileBox, onClick: () => { setReplaceTarget(doc); setTemplateMode('replace'); setShowTemplates(true); } },
-                    { label: 'Download', icon: Download, onClick: () => downloadSelfSign(record.id, { index, fallbackName: doc.name }).catch((e) => showToast('error', e.message)) },
+                    { label: 'Download', icon: Download, hidden: !canDownload, onClick: () => downloadSelfSign(record.id, { index, fallbackName: doc.name }).catch((e) => showToast('error', e.message)) },
                     { label: 'Remove', icon: Trash2, danger: true, hidden: documents.length <= 1, onClick: () => setRemoving(doc) }
                   ]}
                 />

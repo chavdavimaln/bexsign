@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
-const { authenticateUser } = require('../middleware/authMiddleware');
+const { authenticateUser, requireSignedIn } = require('../middleware/authMiddleware');
 const { requirePermission, normalizeRole } = require('../utils/permissions');
 const { ensurePlatformSchema } = require('../utils/platformSchema');
 const { NOTIFICATION_CATEGORIES, getPreferences, notify, logActivity } = require('../utils/platformEvents');
@@ -14,7 +14,8 @@ router.use(async (req, res, next) => {
     res.status(500).json({ success: false, error: 'The notification tables could not be prepared.' });
   }
 });
-router.use(authenticateUser);
+// Signed-in users only (a request without a sign-in is refused)
+router.use(authenticateUser, requireSignedIn);
 
 const toItem = (row) => ({
   id: row.id,

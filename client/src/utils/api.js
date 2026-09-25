@@ -94,3 +94,55 @@ export async function apiDownload(path, fallbackName = 'export.csv') {
   link.remove();
   setTimeout(() => URL.revokeObjectURL(href), 1500);
 }
+
+/** Pages that work without signing in (sign-in pages, public signing links, the verify page). */
+export const PUBLIC_PATHS = ['/login', '/register', '/forgot-password', '/reset-password', '/oauth/callback', '/sign/', '/documents/sign/', '/verify'];
+export const isPublicPath = (pathname = window.location.pathname) => PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p.endsWith('/') ? p : `${p}/`));
+
+/** The stored sign-in token when it is a real (JWT) session; null otherwise. */
+export function sessionToken() {
+  try {
+    const token = localStorage.getItem('token');
+    return token && token.split('.').length === 3 ? token : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+export function clearSession() {
+  try {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+  } catch (e) {}
+}
+
+/**
+ * Every request to the BexSign API carries the signed-in user's token, so the server applies that user's roles
+ * and permissions (not only calls made with apiFetch). When the server says the session ended, the app goes back
+ * to the sign-in page (never on public pages such as signing links).
+ */
+export function installAuthFetch() {
+  if (typeof window === 'undefined' || window.__bexsignAuthFetch) return;
+  window.__bexsignAuthFetch = true;
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input?.url || '';
+    const isApi = url.startsWith(API_BASE) || url.startsWith('/api/');
+    let options = init;
+    if (isApi) {
+      const token = sessionToken();
+      const headers = new Headers(init?.headers || (typeof input !== 'string' ? input.headers : undefined));
+      if (token && !headers.has('Authorization')) headers.set('Authorization', `Bearer ${token}`);
+      options = { ...init, headers };
+    }
+    const res = await nativeFetch(input, options);
+    if (isApi && res.status === 401 && !isPublicPath()) {
+      const data = await res.clone().json().catch(() => ({}));
+      if (data.sessionExpired) {
+        clearSession();
+        window.location.assign('/login');
+      }
+    }
+    return res;
+  };
+}

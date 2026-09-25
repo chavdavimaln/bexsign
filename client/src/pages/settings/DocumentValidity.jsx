@@ -110,7 +110,7 @@ function ResultCard({ result, onReset }) {
             {result.check?.reference ? ` · Check ${result.check.reference}` : ''}
           </p>
         </div>
-        <Button variant="secondary" icon={RotateCcw} onClick={onReset} className="self-start">Verify another</Button>
+        <Button variant="secondary" icon={RotateCcw} onClick={onReset} className="self-stretch sm:self-start">Verify another</Button>
       </div>
 
       {doc && (
@@ -136,7 +136,7 @@ function ResultCard({ result, onReset }) {
               <Detail label="Issued file">
                 <span className="flex flex-wrap items-center gap-1.5">
                   <Badge tone={KIND_TONES[result.file.kind] || 'slate'}>{result.file.kindLabel}</Badge>
-                  <span className="text-xs">{result.file.fileName}</span>
+                  <span className="text-xs break-all">{result.file.fileName}</span>
                 </span>
               </Detail>
             )}
@@ -157,7 +157,7 @@ function ResultCard({ result, onReset }) {
                     <span className="w-8 h-8 rounded-full bg-emerald-50 text-[#007355] flex items-center justify-center shrink-0"><UserRound size={15} /></span>
                     <span className="min-w-0 flex-1">
                       <span className="flex flex-wrap items-center gap-1.5">
-                        <span className="text-sm font-bold text-slate-800 truncate">{s.name || s.email}</span>
+                        <span className="text-sm font-bold text-slate-800 truncate min-w-0 max-w-full">{s.name || s.email}</span>
                         <Badge tone={s.status === 'signed' ? 'emerald' : s.status === 'declined' ? 'red' : 'slate'}>{s.status || 'pending'}</Badge>
                       </span>
                       <span className="block text-xs text-slate-500 truncate">{s.email}</span>
@@ -358,7 +358,79 @@ function HistoryTab({ reloadKey, onSummary }) {
         )
       ) : (
         <>
-          <div className={`relative overflow-x-auto ${state.loading ? 'opacity-60' : ''}`}>
+          {/* Phones: cards */}
+          <ul className={`md:hidden divide-y divide-slate-100 ${state.loading ? 'opacity-60' : ''}`}>
+            {state.items.map((item) => {
+              const expanded = open === item.id;
+              return (
+                <li key={item.id} className={`p-3 ${expanded ? 'bg-slate-50/70' : ''}`}>
+                  <div className="flex items-start gap-2">
+                    <button type="button" onClick={() => setOpen(expanded ? null : item.id)} aria-expanded={expanded} className="flex-1 min-w-0 text-left cursor-pointer space-y-1">
+                      <span className="flex flex-wrap items-center gap-1.5">
+                        <ResultBadge result={item.result} />
+                        <span className="text-[11px] text-slate-500" title={formatDateTime(item.checkedAt)}>{formatRelative(item.checkedAt)}</span>
+                      </span>
+                      <span className="block text-sm font-bold text-slate-900 break-all">{item.fileName || 'Fingerprint check'}</span>
+                      <code className="block text-[11px] text-slate-400 truncate">{shortHash(item.sha256, 8)}</code>
+                    </button>
+                    <button
+                      type="button"
+                      aria-expanded={expanded}
+                      aria-label={expanded ? 'Hide details' : 'Show details'}
+                      onClick={() => setOpen(expanded ? null : item.id)}
+                      className="w-9 h-9 -mt-1 -mr-1 inline-flex items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 cursor-pointer shrink-0"
+                    >
+                      {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                    </button>
+                  </div>
+                  <dl className="mt-2 grid grid-cols-1 min-[400px]:grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
+                    <div className="min-w-0">
+                      <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Document</dt>
+                      <dd className="text-slate-800 font-semibold truncate">{item.document ? item.document.name : <span className="text-slate-400 font-normal">-</span>}</dd>
+                    </div>
+                    <div className="min-w-0">
+                      <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Checked by</dt>
+                      <dd className="text-slate-700 truncate">{item.checkedBy?.name || item.checkedBy?.email || 'Public check'}</dd>
+                    </div>
+                    <div className="min-w-0">
+                      <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Source</dt>
+                      <dd className="text-slate-700">{SOURCES[item.source] || item.source}</dd>
+                    </div>
+                    <div className="min-w-0">
+                      <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Checked</dt>
+                      <dd className="text-slate-700">{formatDateTime(item.checkedAt)}</dd>
+                    </div>
+                  </dl>
+                  {expanded && (
+                    <div className="mt-3 space-y-3 text-xs">
+                      <p className="text-slate-700 font-semibold break-words">{item.message || '-'}</p>
+                      <dl className="grid gap-3 grid-cols-1">
+                        <Detail label="Check reference">{item.reference}</Detail>
+                        <Detail label="Document">
+                          {item.document ? (
+                            <span className="flex flex-wrap items-center gap-1.5">{item.document.name} <DocStatus status={item.document.status} /></span>
+                          ) : 'No matching document'}
+                        </Detail>
+                        {item.document?.bexsignDocId && (
+                          <Detail label="BexSign ID">
+                            <span className="flex items-start gap-1">
+                              <code className="text-xs break-all">{item.document.bexsignDocId}</code>
+                              <CopyButton value={item.document.bexsignDocId} label="Copy BexSign ID" />
+                            </span>
+                          </Detail>
+                        )}
+                        <Detail label="Checked by"><span className="break-all">{item.checkedBy ? `${item.checkedBy.name || ''} ${item.checkedBy.email ? `(${item.checkedBy.email})` : ''}`.trim() : 'Public check'}{item.ip ? ` · ${item.ip}` : ''}</span></Detail>
+                      </dl>
+                      {item.sha256 && <HashLine label="SHA-256 fingerprint" value={item.sha256} />}
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+
+          {/* Tablets and up: table */}
+          <div className={`relative hidden md:block overflow-x-auto ${state.loading ? 'opacity-60' : ''}`}>
             <table className="w-full text-left">
               <thead>
                 <tr>
@@ -510,11 +582,11 @@ function IssuedTab({ onSummary, onVerifyHash, busy }) {
                         {doc.fingerprintCount > doc.fileCount && <span className="text-[11px] text-slate-400">+{doc.fingerprintCount - doc.fileCount} earlier cop{doc.fingerprintCount - doc.fileCount === 1 ? 'y' : 'ies'}</span>}
                       </div>
                     </div>
-                    <div className="grid grid-cols-2 md:flex md:flex-col md:items-end gap-x-4 gap-y-1 text-xs text-slate-500 shrink-0">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:flex md:flex-col md:items-end gap-x-4 gap-y-1 text-xs text-slate-500 shrink-0 min-w-0">
                       <span>{doc.completedAt ? `Completed ${formatDateTime(doc.completedAt, { withTime: false })}` : `Issued ${formatDateTime(doc.lastIssuedAt, { withTime: false })}`}</span>
                       <span className="md:text-right">
                         {doc.lastCheck ? (
-                          <span className="inline-flex items-center gap-1.5" title={`${doc.lastCheck.checks} verification${doc.lastCheck.checks === 1 ? '' : 's'}`}>
+                          <span className="inline-flex flex-wrap items-center gap-1.5" title={`${doc.lastCheck.checks} verification${doc.lastCheck.checks === 1 ? '' : 's'}`}>
                             Last check <ResultBadge result={doc.lastCheck.result} /> {formatRelative(doc.lastCheck.checkedAt)}
                           </span>
                         ) : 'Never verified'}
@@ -525,7 +597,7 @@ function IssuedTab({ onSummary, onVerifyHash, busy }) {
                     type="button"
                     onClick={() => setOpen(expanded ? null : doc.id)}
                     aria-expanded={expanded}
-                    className="mt-2 sm:ml-[52px] inline-flex items-center gap-1 text-xs font-bold text-[#007355] hover:underline cursor-pointer"
+                    className="mt-2 sm:ml-[52px] py-1.5 sm:py-0 inline-flex items-center gap-1 text-left text-xs font-bold text-[#007355] hover:underline cursor-pointer"
                   >
                     {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                     {expanded ? 'Hide' : 'Show'} issued files and fingerprints ({doc.fingerprintCount})
@@ -552,7 +624,7 @@ function IssuedTab({ onSummary, onVerifyHash, busy }) {
                               disabled={busy}
                               title="Verify this fingerprint"
                               aria-label="Verify this fingerprint"
-                              className="w-7 h-7 inline-flex items-center justify-center rounded-lg text-slate-400 hover:text-[#007355] hover:bg-emerald-50 cursor-pointer disabled:opacity-50"
+                              className="w-9 h-9 sm:w-7 sm:h-7 shrink-0 inline-flex items-center justify-center rounded-lg text-slate-400 hover:text-[#007355] hover:bg-emerald-50 cursor-pointer disabled:opacity-50"
                             >
                               <BadgeCheck size={14} />
                             </button>
@@ -658,8 +730,8 @@ export default function DocumentValidity() {
           <Tabs tabs={tabs} active={tab} onChange={setTab} />
         </div>
         {scope !== 'all' && (
-          <p className="px-3 sm:px-4 pt-3 text-[11px] text-slate-500 flex items-center gap-1.5">
-            <Info size={13} /> Showing documents you can access ({scope === 'team' ? 'your department' : 'your own and received'}) and your own checks.
+          <p className="px-3 sm:px-4 pt-3 text-[11px] text-slate-500 flex items-start sm:items-center gap-1.5">
+            <Info size={13} className="shrink-0 mt-px sm:mt-0" /> Showing documents you can access ({scope === 'team' ? 'your department' : 'your own and received'}) and your own checks.
           </p>
         )}
         {tab === 'history' ? (

@@ -201,7 +201,7 @@ function DetailsPanel({ item }) {
         )}
         <div className="min-w-0">
           <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-500">IP address</dt>
-          <dd className="font-mono text-slate-800">{item.ip || '-'}</dd>
+          <dd className="font-mono text-slate-800 break-all">{item.ip || '-'}</dd>
         </div>
         <div className="min-w-0">
           <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Device</dt>
@@ -270,7 +270,7 @@ function Timeline({ items, open, toggle, onPickUser }) {
                       )}
                       {item.ip && <><span aria-hidden="true">·</span><span className="font-mono">{item.ip}</span></>}
                       <Badge tone={CATEGORIES[item.category]?.tone || 'slate'}>{CATEGORIES[item.category]?.label || item.category}</Badge>
-                      <button type="button" onClick={() => toggle(item.id)} className="inline-flex items-center gap-0.5 font-bold text-[#007355] hover:underline cursor-pointer" aria-expanded={expanded}>
+                      <button type="button" onClick={() => toggle(item.id)} className="inline-flex items-center gap-0.5 py-1.5 -my-1 sm:py-0 sm:my-0 font-bold text-[#007355] hover:underline cursor-pointer" aria-expanded={expanded}>
                         {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />} Details
                       </button>
                     </div>
@@ -286,9 +286,58 @@ function Timeline({ items, open, toggle, onPickUser }) {
   );
 }
 
+function ActivityCards({ items, open, toggle, onPickUser }) {
+  return (
+    <ul className="md:hidden divide-y divide-slate-100">
+      {items.map((item) => {
+        const expanded = open === item.id;
+        const category = CATEGORIES[item.category];
+        return (
+          <li key={item.id} className={`p-3 ${expanded ? 'bg-slate-50/70' : ''}`}>
+            <div className="flex items-start gap-2.5">
+              <CategoryIcon item={item} size={14} className="w-8 h-8 !ring-0 mt-0.5" />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-start gap-2">
+                  <button type="button" onClick={() => toggle(item.id)} aria-expanded={expanded} className="flex-1 min-w-0 text-left cursor-pointer">
+                    <span className="block text-sm font-bold text-slate-900 break-words">{item.action}</span>
+                    {item.entity && item.entity.type !== 'user' && (item.entity.name || item.entity.id) && (
+                      <span className="block text-[11px] text-slate-500 truncate"><EntityLabel entity={item.entity} /></span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => toggle(item.id)}
+                    aria-expanded={expanded}
+                    aria-label={expanded ? 'Hide details' : 'Show details'}
+                    className="w-9 h-9 -mt-1 -mr-1 inline-flex items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 cursor-pointer shrink-0"
+                  >
+                    {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                  </button>
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500 min-w-0">
+                  <span className="min-w-0 max-w-full inline-flex"><ActorLabel actor={item.actor} onPick={onPickUser} /></span>
+                  <Badge tone={category?.tone || 'slate'}>{category?.label || item.category}</Badge>
+                </div>
+                <p className="mt-1 text-[11px] text-slate-400 break-words">
+                  <span title={formatDateTime(item.createdAt)}>{formatRelative(item.createdAt)} · {formatDateTime(item.createdAt)}</span>
+                  {item.ip && <> · <span className="font-mono break-all">{item.ip}</span></>}
+                </p>
+                {item.device && <div className="mt-0.5 text-[11px] text-slate-500 min-w-0"><DeviceLabel device={item.device} userAgent={item.userAgent} /></div>}
+              </div>
+            </div>
+            {expanded && <div className="mt-2"><DetailsPanel item={item} /></div>}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 function ActivityTable({ items, open, toggle, onPickUser }) {
   return (
-    <div className="relative overflow-x-auto">
+    <>
+    <ActivityCards items={items} open={open} toggle={toggle} onPickUser={onPickUser} />
+    <div className="relative hidden md:block overflow-x-auto">
       <table className="w-full text-left">
         <thead>
           <tr>
@@ -346,6 +395,7 @@ function ActivityTable({ items, open, toggle, onPickUser }) {
         </tbody>
       </table>
     </div>
+    </>
   );
 }
 
@@ -543,7 +593,7 @@ export default function ActivityHistory() {
               {filters.user && (
                 <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 pl-2.5 pr-1 py-0.5 font-semibold text-slate-700 max-w-full">
                   <span className="truncate">User: {filters.user}</span>
-                  <button type="button" onClick={() => setFilter({ user: '' })} aria-label="Remove user filter" className="p-0.5 rounded-full hover:bg-slate-200 cursor-pointer"><X size={12} /></button>
+                  <button type="button" onClick={() => setFilter({ user: '' })} aria-label="Remove user filter" className="p-1.5 -my-1 sm:p-0.5 sm:my-0 rounded-full hover:bg-slate-200 cursor-pointer shrink-0"><X size={12} /></button>
                 </span>
               )}
               {hasFilters && <button type="button" onClick={() => setFilter(EMPTY_FILTERS)} className="font-bold text-[#007355] hover:underline cursor-pointer">Clear filters</button>}
@@ -555,7 +605,7 @@ export default function ActivityHistory() {
                   type="button"
                   onClick={() => changeView(id)}
                   aria-pressed={view === id}
-                  className={`px-3 py-1.5 flex items-center gap-1.5 text-xs font-semibold transition cursor-pointer ${view === id ? 'bg-[#007355] text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+                  className={`px-3 py-2 sm:py-1.5 flex items-center gap-1.5 text-xs font-semibold transition cursor-pointer ${view === id ? 'bg-[#007355] text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
                 >
                   <Icon size={14} /> {label}
                 </button>

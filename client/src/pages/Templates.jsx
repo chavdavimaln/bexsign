@@ -27,6 +27,7 @@ import {
 import { getLoggedInUser } from '../utils/currentUser';
 import { TEMPLATE_LIBRARY, TEMPLATE_CATEGORIES, TEMPLATE_KINDS, searchTemplates } from '../utils/templateLibrary';
 import { API_ORIGIN } from '../utils/api';
+import { usePermissions } from '../utils/permissions';
 import {
   API_BASE,
   CategoryIcon,
@@ -77,6 +78,13 @@ function pageList(current, total) {
 export default function Templates() {
   const navigate = useNavigate();
   const user = getLoggedInUser();
+  const { can } = usePermissions();
+  const canCreate = can('templates.create');
+  const canEdit = can('templates.edit');
+  const canDelete = can('templates.delete');
+  const canShare = can('templates.share');
+  // Using a template starts a new document, so it needs the document permission
+  const canUse = can('documents.create');
   const [tab, setTab] = useState('library');
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('all');
@@ -173,6 +181,8 @@ export default function Templates() {
   const allOnPageSelected = pageItems.length > 0 && pageItems.every((t) => selectedIds.includes(t.id));
   const selectedTemplates = selectedIds.map((sid) => pool.find((t) => t.id === sid)).filter(Boolean);
   const hasFilters = Boolean(query) || category !== 'all' || kind !== 'all';
+  // Selecting templates only leads to "Use" or "Delete"; the checkboxes are hidden when neither is allowed
+  const canSelect = canUse || (tab === 'saved' && canDelete);
 
   const toggleSelect = (id) => setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   const togglePage = () => {
@@ -199,7 +209,10 @@ export default function Templates() {
 
   const openCreate = (prefill = {}) => {
     setFormError('');
-    setForm({ ...EMPTY_FORM, ...prefill });
+    const next = { ...EMPTY_FORM, ...prefill };
+    // Without the share permission a new template is saved private
+    if (!canShare) next.isShared = false;
+    setForm(next);
   };
 
   const openCustomize = (template) => {
@@ -326,29 +339,37 @@ export default function Templates() {
         <Eye size={14} />
         {size !== 'sm' && <span>Preview</span>}
       </button>
-      <button
-        type="button"
-        onClick={() => startWithTemplates([t])}
-        className={`${size === 'sm' ? 'p-1.5' : 'px-2.5 py-1.5'} bg-[#007355] hover:bg-[#005c44] text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer`}
-        title="Use in a new request"
-        aria-label={`Use ${t.name}`}
-      >
-        <Send size={13} />
-        {size !== 'sm' && <span>Use</span>}
-      </button>
+      {canUse && (
+        <button
+          type="button"
+          onClick={() => startWithTemplates([t])}
+          className={`${size === 'sm' ? 'p-1.5' : 'px-2.5 py-1.5'} bg-[#007355] hover:bg-[#005c44] text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer`}
+          title="Use in a new request"
+          aria-label={`Use ${t.name}`}
+        >
+          <Send size={13} />
+          {size !== 'sm' && <span>Use</span>}
+        </button>
+      )}
       {t.source === 'saved' ? (
         <>
-          <button type="button" onClick={() => openEdit(t)} className="p-1.5 text-slate-500 hover:text-[#007355] hover:bg-emerald-50 rounded-lg transition cursor-pointer" title="Edit" aria-label={`Edit ${t.name}`}>
-            <Edit3 size={14} />
-          </button>
-          <button type="button" onClick={() => openCustomize(t)} className="p-1.5 text-slate-500 hover:text-[#007355] hover:bg-emerald-50 rounded-lg transition cursor-pointer" title="Duplicate" aria-label={`Duplicate ${t.name}`}>
-            <Copy size={14} />
-          </button>
-          <button type="button" onClick={() => setConfirmDelete([t])} className="p-1.5 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition cursor-pointer" title="Delete" aria-label={`Delete ${t.name}`}>
-            <Trash2 size={14} />
-          </button>
+          {canEdit && (
+            <button type="button" onClick={() => openEdit(t)} className="p-1.5 text-slate-500 hover:text-[#007355] hover:bg-emerald-50 rounded-lg transition cursor-pointer" title="Edit" aria-label={`Edit ${t.name}`}>
+              <Edit3 size={14} />
+            </button>
+          )}
+          {canCreate && (
+            <button type="button" onClick={() => openCustomize(t)} className="p-1.5 text-slate-500 hover:text-[#007355] hover:bg-emerald-50 rounded-lg transition cursor-pointer" title="Duplicate" aria-label={`Duplicate ${t.name}`}>
+              <Copy size={14} />
+            </button>
+          )}
+          {canDelete && (
+            <button type="button" onClick={() => setConfirmDelete([t])} className="p-1.5 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition cursor-pointer" title="Delete" aria-label={`Delete ${t.name}`}>
+              <Trash2 size={14} />
+            </button>
+          )}
         </>
-      ) : (
+      ) : canCreate && (
         <button type="button" onClick={() => openCustomize(t)} className="p-1.5 text-slate-500 hover:text-[#007355] hover:bg-emerald-50 rounded-lg transition cursor-pointer" title="Customize and save as my template" aria-label={`Customize ${t.name}`}>
           <Sparkles size={14} />
         </button>
@@ -372,15 +393,17 @@ export default function Templates() {
               template can be edited before it is sent for signature.
             </p>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => openCreate()}
-              className="bg-[#007355] hover:bg-[#005c44] text-white px-4 py-2.5 rounded-xl text-sm font-bold shadow-md transition flex items-center gap-2 cursor-pointer"
-            >
-              <Plus size={16} /> Create template
-            </button>
-          </div>
+          {canCreate && (
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => openCreate()}
+                className="bg-[#007355] hover:bg-[#005c44] text-white px-4 py-2.5 rounded-xl text-sm font-bold shadow-md transition flex items-center gap-2 cursor-pointer"
+              >
+                <Plus size={16} /> Create template
+              </button>
+            </div>
+          )}
         </div>
         <div className="grid grid-cols-3 gap-2 sm:gap-3 mt-5 max-w-xl">
           {[
@@ -403,7 +426,7 @@ export default function Templates() {
 
       <section className="bg-white rounded-2xl border border-slate-200 shadow-sm">
         {/* Tabs */}
-        <div role="tablist" aria-label="Template sources" className="flex border-b border-slate-200 px-2 sm:px-4 overflow-x-auto">
+        <div role="tablist" aria-label="Template sources" className="flex border-b border-slate-200 px-2 sm:px-4 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {tabButton('library', 'Template library', TEMPLATE_LIBRARY.length, Library)}
           {tabButton('saved', 'My templates', saved.items.length, Star)}
         </div>
@@ -504,14 +527,14 @@ export default function Templates() {
         </div>
 
         {/* Selection bar */}
-        {selectedTemplates.length > 0 && (
+        {canSelect && selectedTemplates.length > 0 && (
           <div className="px-3 sm:px-4 py-2.5 bg-emerald-50 border-b border-emerald-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <p className="text-xs text-emerald-900 font-semibold">
               {selectedTemplates.length} template{selectedTemplates.length === 1 ? '' : 's'} selected
               <button type="button" onClick={() => setSelectedIds([])} className="ml-2 text-[#007355] font-bold hover:underline">Clear</button>
             </p>
             <div className="flex items-center gap-2">
-              {tab === 'saved' && (
+              {tab === 'saved' && canDelete && (
                 <button
                   type="button"
                   onClick={() => setConfirmDelete(selectedTemplates)}
@@ -520,13 +543,15 @@ export default function Templates() {
                   <Trash2 size={13} /> Delete
                 </button>
               )}
-              <button
-                type="button"
-                onClick={() => startWithTemplates(selectedTemplates.slice(0, 40))}
-                className="px-3 py-1.5 bg-[#007355] hover:bg-[#005c44] text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-              >
-                <Send size={13} /> Use {selectedTemplates.length} in one request
-              </button>
+              {canUse && (
+                <button
+                  type="button"
+                  onClick={() => startWithTemplates(selectedTemplates.slice(0, 40))}
+                  className="px-3 py-1.5 bg-[#007355] hover:bg-[#005c44] text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Send size={13} /> Use {selectedTemplates.length} in one request
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -560,7 +585,7 @@ export default function Templates() {
                   <button type="button" onClick={clearFilters} className="px-4 py-2 bg-[#007355] text-white rounded-lg text-xs font-bold">Clear filters</button>
                 ) : (
                   <>
-                    <button type="button" onClick={() => openCreate()} className="px-4 py-2 bg-[#007355] text-white rounded-lg text-xs font-bold flex items-center gap-1.5"><Plus size={14} /> Create template</button>
+                    {canCreate && <button type="button" onClick={() => openCreate()} className="px-4 py-2 bg-[#007355] text-white rounded-lg text-xs font-bold flex items-center gap-1.5"><Plus size={14} /> Create template</button>}
                     <button type="button" onClick={() => switchTab('library')} className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-bold text-slate-700">Browse the library</button>
                   </>
                 )}
@@ -580,13 +605,15 @@ export default function Templates() {
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex items-center gap-2.5 min-w-0">
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={() => toggleSelect(t.id)}
-                            aria-label={`Select ${t.name}`}
-                            className="w-4 h-4 rounded accent-[#007355] cursor-pointer shrink-0"
-                          />
+                          {canSelect && (
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => toggleSelect(t.id)}
+                              aria-label={`Select ${t.name}`}
+                              className="w-4 h-4 rounded accent-[#007355] cursor-pointer shrink-0"
+                            />
+                          )}
                           <CategoryIcon category={t.category} size={17} className="w-9 h-9 rounded-xl" />
                         </div>
                         <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-bold uppercase tracking-wide shrink-0">{t.kindLabel}</span>
@@ -629,9 +656,11 @@ export default function Templates() {
               <table className="w-full text-left text-xs">
                 <thead className="bg-slate-50 text-slate-500 uppercase text-[10px] font-bold tracking-wide">
                   <tr>
-                    <th className="p-3 w-10">
-                      <input type="checkbox" checked={allOnPageSelected} onChange={togglePage} aria-label="Select all on this page" className="w-4 h-4 rounded accent-[#007355] cursor-pointer" />
-                    </th>
+                    {canSelect && (
+                      <th className="p-3 w-10">
+                        <input type="checkbox" checked={allOnPageSelected} onChange={togglePage} aria-label="Select all on this page" className="w-4 h-4 rounded accent-[#007355] cursor-pointer" />
+                      </th>
+                    )}
                     <th className="p-3">Template</th>
                     <th className="p-3 hidden md:table-cell">Category</th>
                     <th className="p-3 hidden sm:table-cell">Type</th>
@@ -646,9 +675,11 @@ export default function Templates() {
                     const meta = categoryMeta(t.category);
                     return (
                       <tr key={t.id} className={`hover:bg-slate-50 transition ${isSelected ? 'bg-emerald-50/50' : ''}`}>
-                        <td className="p-3 align-middle">
-                          <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(t.id)} aria-label={`Select ${t.name}`} className="w-4 h-4 rounded accent-[#007355] cursor-pointer" />
-                        </td>
+                        {canSelect && (
+                          <td className="p-3 align-middle">
+                            <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(t.id)} aria-label={`Select ${t.name}`} className="w-4 h-4 rounded accent-[#007355] cursor-pointer" />
+                          </td>
+                        )}
                         <td className="p-3 align-middle">
                           <button type="button" onClick={() => setPreviewTemplate(t)} className="flex items-center gap-2.5 text-left cursor-pointer">
                             <CategoryIcon category={t.category} size={14} className="w-8 h-8" />
@@ -683,7 +714,7 @@ export default function Templates() {
               <span>
                 Showing <strong>{(currentPage - 1) * pageSize + 1}</strong>-<strong>{Math.min(currentPage * pageSize, filtered.length)}</strong> of <strong>{filtered.length}</strong>
               </span>
-              {view === 'grid' && (
+              {view === 'grid' && canSelect && (
                 <button type="button" onClick={togglePage} className="text-[#007355] font-bold hover:underline">
                   {allOnPageSelected ? 'Deselect this page' : 'Select this page'}
                 </button>
@@ -780,17 +811,23 @@ export default function Templates() {
               </button>
               <div className="flex flex-col sm:flex-row gap-2">
                 {previewTemplate.source === 'saved' ? (
-                  <button type="button" onClick={() => openEdit(previewTemplate)} className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-bold text-slate-700 hover:bg-slate-50 flex items-center justify-center gap-1.5">
-                    <Edit3 size={14} /> Edit template
-                  </button>
+                  canEdit && (
+                    <button type="button" onClick={() => openEdit(previewTemplate)} className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-bold text-slate-700 hover:bg-slate-50 flex items-center justify-center gap-1.5">
+                      <Edit3 size={14} /> Edit template
+                    </button>
+                  )
                 ) : (
-                  <button type="button" onClick={() => openCustomize(previewTemplate)} className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-bold text-slate-700 hover:bg-slate-50 flex items-center justify-center gap-1.5">
-                    <Sparkles size={14} /> Customize and save as mine
+                  canCreate && (
+                    <button type="button" onClick={() => openCustomize(previewTemplate)} className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-bold text-slate-700 hover:bg-slate-50 flex items-center justify-center gap-1.5">
+                      <Sparkles size={14} /> Customize and save as mine
+                    </button>
+                  )
+                )}
+                {canUse && (
+                  <button type="button" onClick={() => startWithTemplates([previewTemplate])} className="px-4 py-2 bg-[#007355] hover:bg-[#005c44] text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5">
+                    <Send size={14} /> Use this template
                   </button>
                 )}
-                <button type="button" onClick={() => startWithTemplates([previewTemplate])} className="px-4 py-2 bg-[#007355] hover:bg-[#005c44] text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5">
-                  <Send size={14} /> Use this template
-                </button>
               </div>
             </div>
           </div>
@@ -913,8 +950,18 @@ export default function Templates() {
                 </label>
               )}
               {form.id && form.hasFile && <p className="text-[11px] text-slate-500">This template also has an uploaded file.</p>}
-              <label className="flex items-start gap-2 cursor-pointer">
-                <input type="checkbox" checked={form.isShared} onChange={(e) => setForm({ ...form, isShared: e.target.checked })} className="mt-0.5 w-4 h-4 accent-[#007355]" />
+              {/* Disabled rather than hidden without the share permission, so the current sharing state stays visible */}
+              <label
+                className={`flex items-start gap-2 ${canShare ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
+                title={canShare ? undefined : "You don't have permission to share templates"}
+              >
+                <input
+                  type="checkbox"
+                  checked={form.isShared}
+                  disabled={!canShare}
+                  onChange={(e) => setForm({ ...form, isShared: e.target.checked })}
+                  className="mt-0.5 w-4 h-4 accent-[#007355] disabled:cursor-not-allowed"
+                />
                 <span>
                   <span className="font-bold text-slate-700">Share with my team</span>
                   <span className="block text-[11px] text-slate-500">Everyone in the organization can use shared templates. Managers can see all templates.</span>

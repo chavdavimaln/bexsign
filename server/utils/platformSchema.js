@@ -305,6 +305,8 @@ function ensurePlatformSchema() {
       await require('./signatureStore').ensureSignatureSchema();
       await require('./selfSign').ensureSelfSignSchema();
       await require('./documentVerification').ensureVerificationSchema();
+      // Integrations, contact book, trash bin and OAuth apps
+      await require('./workspaceSchema').ensureWorkspaceSchema();
       // The organization default moves from 'parallel' / 'sequential' to a signing flow key
       await db.query(
         `UPDATE general_settings SET default_signing_order = ?

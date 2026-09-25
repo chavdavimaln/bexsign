@@ -10,10 +10,12 @@
  */
 const express = require('express');
 const router = express.Router();
-const { authenticateUser } = require('../middleware/authMiddleware');
+const { authenticateUser, requireSignedIn } = require('../middleware/authMiddleware');
+const { requirePermission } = require('../utils/permissions');
 const store = require('../utils/signatureStore');
 
-router.use(authenticateUser);
+// Signed-in users only (a request without a sign-in is refused)
+router.use(authenticateUser, requireSignedIn);
 
 /** Turns a store error (which carries .status) into the matching HTTP response. */
 function fail(res, err, fallback = 'The signature could not be saved.') {
@@ -61,7 +63,7 @@ router.get('/directory', async (req, res) => {
 
 // @route   POST /api/signature-directory
 // @desc    Create a signature owned by the caller
-router.post('/', async (req, res) => {
+router.post('/', requirePermission('signatures.manage'), async (req, res) => {
     try {
         const signature = await store.createSignature(req.user, req.body || {});
         res.status(201).json({ success: true, message: 'Signature registered.', signature });
@@ -72,7 +74,7 @@ router.post('/', async (req, res) => {
 
 // @route   PUT /api/signature-directory/:id
 // @desc    Update one of the caller's own signatures (403 for anyone else's)
-router.put('/:id', async (req, res) => {
+router.put('/:id', requirePermission('signatures.manage'), async (req, res) => {
     try {
         const signature = await store.updateSignature(req.user, req.params.id, req.body || {});
         res.json({ success: true, message: 'Signature updated.', signature });
@@ -83,7 +85,7 @@ router.put('/:id', async (req, res) => {
 
 // @route   DELETE /api/signature-directory/:id
 // @desc    Delete one of the caller's own signatures (403 for anyone else's)
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', requirePermission('signatures.manage'), async (req, res) => {
     try {
         const removed = await store.deleteSignature(req.user, req.params.id);
         res.json({ success: true, message: 'Signature removed.', ...removed });
@@ -94,7 +96,7 @@ router.delete('/:id', async (req, res) => {
 
 // @route   POST /api/signature-directory/:id/default
 // @desc    Use this signature to prefill the caller's signing screens
-router.post('/:id/default', async (req, res) => {
+router.post('/:id/default', requirePermission('signatures.manage'), async (req, res) => {
     try {
         const signature = await store.setDefaultSignature(req.user, req.params.id);
         res.json({ success: true, message: 'Default signature updated.', signature });

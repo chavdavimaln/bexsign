@@ -64,7 +64,7 @@ export function CopyButton({ value, label = 'Copy', className = '' }) {
       onClick={copy}
       title={copied ? 'Copied' : label}
       aria-label={copied ? 'Copied' : label}
-      className={`inline-flex items-center justify-center w-7 h-7 rounded-lg shrink-0 transition cursor-pointer ${copied ? 'bg-emerald-50 text-[#007355]' : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100'} ${className}`}
+      className={`inline-flex items-center justify-center w-9 h-9 sm:w-7 sm:h-7 rounded-lg shrink-0 transition cursor-pointer ${copied ? 'bg-emerald-50 text-[#007355]' : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100'} ${className}`}
     >
       {copied ? <Check size={14} /> : <Copy size={14} />}
     </button>
@@ -122,7 +122,9 @@ function ChartTable({ caption, data, valueLabel }) {
 }
 
 function Tooltip({ x, width, children }) {
-  const left = Math.min(Math.max(x, 60), Math.max(60, width - 60));
+  // Keep the centred, nowrap tooltip inside narrow (phone-width) charts
+  const edge = width < 480 ? 84 : 60;
+  const left = Math.min(Math.max(x, edge), Math.max(edge, width - edge));
   return (
     <div className="pointer-events-none absolute -top-1 -translate-y-full -translate-x-1/2 z-10 rounded-lg bg-slate-900 px-2.5 py-1.5 text-[11px] font-semibold text-white shadow-lg whitespace-nowrap" style={{ left }}>
       {children}
@@ -156,7 +158,7 @@ export function TrendChart({ data, color = '#e11d48', height = 92, label = 'Coun
   return (
     <div ref={ref} className="relative w-full" style={{ height }}>
       {width > 0 && data.length > 0 && (
-        <svg width={width} height={height} role="img" aria-label={caption} onMouseMove={onMove} onMouseLeave={() => setHover(null)} className="absolute inset-0 block overflow-visible">
+        <svg width={width} height={height} role="img" aria-label={caption} onMouseMove={onMove} onClick={onMove} onMouseLeave={() => setHover(null)} className="absolute inset-0 block overflow-visible">
           <line x1={pad.left} x2={width - pad.right} y1={pad.top + innerH} y2={pad.top + innerH} stroke="#e2e8f0" strokeWidth="1" />
           <path d={area} fill={color} opacity="0.1" />
           <path d={line} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
@@ -224,7 +226,7 @@ export function DayColumns({ data, color = '#007355', height = 88, label = 'Even
             <g key={d.day}>
               {column(d, i)}
               {/* Hit target: the whole band */}
-              <rect x={i * band} y="0" width={band} height={pad.top + innerH} fill="transparent" onMouseEnter={() => setHover(i)} />
+              <rect x={i * band} y="0" width={band} height={pad.top + innerH} fill="transparent" onMouseEnter={() => setHover(i)} onClick={() => setHover(i)} />
               {(i % every === 0 || i === data.length - 1) && (i === data.length - 1 || data.length - 1 - i >= every) && (
                 <text x={i * band + band / 2} y={height - 4} textAnchor="middle" className="fill-slate-400" fontSize="10" fontWeight="600">
                   {formatDay(d.day)}

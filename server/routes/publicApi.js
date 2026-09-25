@@ -23,9 +23,9 @@ router.use((req, res, next) => {
   res.on('finish', () => {
     const endpoint = `${req.baseUrl}${req.path}`.slice(0, 255);
     db.query(
-      'INSERT INTO api_logs (api_key_id, endpoint, method, status_code, ip_address, duration_ms, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO api_logs (api_key_id, oauth_app_id, endpoint, method, status_code, ip_address, duration_ms, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       [
-        req.apiKey?.id || null, endpoint, String(req.method).slice(0, 10), res.statusCode, getRequestIp(req),
+        req.apiKey?.id || null, req.oauthApp?.id || null, endpoint, String(req.method).slice(0, 10), res.statusCode, getRequestIp(req),
         Date.now() - started, String(req.headers['user-agent'] || '').slice(0, 255) || null
       ]
     ).catch((err) => console.warn('[API] request log failed:', err.message));
@@ -108,6 +108,9 @@ async function authenticateApiKey(req, res, next) {
       res.setHeader('WWW-Authenticate', 'Bearer realm="BexSign API"');
       return fail(res, 401, 'missing_api_key', 'Send your API key in the Authorization header ("Bearer bxs_live_...") or in X-API-Key.');
     }
+    // OAuth access tokens (client credentials of an OAuth app) work like API keys
+    if (key.startsWith('bxo_')) return authenticateOAuthToken(req, res, next, key, settings);
+
     const hash = crypto.createHash('sha256').update(key).digest('hex');
     const [rows] = await db.query(
       `SELECT k.*, u.first_name, u.last_name, u.email, u.company, p.status AS owner_status
@@ -155,6 +158,54 @@ async function authenticateApiKey(req, res, next) {
   }
 }
 
+/** Bearer bxo_... tokens from POST /api/oauth/token. Same checks as an API key: active, owner active, rate limit. */
+async function authenticateOAuthToken(req, res, next, token, settings) {
+  const hash = crypto.createHash('sha256').update(token).digest('hex');
+  const [rows] = await db.query(
+    `SELECT t.id AS token_id, t.scopes AS token_scopes, t.expires_at, t.revoked_at, t.token_prefix, t.created_at AS token_created_at,
+            a.id AS app_id, a.name AS app_name, a.client_id, a.is_active, a.user_id,
+            u.first_name, u.last_name, u.email, u.company, p.status AS owner_status
+     FROM oauth_access_tokens t JOIN oauth_apps a ON a.id = t.app_id JOIN users u ON u.id = a.user_id
+     LEFT JOIN user_profiles p ON p.user_id = u.id WHERE t.token_hash = ? LIMIT 1`,
+    [hash]
+  );
+  const row = rows[0];
+  if (!row) {
+    await logFailedAccess({ req, source: 'api', reason: `Invalid OAuth access token (${token.slice(0, 12)}…)` });
+    res.setHeader('WWW-Authenticate', 'Bearer realm="BexSign API", error="invalid_token"');
+    return fail(res, 401, 'invalid_token', 'The access token is not valid.');
+  }
+  req.oauthApp = { id: row.app_id, name: row.app_name, client_id: row.client_id };
+  if (row.revoked_at) return fail(res, 401, 'invalid_token', 'This access token was revoked.');
+  if (new Date(row.expires_at) <= new Date()) {
+    res.setHeader('WWW-Authenticate', 'Bearer realm="BexSign API", error="invalid_token", error_description="expired"');
+    return fail(res, 401, 'token_expired', 'This access token has expired. Request a new one from /api/oauth/token.');
+  }
+  if (!row.is_active) return fail(res, 401, 'app_disabled', 'The OAuth app of this token is turned off.');
+  if (row.owner_status === 'inactive') return fail(res, 403, 'account_inactive', 'The account that owns this OAuth app is deactivated.');
+
+  const limit = Math.max(1, parseInt(settings.rate_limit_per_minute, 10) || 60);
+  const slot = takeRateSlot(`oauth:${row.app_id}`, limit);
+  res.setHeader('X-RateLimit-Limit', String(limit));
+  res.setHeader('X-RateLimit-Remaining', String(slot.remaining));
+  res.setHeader('X-RateLimit-Reset', String(slot.resetIn));
+  if (!slot.allowed) {
+    res.setHeader('Retry-After', String(slot.resetIn));
+    return fail(res, 429, 'rate_limited', `Rate limit of ${limit} requests per minute exceeded. Retry in ${slot.resetIn} s.`, { retry_after: slot.resetIn });
+  }
+  db.query('UPDATE oauth_access_tokens SET last_used_at = NOW(), request_count = request_count + 1 WHERE id = ?', [row.token_id]).catch(() => {});
+  db.query('UPDATE oauth_apps SET last_used_at = NOW() WHERE id = ?', [row.app_id]).catch(() => {});
+  // Shaped like an API key row so every endpoint works unchanged
+  req.apiKey = {
+    id: null, name: row.app_name, key_prefix: row.token_prefix, environment: 'live', user_id: row.user_id,
+    created_at: row.token_created_at, expires_at: row.expires_at, first_name: row.first_name, last_name: row.last_name,
+    email: row.email, company: row.company, auth: 'oauth', client_id: row.client_id
+  };
+  req.apiScopes = parseJsonArray(row.token_scopes, []);
+  req.rateLimit = { limit, remaining: slot.remaining, reset: slot.resetIn };
+  return next();
+}
+
 const requireScope = (scope) => (req, res, next) => {
   if (req.apiScopes?.includes(scope)) return next();
   return fail(res, 403, 'insufficient_scope', `This API key does not have the "${scope}" scope.`, { required_scope: scope });
@@ -182,7 +233,7 @@ router.get('/me', (req, res) => {
   res.json({
     success: true,
     data: {
-      key: { id: k.id, name: k.name, prefix: k.key_prefix, environment: k.environment, scopes: req.apiScopes, created_at: k.created_at, expires_at: k.expires_at },
+      key: { id: k.id, name: k.name, prefix: k.key_prefix, environment: k.environment, scopes: req.apiScopes, created_at: k.created_at, expires_at: k.expires_at, auth: k.auth || 'api_key', ...(k.client_id ? { client_id: k.client_id } : {}) },
       owner: { id: k.user_id, name: userName(k), email: k.email, company: k.company || null },
       rate_limit: req.rateLimit
     }

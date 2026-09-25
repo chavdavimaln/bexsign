@@ -2,15 +2,18 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const db = require('../db');
-const { authenticateUser, requireRole } = require('../middleware/authMiddleware');
+const { authenticateUser, requireSignedIn } = require('../middleware/authMiddleware');
+// Each action follows the permissions set in Settings > Roles & permissions (role grants and personal overrides)
+const { requirePermission, userCan } = require('../utils/permissions');
 const { notify, logActivity } = require('../utils/platformEvents');
 
 // Apply authentication middleware to all user management routes
-router.use(authenticateUser);
+// Signed-in users only (a request without a sign-in is refused)
+router.use(authenticateUser, requireSignedIn);
 
 // @route   GET /api/users
 // @desc    Get all enterprise users with profile, role metadata, and summary metrics
-router.get('/', requireRole(['manager', 'leader']), async (req, res) => {
+router.get('/', requirePermission('users.view'), async (req, res) => {
     try {
         const query = `
             SELECT 
@@ -78,7 +81,7 @@ router.get('/roles', async (req, res) => {
 
 // @route   GET /api/users/login-logs
 // @desc    Get enterprise login audit records
-router.get('/login-logs', requireRole(['manager']), async (req, res) => {
+router.get('/login-logs', requirePermission('users.view'), async (req, res) => {
     try {
         const [logs] = await db.query(
             `SELECT l.*, u.first_name, u.last_name 
@@ -96,7 +99,7 @@ router.get('/login-logs', requireRole(['manager']), async (req, res) => {
 
 // @route   POST /api/users
 // @desc    Create / invite a new enterprise user
-router.post('/', requireRole(['manager']), async (req, res) => {
+router.post('/', requirePermission('users.invite'), async (req, res) => {
     const { firstName, lastName, email, role, department, designation, password, phone } = req.body;
 
     if (!email) {
@@ -179,9 +182,18 @@ router.post('/', requireRole(['manager']), async (req, res) => {
 
 // @route   PUT /api/users/:id
 // @desc    Update user details, role assignment, and department
-router.put('/:id', requireRole(['manager']), async (req, res) => {
+router.put('/:id', requirePermission('users.edit'), async (req, res) => {
     const { id } = req.params;
     const { firstName, lastName, role, department, designation, phone, status } = req.body;
+
+    // Changing someone's role needs "Manage roles and permissions"; blocking them needs "Activate or deactivate users"
+    const [current] = await db.query('SELECT role FROM users WHERE id = ?', [id]).catch(() => [[]]);
+    if (role !== undefined && current[0] && String(role).toLowerCase() !== String(current[0].role || '').toLowerCase() && !(await userCan(req.user, 'roles.manage'))) {
+        return res.status(403).json({ success: false, error: 'You do not have permission to change roles (Manage roles and permissions). Ask a manager to grant it.' });
+    }
+    if (status !== undefined && !(await userCan(req.user, 'users.deactivate'))) {
+        return res.status(403).json({ success: false, error: 'You do not have permission to activate or deactivate users. Ask a manager to grant it.' });
+    }
 
     try {
         const [userRows] = await db.query('SELECT * FROM users WHERE id = ?', [id]);
@@ -246,7 +258,7 @@ router.put('/:id', requireRole(['manager']), async (req, res) => {
 
 // @route   PATCH /api/users/:id/status
 // @desc    Toggle active / inactive status for a user
-router.patch('/:id/status', requireRole(['manager']), async (req, res) => {
+router.patch('/:id/status', requirePermission('users.deactivate'), async (req, res) => {
     const { id } = req.params;
     const { status } = req.body;
 
@@ -285,11 +297,10 @@ router.post('/:id/reset-password', async (req, res) => {
     const { newPassword, sendEmail } = req.body;
 
     // Check authorization: Manager or self
-    const isManager = req.user && (req.user.role === 'manager' || req.user.role === 'admin');
+    // Your own password, or anyone's with "Edit users"
     const isSelf = req.user && parseInt(req.user.id) === parseInt(id);
-
-    if (!isManager && !isSelf) {
-        return res.status(403).json({ error: 'Access denied: Only Managers can reset passwords for other users.' });
+    if (!isSelf && !(await userCan(req.user, 'users.edit'))) {
+        return res.status(403).json({ success: false, error: 'You do not have permission to reset the passwords of other users (Edit users). Ask a manager to grant it.' });
     }
 
     if (!newPassword || newPassword.length < 6) {
@@ -338,7 +349,7 @@ router.post('/:id/reset-password', async (req, res) => {
 
 // @route   DELETE /api/users/:id
 // @desc    Delete user account (Manager only; cannot delete oneself or root admin)
-router.delete('/:id', requireRole(['manager']), async (req, res) => {
+router.delete('/:id', requirePermission('users.delete'), async (req, res) => {
     const { id } = req.params;
 
     try {

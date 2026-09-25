@@ -185,6 +185,17 @@ async function finalizeCompletedRequest(documentId, { fallbackAttachments = [] }
 
   const delivered = results.filter((r) => r.success).map((r) => r.email);
   const failed = results.filter((r) => !r.success);
+
+  // "Receives a copy" recipients: the completion email is their copy, so record when it reached them
+  const deliveredKeys = new Set(delivered.map((e) => String(e).toLowerCase()));
+  for (const r of recipients) {
+    if (!r.id || helpers.isSigningRole(r.role) || !deliveredKeys.has(String(r.email || '').toLowerCase())) continue;
+    try {
+      await db.query('UPDATE document_recipients SET sent_at = COALESCE(sent_at, NOW()) WHERE id = ?', [r.id]);
+    } catch (err) {
+      console.warn('[Completion] copy delivery time not saved:', err.message);
+    }
+  }
   await helpers.logRequestEvent(documentId, {
     description: `Completed documents (${attachments.length} signed PDF${attachments.length === 1 ? '' : 's'}${certificate ? ' + certificate of completion' : ''}) emailed to: ${delivered.join(', ') || 'none'}${failed.length ? `. Failed: ${failed.map((f) => f.email).join(', ')}` : ''}`
   });
@@ -233,8 +244,42 @@ async function getCompletedPdfFiles(documentId) {
   };
 }
 
+/**
+ * Requests completed before copy deliveries were recorded: take the time each "receives a copy" recipient got the
+ * completed documents from the audit log line "Completed documents (...) emailed to: a, b. Failed: c".
+ */
+async function backfillCopyDeliveries() {
+  const [rows] = await db.query(
+    `SELECT r.id, r.email, r.role, r.document_id FROM document_recipients r
+     JOIN documents d ON d.id = r.document_id
+     WHERE r.sent_at IS NULL AND LOWER(COALESCE(d.status, '')) = 'completed'`
+  );
+  let filled = 0;
+  for (const r of rows.filter((row) => !helpers.isSigningRole(row.role))) {
+    const [logs] = await db.query(
+      "SELECT activity_description, created_at FROM activity_history WHERE document_id = ? AND activity_description LIKE 'Completed documents%emailed to:%' ORDER BY id ASC",
+      [r.document_id]
+    );
+    const email = String(r.email || '').toLowerCase();
+    const hit = logs.find((l) => {
+      const delivered = String(l.activity_description).split('emailed to:')[1]?.split('. Failed:')[0] || '';
+      return delivered.split(',').some((e) => e.trim().toLowerCase() === email);
+    });
+    if (!hit) continue;
+    await db.query('UPDATE document_recipients SET sent_at = ? WHERE id = ? AND sent_at IS NULL', [hit.created_at, r.id]);
+    filled += 1;
+  }
+  return filled;
+}
+
 /** Rebuilds, in the background, the stored PDFs of completed requests issued with an older layout. */
 async function refreshOutdatedCompletedPdfs() {
+  try {
+    const filled = await backfillCopyDeliveries();
+    if (filled > 0) console.log(`[Signed PDFs] Recorded the copy delivery time of ${filled} "receives a copy" recipient(s)`);
+  } catch (err) {
+    console.warn('[Signed PDFs] copy delivery backfill skipped:', err.message);
+  }
   const [rows] = await db.query("SELECT id FROM documents WHERE LOWER(COALESCE(status, '')) = 'completed' ORDER BY id ASC");
   let rebuilt = 0;
   for (const { id } of rows) {
@@ -328,6 +373,7 @@ module.exports = {
   finalizeCompletedRequest,
   getCompletedPdfFiles,
   refreshOutdatedCompletedPdfs,
+  backfillCopyDeliveries,
   buildProgressCopy,
   buildSignerCopy
 };

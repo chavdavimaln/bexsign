@@ -20,6 +20,7 @@ idempotent — running it again changes nothing.
 | `ensureSigningFlowSchema()` | `server/utils/signingFlow.js` | `document_signing_flow`, `signing_email_dispatch` |
 | `ensureEmployeeSignaturesTable()` | `server/utils/documentIdentifier.js` | `employee_signatures` (+ demo rows when empty) |
 | `ensureValiditySchema()` | `server/utils/validityLog.js` | `document_validity` columns and indexes |
+| `ensureWorkspaceSchema()` | `server/utils/workspaceSchema.js` | `integration_connections`, `integration_activity`, `signing_contacts`, `trash_items`, `oauth_apps`, `oauth_access_tokens`; adds `general_settings.trash_retention_days` and `api_logs.oauth_app_id`. Runs from `ensurePlatformSchema()` |
 
 **Writing a new module?** Follow `server/utils/signingFlow.js`: one `ensureXSchema()` with
 `CREATE TABLE IF NOT EXISTS`, a memoised promise, and a `console.warn` (never a throw) when the database is not ready.
@@ -33,7 +34,11 @@ Call it from the module's own functions and, if it must exist at boot, from `ens
 |---|---|
 | Sign in, users, roles | `users`, `user_profiles`, `user_login_logs`, `user_sessions`, `password_reset_tokens`, `roles` |
 | Roles & permissions | `permissions`, `role_permissions`, `user_permissions` |
-| Documents list, Sent, Received | `documents`, `document_files`, `document_recipients`, `trash` |
+| Documents list, Sent, Received | `documents`, `document_files`, `document_recipients` |
+| Settings → Trash | `trash_items`, `general_settings.trash_retention_days` |
+| Settings → Contacts | `signing_contacts` |
+| Settings → Integrations | `integration_connections`, `integration_activity` |
+| Settings → Developer → OAuth Apps | `oauth_apps`, `oauth_access_tokens`, `api_logs.oauth_app_id` |
 | Send for signatures | `documents`, `document_files`, `document_fields`, `document_recipients`, `document_signing_flow` |
 | Signing (recipient) | `document_recipients`, `document_fields`, `document_field_values`, `signature_events`, `activity_history` |
 | Email sequence | `signing_email_dispatch`, `email_logs` |
@@ -47,7 +52,7 @@ Call it from the module's own functions and, if it must exist at boot, from `ens
 | Settings → General / Developer | `general_settings`, `developer_settings` |
 | Developer API | `api_keys`, `api_logs`, `webhooks`, `webhook_deliveries` |
 | Security & logs | `failed_access_logs`, `document_validity`, `activity_logs`, `activity_history` |
-| Contacts, portals, announcements | `contacts`, `portals`, `portal_users`, `announcements`, `delegates` |
+| Portals, announcements, delegation | `portals`, `portal_users`, `announcements`, `delegates` |
 
 ---
 
@@ -79,8 +84,9 @@ created in Settings → Roles & permissions. `is_system = 1` cannot be deleted.
 ### `permissions`, `role_permissions`, `user_permissions`
 The permission model, owned by `server/utils/permissions.js`:
 
-- `permissions` — the catalogue (33 keys: `documents.*`, `templates.*`, `signatures.manage`, `reports.*`, `users.*`,
-  `roles.manage`, `settings.*`, `security.*`, `api.*`, `notifications.broadcast`). Seeded at boot.
+- `permissions` — the catalogue (34 keys: `documents.*`, `templates.*`, `signatures.manage`, `reports.*`, `users.*`,
+  `roles.manage`, `settings.*` — including `settings.trash`, "Organization trash" —, `security.*`, `api.*`,
+  `notifications.broadcast`). Seeded at boot.
 - `role_permissions` — `(role_key, permission_key, allowed)`: what a role may do.
 - `user_permissions` — per-user overrides: `allowed` 1 = extra grant, 0 = explicit deny, plus `reason`,
   `expires_at`, `granted_by`. An override beats the role; an expired override is ignored.
@@ -157,8 +163,10 @@ One row per signing email. `email_type` is `invitation` or `reminder`; `trigger_
 `GET /api/documents/:id/signing-flow` returns it.
 
 ### `trash`, `document_versions`
-`trash` records what was moved to the bin (`document_id, deleted_by, deleted_at`). `document_versions` keeps
-generated copies (`version_number, file_path, version_label, created_by, details, action_type`).
+`trash` is the older, unused bin table (`document_id, deleted_by, deleted_at`); the Trash module uses
+`trash_items` (section 9d). A trashed request keeps its `documents` row with `status = 'Trashed'`.
+`document_versions` keeps generated copies (`version_number, file_path, version_label, created_by, details,
+action_type`).
 
 ---
 
@@ -236,13 +244,13 @@ Written by `platformEvents.notify()`, which respects preferences and sends the e
 
 | Table | Purpose |
 |---|---|
-| `general_settings` | Single row: organisation identity, regional formats, signing defaults (`default_expiry_days`, `reminder_frequency_days`, `auto_reminders`, `default_signing_order`), `allow_decline`, `allow_reassign`, `allow_print_sign`, `require_signer_otp`, `session_timeout_minutes`, `email_footer` |
+| `general_settings` | Single row: organisation identity, regional formats, signing defaults (`default_expiry_days`, `reminder_frequency_days`, `auto_reminders`, `default_signing_order`), `allow_decline`, `allow_reassign`, `allow_print_sign`, `require_signer_otp`, `session_timeout_minutes`, `email_footer`, `trash_retention_days` (INT, default 30 — see 9d) |
 | `developer_settings` | Single row: `api_enabled`, `sandbox_mode`, `rate_limit_per_minute`, `allowed_origins`, `ip_allowlist`, `webhook_signing_secret`, `webhook_retry_count`, `webhook_timeout_seconds`, `log_retention_days` |
 | `reports` | Saved report payloads (`report_type`, `report_data`) |
 | `scheduled_reports` | Recurring reports: `frequency`, `report_type`, `format`, `recipients`, `filters`, `day_of_week`, `day_of_month`, `time_of_day`, `is_active`, `next_run_at`, `last_status` |
 | `report_runs` | One row per run: `triggered_by`, `status`, `row_count`, `file_name`, `error`, `run_at` |
 | `api_keys` | `key_prefix`, `key_hash` (the secret is never stored), `environment`, `expires_at`, `revoked_at`, `request_count` |
-| `api_logs` | Public-API traffic: `endpoint`, `method`, `status_code`, `duration_ms`, `ip_address` |
+| `api_logs` | Public-API traffic: `api_key_id`, `oauth_app_id` (INT NULL — set when the call used an OAuth access token), `endpoint`, `method`, `status_code`, `duration_ms`, `ip_address`, `user_agent` |
 | `webhooks` | Endpoint registrations: `url`, `events`, `secret_token`, `is_active`, `last_status`, `failure_count` |
 | `webhook_deliveries` | Every attempt: `event`, `payload`, `status_code`, `response_body`, `success`, `duration_ms`, `attempt`, `error` |
 
@@ -304,14 +312,120 @@ See [23 — Verify and Confirm](23-verify-and-confirm.md).
 
 ---
 
+## 9d. Workspace modules: integrations, contacts, trash, OAuth apps
+
+Created by `ensureWorkspaceSchema()` (`server/utils/workspaceSchema.js`). Each module has its own table; the older
+`integrations`, `contacts` and `trash` tables are left untouched and unused.
+
+### `integration_connections` — one row per configured app
+Owned by `server/utils/integrationStore.js`. See [14 — Integrations](14-integrations.md).
+
+| Column | Type | Purpose |
+|---|---|---|
+| `id` | INT PK | |
+| `provider_key` | VARCHAR(80), **UNIQUE** | `bexcode-crm`, `google-workspace`, `microsoft-365`, `stripe-identity`, `dropbox`, `zapier`, `slack`, or `custom-<slug>-<hex>` |
+| `name` | VARCHAR(120) | Display name (editable for custom integrations) |
+| `description` | VARCHAR(255) NULL | Custom integrations only |
+| `category` | VARCHAR(40), default `custom` | `crm`, `identity`, `verification`, `storage`, `automation`, `messaging`, `custom` |
+| `is_custom` | TINYINT(1) | 1 for integrations made with "Add integration" |
+| `status` | VARCHAR(20), default `connected` | `connected` or `disabled` (turned off) |
+| `config` | LONGTEXT (JSON) | Non-secret field values |
+| `secrets` | LONGTEXT (JSON) | Secret field values, each AES-256-GCM encrypted (`v1:iv:tag:data`) |
+| `events` | LONGTEXT (JSON) | Subscribed signing events |
+| `options` | LONGTEXT NULL | Reserved |
+| `last_tested_at`, `last_test_ok`, `last_test_message` | DATETIME, TINYINT(1), VARCHAR(500) | Result of the last "Test connection" |
+| `last_event_at`, `event_count`, `failure_count` | DATETIME, INT, INT | Delivery counters; `failure_count` resets to 0 on a successful delivery |
+| `created_by`, `updated_by` | INT NULL | User ids |
+| `created_at`, `updated_at` | TIMESTAMP | |
+
+### `integration_activity` — what each integration did
+`id, connection_id (INT), action (VARCHAR 40: connected, updated, test, event, upload, enabled, disabled),
+event (VARCHAR 60), success (TINYINT), message (VARCHAR 500), status_code (INT), duration_ms (INT),
+document_id (INT), user_id (INT), created_at` — index `(connection_id, created_at)`. The latest 500 rows per
+integration are kept; disconnecting deletes them.
+
+### `signing_contacts` — the contact book
+Owned by `server/routes/contacts.js`. See [11 — Contacts](11-contacts.md).
+
+| Column | Type | Purpose |
+|---|---|---|
+| `id` | INT PK | |
+| `owner_id` | INT | The user the contact belongs to |
+| `name` | VARCHAR(150) | |
+| `email` | VARCHAR(255) | Lower-case; **UNIQUE with `owner_id`** |
+| `company`, `job_title`, `phone`, `country_code` | VARCHAR(150 / 120 / 40 / 8) NULL | |
+| `notes` | TEXT NULL | |
+| `tags` | LONGTEXT (JSON array) | Up to 10 tags |
+| `is_favorite` | TINYINT(1) | |
+| `source` | VARCHAR(20), default `manual` | `manual`, `import` or `recipient` (synced from sent requests) |
+| `documents_sent`, `documents_signed` | INT | Refreshed by the sync |
+| `last_sent_at`, `last_signed_at` | DATETIME NULL | Refreshed by the sync |
+| `deleted_at` | DATETIME NULL | Set while the contact is in the trash |
+| `created_at`, `updated_at` | TIMESTAMP | |
+
+Index `(owner_id, deleted_at)`.
+
+### `trash_items` — the trash bin
+Owned by `server/utils/trashStore.js`. See [24 — Trash](24-trash.md).
+
+| Column | Type | Purpose |
+|---|---|---|
+| `id` | INT PK | The trash item id used by `/api/trash/items/*` |
+| `item_type` | VARCHAR(30) | `document`, `self_sign`, `template`, `signature`, `contact` |
+| `item_id` | INT | Id of the original row; **UNIQUE with `item_type`** |
+| `title`, `subtitle` | VARCHAR(255) | What the list shows, e.g. "Was In Progress" |
+| `owner_id` | INT NULL | Owner of the item (visibility) |
+| `deleted_by`, `deleted_by_name` | INT NULL, VARCHAR(150) | Who deleted it |
+| `previous_status` | VARCHAR(40) NULL | Documents: the status restored; self-sign: the stage; signatures: `default` |
+| `snapshot` | LONGTEXT NULL | Self-sign, template, signature: `[{ table, rows }]` of the removed rows, parent first |
+| `size_hint` | VARCHAR(60) NULL | e.g. "2 recipients", "3 pages", a contact's company |
+| `deleted_at` | DATETIME | |
+| `purge_after` | DATETIME NULL | `deleted_at` + retention; deleted for good after this |
+
+Indexes on `deleted_at` and `owner_id`. The retention period is `general_settings.trash_retention_days`
+(INT NOT NULL DEFAULT 30); changing it recalculates `purge_after` for every row.
+
+### `oauth_apps` — OAuth client credentials
+Owned by `server/routes/oauthApps.js`. See [25 — OAuth Apps](25-oauth-apps.md).
+
+| Column | Type | Purpose |
+|---|---|---|
+| `id` | INT PK | |
+| `user_id` | INT | Owner; tokens act as this user |
+| `name`, `description`, `homepage_url` | VARCHAR(120 / 255 / 500) | |
+| `redirect_uris` | LONGTEXT (JSON array) | Kept for records; not used by the client credentials grant |
+| `client_id` | VARCHAR(64), **UNIQUE** | `bxc_…` |
+| `client_secret_hash` | CHAR(64) | SHA-256 of the secret (the secret itself is never stored) |
+| `secret_last4` | VARCHAR(8) | For the `bxcs_••••1234` hint |
+| `scopes` | LONGTEXT (JSON array) | Scopes the app may request |
+| `token_ttl_minutes` | INT, default 60 | 5–1440 |
+| `is_active` | TINYINT(1), default 1 | Off = tokens revoked and refused |
+| `last_used_at`, `token_count`, `secret_rotated_at` | DATETIME, INT, DATETIME | |
+| `created_at`, `updated_at` | TIMESTAMP | |
+
+### `oauth_access_tokens` — issued access tokens
+`id, app_id (INT), user_id (INT), token_hash (CHAR 64, UNIQUE — SHA-256 of the bxo_ token), token_prefix
+(VARCHAR 24, first 12 characters for display), scopes (JSON), grant_type (VARCHAR 40: client_credentials or
+console), expires_at, revoked_at, last_used_at, request_count, created_ip, created_at` — index
+`(app_id, created_at)`. Tokens that expired more than a day ago are removed when the app gets a new token.
+
+### New columns on existing tables
+
+| Table | Column | Type | Purpose |
+|---|---|---|---|
+| `general_settings` | `trash_retention_days` | INT NOT NULL DEFAULT 30 | Days a deleted item stays in the trash |
+| `api_logs` | `oauth_app_id` | INT NULL | The OAuth app whose token made the call (NULL for API keys) |
+
+---
+
 ## 10. Odds and ends
 
 | Table | Purpose |
 |---|---|
-| `contacts` | Address book (`name, email, company, phone, last_used`) |
+| `contacts` | Older address book, no longer used — the Contacts module uses `signing_contacts` (9d) |
 | `delegates` | Out-of-office delegation (`delegate_to_email, start_date, end_date, status`) |
 | `emails`, `email_logs`, `email_queue`, `email_templates` | Mail records; `email_logs` is the one that matters (`email_type`, `status`, `error_message`) |
-| `integrations` | Third-party connections (`provider`, `access_token`, `status`) |
+| `integrations` | Older, unused connection table — the Integrations module uses `integration_connections` (9d) |
 | `portals`, `portal_users` | Customer portals |
 | `announcements` | In-app announcements |
 | `signature_requests` | Legacy per-recipient token rows, superseded by `document_recipients.secure_token` |

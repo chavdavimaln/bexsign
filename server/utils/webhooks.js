@@ -264,6 +264,9 @@ function dispatchWebhookEvent(event, data = {}) {
   if (!event) return;
   setImmediate(() => {
     runDispatch(event, data).catch((err) => console.warn(`[Webhooks] ${event} dispatch failed:`, err.message));
+    // Connected integrations (Settings > Integrations) get the same events, whether or not the API is on
+    require('./integrationStore').dispatchIntegrationEvent(event, data)
+      .catch((err) => console.warn(`[Integrations] ${event} dispatch failed:`, err.message));
   });
 }
 
@@ -277,4 +280,4 @@ async function dispatchWebhookEventNow(event, data = {}) {
   }
 }
 
-module.exports = { dispatchWebhookEvent, dispatchWebhookEventNow, deliverWebhook, signPayload, MAX_CONSECUTIVE_FAILURES };
+module.exports = { dispatchWebhookEvent, dispatchWebhookEventNow, deliverWebhook, signPayload, postJson, buildEventData, MAX_CONSECUTIVE_FAILURES };

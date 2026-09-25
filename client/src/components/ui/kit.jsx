@@ -31,7 +31,7 @@ export function PageHeader({ eyebrow, title, description, icon: Icon, actions, c
           )}
           <div className="min-w-0">
             {eyebrow && <p className="text-[11px] font-bold uppercase tracking-wider text-[#007355]">{eyebrow}</p>}
-            <h1 className="text-xl sm:text-2xl font-black tracking-tight text-slate-900">{title}</h1>
+            <h1 className="text-xl sm:text-2xl font-black tracking-tight text-slate-900 break-words">{title}</h1>
             {description && <p className="text-sm text-slate-500 mt-1 max-w-3xl">{description}</p>}
           </div>
         </div>
@@ -221,7 +221,7 @@ export function Toggle({ checked, onChange, label, description, disabled = false
 
 export function Tabs({ tabs, active, onChange }) {
   return (
-    <div role="tablist" className="flex gap-1 overflow-x-auto overflow-y-hidden pb-px border-b border-slate-200">
+    <div role="tablist" className="flex gap-1 overflow-x-auto overflow-y-hidden pb-px border-b border-slate-200 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       {tabs.map((t) => (
         <button
           key={t.id}

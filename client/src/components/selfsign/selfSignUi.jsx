@@ -52,8 +52,44 @@ export function SourceIcon({ source, size = 16, className = '' }) {
 
 /** "Add documents -> Name & merge -> ..." with the step the user is on highlighted. */
 export function Stepper({ steps, current, onStep }) {
+  const currentStep = steps[Math.min(Math.max(current, 1), steps.length) - 1];
   return (
-    <ol className="flex flex-col sm:flex-row sm:items-stretch gap-2 sm:gap-0" aria-label="Steps">
+    <>
+    {/* Phones: numbered dots on one line and the current step's name underneath */}
+    <div className="sm:hidden">
+      <ol className="flex items-center" aria-label="Steps">
+        {steps.map((step, index) => {
+          const number = index + 1;
+          const done = number < current;
+          const active = number === current;
+          const clickable = Boolean(onStep) && number <= current;
+          const Tag = clickable ? 'button' : 'span';
+          return (
+            <li key={step.id} className={`flex items-center ${index < steps.length - 1 ? 'flex-1' : ''}`}>
+              <Tag
+                type={clickable ? 'button' : undefined}
+                onClick={clickable ? () => onStep(number) : undefined}
+                aria-current={active ? 'step' : undefined}
+                aria-label={`Step ${number}: ${step.label}`}
+                className={`w-8 h-8 rounded-full grid place-items-center text-xs font-black shrink-0 transition ${
+                  active ? 'bg-[#007355] text-white ring-4 ring-emerald-100' : done ? 'bg-emerald-100 text-[#007355]' : 'bg-slate-100 text-slate-500'
+                } ${clickable ? 'cursor-pointer' : ''}`}
+              >
+                {done ? <Check size={14} strokeWidth={3} /> : number}
+              </Tag>
+              {index < steps.length - 1 && <span className={`flex-1 h-0.5 mx-1 rounded-full ${done ? 'bg-[#007355]' : 'bg-slate-200'}`} aria-hidden="true" />}
+            </li>
+          );
+        })}
+      </ol>
+      {currentStep && (
+        <p className="mt-2 text-xs text-slate-600">
+          <strong className="text-[#007355]">Step {Math.min(current, steps.length)} of {steps.length}:</strong> {currentStep.label}
+          {currentStep.hint && <span className="text-slate-400"> · {currentStep.hint}</span>}
+        </p>
+      )}
+    </div>
+    <ol className="hidden sm:flex sm:flex-row sm:items-stretch gap-2 sm:gap-0" aria-label="Steps">
       {steps.map((step, index) => {
         const number = index + 1;
         const done = number < current;
@@ -94,6 +130,7 @@ export function Stepper({ steps, current, onStep }) {
         );
       })}
     </ol>
+    </>
   );
 }
 

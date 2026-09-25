@@ -33,8 +33,45 @@ import {
 } from 'lucide-react';
 import { showPopupAlert } from '../components/GlobalAlertModal';
 import { API_BASE } from '../utils/api';
+import PasswordInput from '../components/ui/PasswordInput';
+import { usePermissions } from '../utils/permissions';
+
+// Role & permissions matrix: [capability, [manager, leader, team member]] - each cell is [text, className].
+// Rendered as a table from md up and as stacked cards on phones.
+const PERM_FULL = ['Full Access', 'text-purple-600 font-bold'];
+const PERM_NONE = ['—', 'text-slate-300'];
+const PERMISSION_MATRIX = [
+  ['User Management (Add, Edit, Delete, Roles)', [PERM_FULL, ['View Team Only', 'text-slate-400'], PERM_NONE]],
+  ['Manage All Organization Documents', [PERM_FULL, ['Team Documents', 'text-blue-600 font-semibold'], ['Own Documents', 'text-slate-600']]],
+  ['Delete & Restore Documents / Trash', [PERM_FULL, ['Own/Team Only', 'text-blue-600 font-semibold'], PERM_NONE]],
+  ['Create & Share Templates', [PERM_FULL, ['Full Access', 'text-blue-600 font-semibold'], ['Use Templates', 'text-slate-600']]],
+  ['System Settings & Integrations', [PERM_FULL, PERM_NONE, PERM_NONE]],
+  ['View Enterprise Login & Audit Logs', [PERM_FULL, PERM_NONE, PERM_NONE]]
+];
+// Id of the signed-in user (anyone may reset their own password)
+const getCurrentUserId = () => {
+  try {
+    const stored = JSON.parse(localStorage.getItem('user') || 'null');
+    return stored && stored.id != null ? Number(stored.id) : null;
+  } catch (e) {
+    return null;
+  }
+};
+
+const PERMISSION_ROLES = [
+  ['Manager (Admin)', 'text-purple-700'],
+  ['Leader', 'text-blue-700'],
+  ['Team Member', 'text-slate-700']
+];
 
 export default function UserManagement() {
+  const { can } = usePermissions();
+  const canInvite = can('users.invite');
+  const canEdit = can('users.edit');
+  const canDeactivate = can('users.deactivate');
+  const canDelete = can('users.delete');
+  const canManageRoles = can('roles.manage');
+  const currentUserId = getCurrentUserId();
   const [users, setUsers] = useState([]);
   const [roles, setRoles] = useState([]);
   const [stats, setStats] = useState({
@@ -334,16 +371,16 @@ export default function UserManagement() {
   };
 
   return (
-    <div className="flex-1 flex flex-col h-full bg-slate-50 text-slate-800 overflow-y-auto font-sans p-6 sm:p-8 space-y-6">
+    <div className="flex flex-col bg-slate-50 text-slate-800 font-sans lg:p-2 space-y-6">
       {/* Top Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200">
-        <div>
-          <div className="flex items-center gap-2.5">
-            <div className="w-10 h-10 rounded-xl bg-[#007355]/10 border border-[#007355]/20 flex items-center justify-center text-[#007355]">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-200">
+        <div className="min-w-0">
+          <div className="flex items-start sm:items-center gap-2.5">
+            <div className="shrink-0 w-10 h-10 rounded-xl bg-[#007355]/10 border border-[#007355]/20 flex items-center justify-center text-[#007355]">
               <Users size={22} />
             </div>
-            <div>
-              <h1 className="text-2xl font-black text-slate-900 tracking-tight">Users & Access Management</h1>
+            <div className="min-w-0">
+              <h1 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">Users & Access Management</h1>
               <p className="text-xs text-slate-500 mt-0.5">
                 Manage organization team members, assign managerial & leader permissions, and monitor access.
               </p>
@@ -352,7 +389,7 @@ export default function UserManagement() {
         </div>
 
         {/* Header Action Buttons */}
-        <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2.5">
           <button
             onClick={() => setShowPermissionsModal(true)}
             className="px-3.5 py-2 border border-slate-300 hover:bg-white bg-slate-100/80 rounded-xl text-xs font-bold text-slate-700 transition flex items-center gap-2 shadow-xs cursor-pointer"
@@ -369,64 +406,66 @@ export default function UserManagement() {
             <History size={15} className="text-slate-500" />
             <span>Login Audit</span>
           </button>
-          <button
-            onClick={() => setShowAddModal(true)}
-            className="px-4 py-2 bg-[#007355] hover:bg-[#005c44] text-white rounded-xl text-xs font-bold transition flex items-center gap-2 shadow-sm cursor-pointer"
-          >
-            <UserPlus size={16} />
-            <span>+ Add User</span>
-          </button>
+          {canInvite && (
+            <button
+              onClick={() => setShowAddModal(true)}
+              className="px-4 py-2 bg-[#007355] hover:bg-[#005c44] text-white rounded-xl text-xs font-bold transition flex items-center gap-2 shadow-sm cursor-pointer"
+            >
+              <UserPlus size={16} />
+              <span>+ Add User</span>
+            </button>
+          )}
         </div>
       </div>
 
       {/* Metric Stats Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
-          <div>
-            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Total Members</p>
+      <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-3 sm:gap-4">
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider break-words">Total Members</p>
             <h3 className="text-2xl font-black text-slate-900 mt-0.5">{stats.total}</h3>
           </div>
-          <div className="w-10 h-10 rounded-lg bg-slate-100 flex items-center justify-center text-slate-600">
+          <div className="shrink-0 w-10 h-10 rounded-lg bg-slate-100 flex items-center justify-center text-slate-600">
             <Users size={20} />
           </div>
         </div>
 
-        <div className="bg-white p-4 rounded-xl border border-purple-100 shadow-xs flex items-center justify-between">
-          <div>
-            <p className="text-[11px] font-bold text-purple-600 uppercase tracking-wider">Managers (Admin)</p>
+        <div className="bg-white p-4 rounded-xl border border-purple-100 shadow-xs flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <p className="text-[11px] font-bold text-purple-600 uppercase tracking-wider break-words">Managers (Admin)</p>
             <h3 className="text-2xl font-black text-purple-900 mt-0.5">{stats.managers}</h3>
           </div>
-          <div className="w-10 h-10 rounded-lg bg-purple-50 flex items-center justify-center text-purple-600">
+          <div className="shrink-0 w-10 h-10 rounded-lg bg-purple-50 flex items-center justify-center text-purple-600">
             <ShieldCheck size={20} />
           </div>
         </div>
 
-        <div className="bg-white p-4 rounded-xl border border-blue-100 shadow-xs flex items-center justify-between">
-          <div>
+        <div className="bg-white p-4 rounded-xl border border-blue-100 shadow-xs flex items-center justify-between gap-2">
+          <div className="min-w-0">
             <p className="text-[11px] font-bold text-blue-600 uppercase tracking-wider">Leaders</p>
             <h3 className="text-2xl font-black text-blue-900 mt-0.5">{stats.leaders}</h3>
           </div>
-          <div className="w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center text-blue-600">
+          <div className="shrink-0 w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center text-blue-600">
             <Award size={20} />
           </div>
         </div>
 
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
-          <div>
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between gap-2">
+          <div className="min-w-0">
             <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Team Members</p>
             <h3 className="text-2xl font-black text-slate-800 mt-0.5">{stats.teamMembers}</h3>
           </div>
-          <div className="w-10 h-10 rounded-lg bg-slate-50 flex items-center justify-center text-slate-500">
+          <div className="shrink-0 w-10 h-10 rounded-lg bg-slate-50 flex items-center justify-center text-slate-500">
             <Users size={20} />
           </div>
         </div>
 
-        <div className="bg-white p-4 rounded-xl border border-emerald-100 shadow-xs flex items-center justify-between col-span-2 sm:col-span-1">
-          <div>
+        <div className="bg-white p-4 rounded-xl border border-emerald-100 shadow-xs flex items-center justify-between gap-2 col-span-2 sm:col-span-1">
+          <div className="min-w-0">
             <p className="text-[11px] font-bold text-emerald-600 uppercase tracking-wider">Active Status</p>
             <h3 className="text-2xl font-black text-emerald-900 mt-0.5">{stats.active}</h3>
           </div>
-          <div className="w-10 h-10 rounded-lg bg-emerald-50 flex items-center justify-center text-emerald-600">
+          <div className="shrink-0 w-10 h-10 rounded-lg bg-emerald-50 flex items-center justify-center text-emerald-600">
             <CheckCircle2 size={20} />
           </div>
         </div>
@@ -448,12 +487,12 @@ export default function UserManagement() {
 
         {/* Filter Dropdowns */}
         <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-1 sm:flex-none min-w-[9rem]">
             <span className="text-[11px] font-bold text-slate-500 uppercase">Role:</span>
             <select
               value={roleFilter}
               onChange={(e) => setRoleFilter(e.target.value)}
-              className="py-1.5 px-3 border border-slate-200 rounded-lg text-xs font-semibold text-slate-700 bg-white focus:outline-none focus:border-[#007355]"
+              className="flex-1 sm:flex-none min-w-0 py-2 sm:py-1.5 px-3 border border-slate-200 rounded-lg text-xs font-semibold text-slate-700 bg-white focus:outline-none focus:border-[#007355]"
             >
               <option value="all">All Roles ({stats.total})</option>
               <option value="manager">Managers ({stats.managers})</option>
@@ -462,12 +501,12 @@ export default function UserManagement() {
             </select>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-1 sm:flex-none min-w-[9rem]">
             <span className="text-[11px] font-bold text-slate-500 uppercase">Status:</span>
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
-              className="py-1.5 px-3 border border-slate-200 rounded-lg text-xs font-semibold text-slate-700 bg-white focus:outline-none focus:border-[#007355]"
+              className="flex-1 sm:flex-none min-w-0 py-2 sm:py-1.5 px-3 border border-slate-200 rounded-lg text-xs font-semibold text-slate-700 bg-white focus:outline-none focus:border-[#007355]"
             >
               <option value="all">All Status</option>
               <option value="active">Active ({stats.active})</option>
@@ -477,8 +516,9 @@ export default function UserManagement() {
 
           <button
             onClick={fetchUsers}
-            className="p-2 border border-slate-200 hover:bg-slate-50 rounded-lg text-slate-500 hover:text-slate-700 transition"
+            className="p-2.5 sm:p-2 border border-slate-200 hover:bg-slate-50 rounded-lg text-slate-500 hover:text-slate-700 transition"
             title="Refresh Users List"
+            aria-label="Refresh users list"
           >
             <RefreshCw size={14} />
           </button>
@@ -487,7 +527,7 @@ export default function UserManagement() {
 
       {/* Users Table */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
-        <div className="overflow-x-auto">
+        <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-left text-xs border-collapse">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
@@ -519,6 +559,7 @@ export default function UserManagement() {
                 filteredUsers.map((user) => {
                   const initials = `${(user.first_name || 'U')[0]}${(user.last_name || 'M')[0]}`.toUpperCase();
                   const isPrimaryAdmin = user.id === 1;
+                  const isSelf = currentUserId !== null && Number(user.id) === currentUserId;
 
                   return (
                     <tr key={user.id} className="hover:bg-slate-50/70 transition">
@@ -563,14 +604,14 @@ export default function UserManagement() {
                       <td className="py-3.5 px-4 text-center">
                         <button
                           type="button"
-                          onClick={() => !isPrimaryAdmin && handleToggleStatus(user)}
-                          disabled={isPrimaryAdmin}
+                          onClick={() => !isPrimaryAdmin && canDeactivate && handleToggleStatus(user)}
+                          disabled={isPrimaryAdmin || !canDeactivate}
                           className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-extrabold uppercase transition cursor-pointer ${
                             user.status === 'active'
                               ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100'
                               : 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100'
-                          } ${isPrimaryAdmin ? 'opacity-80 cursor-not-allowed' : ''}`}
-                          title={isPrimaryAdmin ? 'Primary admin cannot be deactivated' : `Click to toggle ${user.status === 'active' ? 'Deactivate' : 'Activate'}`}
+                          } ${isPrimaryAdmin || !canDeactivate ? 'opacity-80 cursor-not-allowed' : ''}`}
+                          title={isPrimaryAdmin ? 'Primary admin cannot be deactivated' : !canDeactivate ? "You don't have permission to activate or deactivate users" : `Click to toggle ${user.status === 'active' ? 'Deactivate' : 'Activate'}`}
                         >
                           <span className={`w-1.5 h-1.5 rounded-full ${user.status === 'active' ? 'bg-emerald-500' : 'bg-rose-500'}`} />
                           {user.status === 'active' ? 'Active' : 'Inactive'}
@@ -585,32 +626,36 @@ export default function UserManagement() {
                       {/* Actions */}
                       <td className="py-3.5 px-4 text-right whitespace-nowrap">
                         <div className="flex items-center justify-end gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setActiveUser({ ...user });
-                              setShowEditModal(true);
-                            }}
-                            className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition"
-                            title="Edit User Details & Role"
-                          >
-                            <Edit2 size={14} />
-                          </button>
+                          {canEdit && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActiveUser({ ...user });
+                                setShowEditModal(true);
+                              }}
+                              className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition"
+                              title="Edit User Details & Role"
+                            >
+                              <Edit2 size={14} />
+                            </button>
+                          )}
 
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setActiveUser(user);
-                              setResetPasswordVal('');
-                              setShowResetModal(true);
-                            }}
-                            className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition"
-                            title="Reset Password"
-                          >
-                            <Key size={14} />
-                          </button>
+                          {(canEdit || isSelf) && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActiveUser(user);
+                                setResetPasswordVal('');
+                                setShowResetModal(true);
+                              }}
+                              className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition"
+                              title="Reset Password"
+                            >
+                              <Key size={14} />
+                            </button>
+                          )}
 
-                          {!isPrimaryAdmin && (
+                          {!isPrimaryAdmin && canDelete && (
                             <button
                               type="button"
                               onClick={() => handleDeleteUser(user)}
@@ -629,26 +674,146 @@ export default function UserManagement() {
             </tbody>
           </table>
         </div>
+
+        {/* Phone layout: one card per user */}
+        <div className="md:hidden">
+          {loading ? (
+            <div className="py-12 text-center text-slate-400">
+              <RefreshCw size={24} className="animate-spin mx-auto mb-2 text-[#007355]" />
+              <p className="text-xs font-semibold">Loading enterprise users...</p>
+            </div>
+          ) : filteredUsers.length === 0 ? (
+            <div className="py-12 px-4 text-center text-slate-400">
+              <Users size={32} className="mx-auto mb-2 opacity-40" />
+              <p className="text-sm font-bold text-slate-600">No users found</p>
+              <p className="text-xs text-slate-400 mt-1">Try adjusting your search query or filters</p>
+            </div>
+          ) : (
+            <ul className="divide-y divide-slate-100">
+              {filteredUsers.map((user) => {
+                const initials = `${(user.first_name || 'U')[0]}${(user.last_name || 'M')[0]}`.toUpperCase();
+                const isPrimaryAdmin = user.id === 1;
+                const isSelf = currentUserId !== null && Number(user.id) === currentUserId;
+
+                return (
+                  <li key={user.id} className="p-3.5 space-y-2.5 min-w-0">
+                    <div className="flex items-start gap-3 min-w-0">
+                      <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold text-white shadow-xs shrink-0 ${
+                        user.role === 'manager' ? 'bg-gradient-to-tr from-purple-600 to-indigo-500' : (user.role === 'leader' ? 'bg-gradient-to-tr from-blue-600 to-cyan-500' : 'bg-gradient-to-tr from-slate-600 to-slate-500')
+                      }`}>
+                        {initials}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <p className="text-xs font-bold text-slate-900 truncate">
+                            {user.first_name} {user.last_name}
+                          </p>
+                          {isPrimaryAdmin && (
+                            <span className="shrink-0 px-1.5 py-0.2 bg-amber-50 border border-amber-200 text-amber-700 text-[9px] font-black rounded uppercase">
+                              Owner
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-slate-500 text-[11px] font-mono mt-0.5 break-all">{user.email}</p>
+                        <p className="text-[11px] text-slate-600 mt-0.5 break-words">
+                          <span className="font-semibold text-slate-800">{user.designation || 'Member'}</span>
+                          <span className="text-slate-400"> · {user.department || 'General'}</span>
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      {renderRoleBadge(user.role)}
+                      <button
+                        type="button"
+                        onClick={() => !isPrimaryAdmin && canDeactivate && handleToggleStatus(user)}
+                        disabled={isPrimaryAdmin || !canDeactivate}
+                        className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-full text-[10px] font-extrabold uppercase transition cursor-pointer ${
+                          user.status === 'active'
+                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100'
+                            : 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100'
+                        } ${isPrimaryAdmin || !canDeactivate ? 'opacity-80 cursor-not-allowed' : ''}`}
+                        title={isPrimaryAdmin ? 'Primary admin cannot be deactivated' : !canDeactivate ? "You don't have permission to activate or deactivate users" : `Click to toggle ${user.status === 'active' ? 'Deactivate' : 'Activate'}`}
+                      >
+                        <span className={`w-1.5 h-1.5 rounded-full ${user.status === 'active' ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+                        {user.status === 'active' ? 'Active' : 'Inactive'}
+                      </button>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2 min-w-0">
+                      <p className="text-slate-500 text-[10px] font-mono min-w-0 break-words">
+                        <span className="font-sans font-bold uppercase text-slate-400">Last login </span>
+                        {user.last_login ? new Date(user.last_login).toLocaleString() : 'Never logged in'}
+                      </p>
+                      <div className="flex items-center gap-1 shrink-0">
+                        {canEdit && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setActiveUser({ ...user });
+                              setShowEditModal(true);
+                            }}
+                            className="w-9 h-9 inline-flex items-center justify-center text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition"
+                            title="Edit User Details & Role"
+                            aria-label="Edit user details and role"
+                          >
+                            <Edit2 size={15} />
+                          </button>
+                        )}
+                        {(canEdit || isSelf) && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setActiveUser(user);
+                              setResetPasswordVal('');
+                              setShowResetModal(true);
+                            }}
+                            className="w-9 h-9 inline-flex items-center justify-center text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition"
+                            title="Reset Password"
+                            aria-label="Reset password"
+                          >
+                            <Key size={15} />
+                          </button>
+                        )}
+                        {!isPrimaryAdmin && canDelete && (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteUser(user)}
+                            className="w-9 h-9 inline-flex items-center justify-center text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
+                            title="Delete User"
+                            aria-label="Delete user"
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
       </div>
 
       {/* MODAL 1: Add New User */}
       {showAddModal && (
         <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center z-50 p-4 font-sans text-slate-900">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95">
-            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-[#007355]/10 text-[#007355] flex items-center justify-center">
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-4 sm:p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95">
+            <div className="flex justify-between items-center gap-3 pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="shrink-0 w-8 h-8 rounded-lg bg-[#007355]/10 text-[#007355] flex items-center justify-center">
                   <UserPlus size={18} />
                 </div>
                 <h3 className="text-base font-bold text-slate-900">Add Organization Member</h3>
               </div>
-              <button onClick={() => setShowAddModal(false)} className="text-slate-400 hover:text-slate-700">
+              <button onClick={() => setShowAddModal(false)} className="shrink-0 p-2 -m-2 sm:p-0 sm:m-0 text-slate-400 hover:text-slate-700" aria-label="Close">
                 <X size={18} />
               </button>
             </div>
 
             <form onSubmit={handleCreateUser} className="space-y-4">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">First Name *</label>
                   <input
@@ -691,7 +856,7 @@ export default function UserManagement() {
                 <div className="grid grid-cols-3 gap-2.5">
                   <div
                     onClick={() => setFormData({ ...formData, role: 'manager' })}
-                    className={`p-3 rounded-xl border cursor-pointer transition flex flex-col items-center text-center space-y-1 ${
+                    className={`p-2 sm:p-3 rounded-xl border cursor-pointer transition flex flex-col items-center text-center space-y-1 ${
                       formData.role === 'manager'
                         ? 'border-purple-500 bg-purple-50/70 text-purple-900 shadow-xs ring-2 ring-purple-300'
                         : 'border-slate-200 hover:bg-slate-50 text-slate-600'
@@ -704,7 +869,7 @@ export default function UserManagement() {
 
                   <div
                     onClick={() => setFormData({ ...formData, role: 'leader' })}
-                    className={`p-3 rounded-xl border cursor-pointer transition flex flex-col items-center text-center space-y-1 ${
+                    className={`p-2 sm:p-3 rounded-xl border cursor-pointer transition flex flex-col items-center text-center space-y-1 ${
                       formData.role === 'leader'
                         ? 'border-blue-500 bg-blue-50/70 text-blue-900 shadow-xs ring-2 ring-blue-300'
                         : 'border-slate-200 hover:bg-slate-50 text-slate-600'
@@ -717,7 +882,7 @@ export default function UserManagement() {
 
                   <div
                     onClick={() => setFormData({ ...formData, role: 'team_member' })}
-                    className={`p-3 rounded-xl border cursor-pointer transition flex flex-col items-center text-center space-y-1 ${
+                    className={`p-2 sm:p-3 rounded-xl border cursor-pointer transition flex flex-col items-center text-center space-y-1 ${
                       formData.role === 'team_member'
                         ? 'border-slate-500 bg-slate-100 text-slate-900 shadow-xs ring-2 ring-slate-300'
                         : 'border-slate-200 hover:bg-slate-50 text-slate-600'
@@ -730,7 +895,7 @@ export default function UserManagement() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">Department</label>
                   <input
@@ -755,9 +920,10 @@ export default function UserManagement() {
 
               <div>
                 <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">Initial Password</label>
-                <input
-                  type="text"
+                <PasswordInput
+                  iconSize={15}
                   required
+                  autoComplete="new-password"
                   value={formData.password}
                   onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                   placeholder="Set password for first login"
@@ -765,17 +931,19 @@ export default function UserManagement() {
                 />
               </div>
 
-              <div className="flex justify-end items-center gap-2.5 pt-3 border-t border-slate-100">
+              <div className="flex flex-col-reverse sm:flex-row sm:justify-end sm:items-center gap-2.5 pt-3 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => setShowAddModal(false)}
-                  className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-50 transition"
+                  className="w-full sm:w-auto px-4 py-2.5 sm:py-2 border border-slate-300 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-50 transition"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 bg-[#007355] hover:bg-[#005c44] text-white rounded-lg text-xs font-bold transition shadow"
+                  disabled={!canInvite}
+                  title={canInvite ? undefined : "You don't have permission to add users"}
+                  className="w-full sm:w-auto px-5 py-2.5 sm:py-2 bg-[#007355] hover:bg-[#005c44] text-white rounded-lg text-xs font-bold transition shadow disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   Create & Assign Role
                 </button>
@@ -788,16 +956,16 @@ export default function UserManagement() {
       {/* MODAL 2: Edit User */}
       {showEditModal && activeUser && (
         <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center z-50 p-4 font-sans text-slate-900">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95">
-            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-4 sm:p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95">
+            <div className="flex justify-between items-center gap-3 pb-2 border-b border-slate-100">
               <h3 className="text-base font-bold text-slate-900">Edit User Details & Role</h3>
-              <button onClick={() => setShowEditModal(false)} className="text-slate-400 hover:text-slate-700">
+              <button onClick={() => setShowEditModal(false)} className="shrink-0 p-2 -m-2 sm:p-0 sm:m-0 text-slate-400 hover:text-slate-700" aria-label="Close">
                 <X size={18} />
               </button>
             </div>
 
             <form onSubmit={handleUpdateUser} className="space-y-4">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">First Name</label>
                   <input
@@ -823,7 +991,9 @@ export default function UserManagement() {
                 <select
                   value={activeUser.role || 'team_member'}
                   onChange={(e) => setActiveUser({ ...activeUser, role: e.target.value })}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-bold text-slate-900 focus:outline-none focus:border-[#007355]"
+                  disabled={!canManageRoles}
+                  title={canManageRoles ? undefined : "You don't have permission to change user roles"}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-bold text-slate-900 focus:outline-none focus:border-[#007355] disabled:bg-slate-50 disabled:text-slate-500 disabled:cursor-not-allowed"
                 >
                   <option value="manager">Manager (Admin - All Access)</option>
                   <option value="leader">Leader (Team Management)</option>
@@ -831,7 +1001,7 @@ export default function UserManagement() {
                 </select>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">Department</label>
                   <input
@@ -852,17 +1022,19 @@ export default function UserManagement() {
                 </div>
               </div>
 
-              <div className="flex justify-end items-center gap-2.5 pt-3 border-t border-slate-100">
+              <div className="flex flex-col-reverse sm:flex-row sm:justify-end sm:items-center gap-2.5 pt-3 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => setShowEditModal(false)}
-                  className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-50 transition"
+                  className="w-full sm:w-auto px-4 py-2.5 sm:py-2 border border-slate-300 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-50 transition"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 bg-[#007355] hover:bg-[#005c44] text-white rounded-lg text-xs font-bold transition shadow"
+                  disabled={!canEdit}
+                  title={canEdit ? undefined : "You don't have permission to edit users"}
+                  className="w-full sm:w-auto px-5 py-2.5 sm:py-2 bg-[#007355] hover:bg-[#005c44] text-white rounded-lg text-xs font-bold transition shadow disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   Save Changes
                 </button>
@@ -875,10 +1047,10 @@ export default function UserManagement() {
       {/* MODAL 3: Reset Password */}
       {showResetModal && activeUser && (
         <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center z-50 p-4 font-sans text-slate-900">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95">
-            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-emerald-50 text-[#007355] flex items-center justify-center">
+          <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-4 sm:p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95">
+            <div className="flex justify-between items-center gap-3 pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="shrink-0 w-8 h-8 rounded-lg bg-emerald-50 text-[#007355] flex items-center justify-center">
                   <Key size={16} />
                 </div>
                 <div>
@@ -886,24 +1058,24 @@ export default function UserManagement() {
                   <p className="text-[11px] text-slate-500">Manager override credentials</p>
                 </div>
               </div>
-              <button onClick={() => setShowResetModal(false)} className="text-slate-400 hover:text-slate-700">
+              <button onClick={() => setShowResetModal(false)} className="shrink-0 p-2 -m-2 sm:p-0 sm:m-0 text-slate-400 hover:text-slate-700" aria-label="Close">
                 <X size={18} />
               </button>
             </div>
 
-            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-600 flex items-center justify-between">
-              <div>
-                <p className="font-bold text-slate-800">{activeUser.first_name} {activeUser.last_name}</p>
-                <p className="text-[11px] text-slate-500">{activeUser.email}</p>
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-600 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="font-bold text-slate-800 break-words">{activeUser.first_name} {activeUser.last_name}</p>
+                <p className="text-[11px] text-slate-500 break-all">{activeUser.email}</p>
               </div>
-              <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-slate-200 text-slate-700">
+              <span className="shrink-0 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-slate-200 text-slate-700">
                 {activeUser.role || 'Member'}
               </span>
             </div>
 
             {resetError && (
               <div className="p-2.5 bg-rose-50 border border-rose-200 text-rose-700 rounded-lg text-xs font-semibold flex items-center gap-2">
-                <AlertCircle size={14} /> {resetError}
+                <AlertCircle size={14} className="shrink-0" /> {resetError}
               </div>
             )}
 
@@ -972,7 +1144,7 @@ export default function UserManagement() {
               </div>
 
               {/* Send email checkbox */}
-              <label className="flex items-center gap-2 pt-1 cursor-pointer select-none">
+              <label className="flex items-start sm:items-center gap-2 pt-1 cursor-pointer select-none">
                 <input
                   type="checkbox"
                   checked={resetSendEmail}
@@ -980,21 +1152,21 @@ export default function UserManagement() {
                   className="rounded border-slate-300 text-[#007355] focus:ring-[#007355]"
                 />
                 <span className="text-[11px] text-slate-600 font-medium">
-                  Send new credentials notification to <strong className="text-slate-800">{activeUser.email}</strong>
+                  Send new credentials notification to <strong className="text-slate-800 break-all">{activeUser.email}</strong>
                 </span>
               </label>
 
-              <div className="flex justify-end items-center gap-2.5 pt-3 border-t border-slate-100">
+              <div className="flex flex-col-reverse sm:flex-row sm:justify-end sm:items-center gap-2.5 pt-3 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => setShowResetModal(false)}
-                  className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-50 transition"
+                  className="w-full sm:w-auto px-4 py-2.5 sm:py-2 border border-slate-300 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-50 transition"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 bg-[#007355] hover:bg-[#005c44] text-white rounded-lg text-xs font-bold transition shadow"
+                  className="w-full sm:w-auto px-5 py-2.5 sm:py-2 bg-[#007355] hover:bg-[#005c44] text-white rounded-lg text-xs font-bold transition shadow"
                 >
                   Change Password
                 </button>
@@ -1007,73 +1179,62 @@ export default function UserManagement() {
       {/* MODAL 4: Role Permissions Matrix */}
       {showPermissionsModal && (
         <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center z-50 p-4 font-sans text-slate-900">
-          <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95">
-            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
-              <div className="flex items-center gap-2">
-                <ShieldCheck size={20} className="text-[#007355]" />
+          <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto p-4 sm:p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95">
+            <div className="flex justify-between items-center gap-3 pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2 min-w-0">
+                <ShieldCheck size={20} className="shrink-0 text-[#007355]" />
                 <h3 className="text-base font-bold text-slate-900">Enterprise Role & Permissions Matrix</h3>
               </div>
-              <button onClick={() => setShowPermissionsModal(false)} className="text-slate-400 hover:text-slate-700">
+              <button onClick={() => setShowPermissionsModal(false)} className="shrink-0 p-2 -m-2 sm:p-0 sm:m-0 text-slate-400 hover:text-slate-700" aria-label="Close">
                 <X size={18} />
               </button>
             </div>
 
-            <div className="border border-slate-200 rounded-xl overflow-hidden shadow-xs">
+            <div className="hidden md:block border border-slate-200 rounded-xl overflow-x-auto shadow-xs">
               <table className="w-full text-left text-xs border-collapse">
                 <thead>
                   <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold">
                     <th className="py-2.5 px-4">Feature / Capability</th>
-                    <th className="py-2.5 px-4 text-center text-purple-700">Manager (Admin)</th>
-                    <th className="py-2.5 px-4 text-center text-blue-700">Leader</th>
-                    <th className="py-2.5 px-4 text-center text-slate-700">Team Member</th>
+                    {PERMISSION_ROLES.map(([label, cls]) => (
+                      <th key={label} className={`py-2.5 px-4 text-center ${cls}`}>{label}</th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 font-medium">
-                  <tr>
-                    <td className="py-2 px-4 font-semibold text-slate-800">User Management (Add, Edit, Delete, Roles)</td>
-                    <td className="py-2 px-4 text-center text-purple-600 font-bold">Full Access</td>
-                    <td className="py-2 px-4 text-center text-slate-400">View Team Only</td>
-                    <td className="py-2 px-4 text-center text-slate-300">—</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2 px-4 font-semibold text-slate-800">Manage All Organization Documents</td>
-                    <td className="py-2 px-4 text-center text-purple-600 font-bold">Full Access</td>
-                    <td className="py-2 px-4 text-center text-blue-600 font-semibold">Team Documents</td>
-                    <td className="py-2 px-4 text-center text-slate-600">Own Documents</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2 px-4 font-semibold text-slate-800">Delete & Restore Documents / Trash</td>
-                    <td className="py-2 px-4 text-center text-purple-600 font-bold">Full Access</td>
-                    <td className="py-2 px-4 text-center text-blue-600 font-semibold">Own/Team Only</td>
-                    <td className="py-2 px-4 text-center text-slate-300">—</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2 px-4 font-semibold text-slate-800">Create & Share Templates</td>
-                    <td className="py-2 px-4 text-center text-purple-600 font-bold">Full Access</td>
-                    <td className="py-2 px-4 text-center text-blue-600 font-semibold">Full Access</td>
-                    <td className="py-2 px-4 text-center text-slate-600">Use Templates</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2 px-4 font-semibold text-slate-800">System Settings & Integrations</td>
-                    <td className="py-2 px-4 text-center text-purple-600 font-bold">Full Access</td>
-                    <td className="py-2 px-4 text-center text-slate-300">—</td>
-                    <td className="py-2 px-4 text-center text-slate-300">—</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2 px-4 font-semibold text-slate-800">View Enterprise Login & Audit Logs</td>
-                    <td className="py-2 px-4 text-center text-purple-600 font-bold">Full Access</td>
-                    <td className="py-2 px-4 text-center text-slate-300">—</td>
-                    <td className="py-2 px-4 text-center text-slate-300">—</td>
-                  </tr>
+                  {PERMISSION_MATRIX.map(([feature, cells]) => (
+                    <tr key={feature}>
+                      <td className="py-2 px-4 font-semibold text-slate-800">{feature}</td>
+                      {cells.map(([text, cls], i) => (
+                        <td key={i} className={`py-2 px-4 text-center ${cls}`}>{text}</td>
+                      ))}
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
+
+            {/* Phone layout: one card per capability */}
+            <ul className="md:hidden space-y-2">
+              {PERMISSION_MATRIX.map(([feature, cells]) => (
+                <li key={feature} className="border border-slate-200 rounded-xl p-3 text-xs">
+                  <p className="font-semibold text-slate-800 break-words">{feature}</p>
+                  <dl className="mt-2 grid grid-cols-3 gap-2">
+                    {cells.map(([text, cls], i) => (
+                      <div key={i} className="min-w-0 rounded-lg bg-slate-50 px-2 py-1.5 text-center">
+                        <dt className={`text-[9px] font-bold uppercase tracking-wide break-words ${PERMISSION_ROLES[i][1]}`}>{PERMISSION_ROLES[i][0]}</dt>
+                        <dd className={`mt-0.5 text-[11px] font-medium break-words ${cls}`}>{text}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </li>
+              ))}
+            </ul>
 
             <div className="flex justify-end pt-2">
               <button
                 type="button"
                 onClick={() => setShowPermissionsModal(false)}
-                className="px-4 py-2 bg-[#007355] text-white rounded-lg text-xs font-bold cursor-pointer"
+                className="w-full sm:w-auto px-4 py-2.5 sm:py-2 bg-[#007355] text-white rounded-lg text-xs font-bold cursor-pointer"
               >
                 Close
               </button>
@@ -1085,18 +1246,18 @@ export default function UserManagement() {
       {/* MODAL 5: Login Audit Logs */}
       {showLogsModal && (
         <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center z-50 p-4 font-sans text-slate-900">
-          <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95">
-            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
-              <div className="flex items-center gap-2">
-                <History size={18} className="text-[#007355]" />
+          <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto p-4 sm:p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95">
+            <div className="flex justify-between items-center gap-3 pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2 min-w-0">
+                <History size={18} className="shrink-0 text-[#007355]" />
                 <h3 className="text-base font-bold text-slate-900">Enterprise Login Audit Trail</h3>
               </div>
-              <button onClick={() => setShowLogsModal(false)} className="text-slate-400 hover:text-slate-700">
+              <button onClick={() => setShowLogsModal(false)} className="shrink-0 p-2 -m-2 sm:p-0 sm:m-0 text-slate-400 hover:text-slate-700" aria-label="Close">
                 <X size={18} />
               </button>
             </div>
 
-            <div className="border border-slate-200 rounded-xl overflow-hidden shadow-xs max-h-96 overflow-y-auto">
+            <div className="hidden md:block border border-slate-200 rounded-xl overflow-x-auto shadow-xs max-h-96 overflow-y-auto">
               <table className="w-full text-left text-xs border-collapse">
                 <thead>
                   <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold text-[10px] uppercase">
@@ -1149,11 +1310,44 @@ export default function UserManagement() {
               </table>
             </div>
 
+            {/* Phone layout: one card per login event */}
+            <div className="md:hidden border border-slate-200 rounded-xl shadow-xs max-h-[55vh] overflow-y-auto">
+              {loginLogs.length === 0 ? (
+                <p className="py-8 text-center text-xs text-slate-400">No login events recorded yet.</p>
+              ) : (
+                <ul className="divide-y divide-slate-100">
+                  {loginLogs.map((log) => (
+                    <li key={log.id} className="p-3 space-y-1 min-w-0">
+                      <div className="flex items-start justify-between gap-2 min-w-0">
+                        <p className="text-xs font-semibold text-slate-800 break-all min-w-0">{log.email}</p>
+                        <span className="shrink-0 font-bold">
+                          {log.status === 'success' ? (
+                            <span className="text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded text-[10px] border border-emerald-200">
+                              Success
+                            </span>
+                          ) : (
+                            <span className="text-rose-700 bg-rose-50 px-2 py-0.5 rounded text-[10px] border border-rose-200">
+                              Failed
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                      <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-500">
+                        <span className="font-bold text-[10px] uppercase text-slate-600">{log.role}</span>
+                        <span className="font-mono">{log.ip_address || '127.0.0.1'}</span>
+                      </p>
+                      <p className="text-[11px] font-mono text-slate-500">{new Date(log.login_at).toLocaleString()}</p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
             <div className="flex justify-end pt-2">
               <button
                 type="button"
                 onClick={() => setShowLogsModal(false)}
-                className="px-4 py-2 bg-slate-800 text-white rounded-lg text-xs font-bold cursor-pointer"
+                className="w-full sm:w-auto px-4 py-2.5 sm:py-2 bg-slate-800 text-white rounded-lg text-xs font-bold cursor-pointer"
               >
                 Close
               </button>

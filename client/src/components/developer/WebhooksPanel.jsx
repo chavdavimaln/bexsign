@@ -239,10 +239,10 @@ function DeliveriesModal({ hook, onClose }) {
                     </button>
                     {open && (
                       <div className="px-3 pb-3 space-y-2 bg-slate-50/60">
-                        <p className="text-[11px] text-slate-500 pt-2">
-                          Delivery <span className="font-mono">{d.deliveryId || d.id}</span> · {d.durationMs ?? '-'} ms
+                        <p className="text-[11px] text-slate-500 pt-2 break-words">
+                          Delivery <span className="font-mono break-all">{d.deliveryId || d.id}</span> · {d.durationMs ?? '-'} ms
                         </p>
-                        {d.error && <p className="text-[11px] font-semibold text-rose-700">{d.error}</p>}
+                        {d.error && <p className="text-[11px] font-semibold text-rose-700 break-words">{d.error}</p>}
                         <div>
                           <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500 mb-1">Response</p>
                           <pre className="max-h-40 overflow-auto rounded-lg border border-slate-200 bg-white p-2 text-[11px] text-slate-700 whitespace-pre-wrap break-all">{d.responseBody ? prettyJson(d.responseBody) : '(empty)'}</pre>
@@ -347,7 +347,7 @@ export default function WebhooksPanel({ meta, showToast }) {
     <Card
       title="Webhooks"
       description={canManageAll ? 'Every webhook in the organization. Organization-wide webhooks (of administrators) receive events for all documents.' : 'Your webhooks receive events for documents and templates you own.'}
-      actions={<Button icon={Plus} onClick={() => setModal({ mode: 'create' })} className="whitespace-nowrap">Add webhook</Button>}
+      actions={<Button icon={Plus} onClick={() => setModal({ mode: 'create' })} className="whitespace-nowrap w-full sm:w-auto">Add webhook</Button>}
       bodyClassName="p-4 sm:p-5"
     >
       {meta && !meta.apiEnabled && (
@@ -369,14 +369,14 @@ export default function WebhooksPanel({ meta, showToast }) {
             {hooks.map((h) => {
               const result = results[h.id];
               return (
-                <li key={h.id} className={`rounded-2xl border p-4 transition ${h.isActive ? 'border-slate-200 bg-white' : 'border-slate-200 bg-slate-50'}`}>
+                <li key={h.id} className={`rounded-2xl border p-3 sm:p-4 transition ${h.isActive ? 'border-slate-200 bg-white' : 'border-slate-200 bg-slate-50'}`}>
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <h3 className="text-sm font-extrabold text-slate-900 truncate">{h.name || safeHost(h.url)}</h3>
+                        <h3 className="text-sm font-extrabold text-slate-900 truncate min-w-0 max-w-full">{h.name || safeHost(h.url)}</h3>
                         {h.isActive ? <Badge tone="emerald" dot>Active</Badge> : <Badge tone="slate" dot>{h.failureCount >= 10 ? 'Disabled after failures' : 'Off'}</Badge>}
                         {h.hasSecret && <Badge tone="violet">Own secret</Badge>}
-                        {canManageAll && !h.isOwn && <Badge tone="sky">{h.owner?.name}</Badge>}
+                        {canManageAll && !h.isOwn && <Badge tone="sky" className="max-w-full overflow-hidden">{h.owner?.name}</Badge>}
                       </div>
                       <p className="font-mono text-[11px] text-slate-500 mt-1 break-all">{h.url}</p>
                     </div>
@@ -386,7 +386,7 @@ export default function WebhooksPanel({ meta, showToast }) {
                   </div>
 
                   <div className="flex flex-wrap gap-1 mt-3">
-                    {h.events.map((e) => <span key={e} className="px-1.5 py-0.5 rounded-md bg-slate-100 border border-slate-200 text-slate-600 text-[10px] font-mono">{eventLabel(e)}</span>)}
+                    {h.events.map((e) => <span key={e} className="px-1.5 py-0.5 rounded-md bg-slate-100 border border-slate-200 text-slate-600 text-[10px] font-mono break-all">{eventLabel(e)}</span>)}
                   </div>
 
                   <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500">

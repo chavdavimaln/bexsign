@@ -7,13 +7,14 @@ const express = require('express');
 const net = require('net');
 const router = express.Router();
 const db = require('../db');
-const { authenticateUser } = require('../middleware/authMiddleware');
+const { authenticateUser, requireSignedIn } = require('../middleware/authMiddleware');
 const { requirePermission } = require('../utils/permissions');
 const { logActivity } = require('../utils/platformEvents');
 const { ensurePlatformSchema } = require('../utils/platformSchema');
 const { getDeveloperSettings, generateSecret, maskSecret, parseList, purgeExpiredLogs, userName } = require('../utils/developerApi');
 
-router.use(authenticateUser);
+// Signed-in users only (a request without a sign-in is refused)
+router.use(authenticateUser, requireSignedIn);
 router.use(async (req, res, next) => {
   try {
     await ensurePlatformSchema();

@@ -13,12 +13,13 @@
  *   PUT    /api/verification/:documentId/setting  { required } the sender's checkbox (draft requests only)
  */
 const express = require('express');
-const { authenticateUser } = require('../middleware/authMiddleware');
+const { authenticateUser, requireSignedIn } = require('../middleware/authMiddleware');
 const { requirePermission, userCan } = require('../utils/permissions');
 const verification = require('../utils/documentVerification');
 
 const router = express.Router();
-router.use(authenticateUser);
+// Signed-in users only (a request without a sign-in is refused)
+router.use(authenticateUser, requireSignedIn);
 
 // The tables are created on the first request, exactly like the other self-contained modules
 router.use((req, res, next) => {

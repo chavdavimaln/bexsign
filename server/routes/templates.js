@@ -6,6 +6,9 @@ const fs = require('fs');
 const db = require('../db');
 const { notify, logActivity } = require('../utils/platformEvents');
 const { dispatchWebhookEvent } = require('../utils/webhooks');
+const trashStore = require('../utils/trashStore');
+const { authenticateUser, requireSignedIn } = require('../middleware/authMiddleware');
+const { requirePermission, userCan } = require('../utils/permissions');
 
 // Ensure uploads directory exists
 const uploadDir = path.join(__dirname, '../uploads');
@@ -114,6 +117,14 @@ async function getUser(userId) {
 
 const isManager = (user) => String(user?.role || '').toLowerCase() === 'manager';
 
+/** Who deleted a template, for the trash (templates are called with ?userId= / body.userId). */
+async function trashUser(userId) {
+    const id = parseInt(userId, 10);
+    if (!id) return null;
+    const [rows] = await db.query('SELECT id, first_name, last_name, email FROM users WHERE id = ?', [id]);
+    return rows[0] || null;
+}
+
 // Templates a user can see: their own and shared ones (managers see all)
 async function listTemplates(userId) {
     await ensureTemplateSchema();
@@ -131,7 +142,7 @@ async function listTemplates(userId) {
 
 // Only the owner or a manager changes or deletes a template
 async function canManage(template, userId) {
-    if (!userId) return true;
+    if (!userId) return false;
     const user = await getUser(userId);
     return Boolean(user) && (isManager(user) || Number(template.user_id) === Number(user.id));
 }
@@ -154,11 +165,14 @@ function validateTemplate({ title, content }, hasFile) {
     return null;
 }
 
+// Signed-in users only; "who" is always the signed-in user, never a userId sent by the browser
+router.use(authenticateUser, requireSignedIn);
+
 // @route   GET /api/templates?userId=
 // @desc    Saved templates the user can see
-router.get('/', async (req, res) => {
+router.get('/', requirePermission('templates.view'), async (req, res) => {
     try {
-        const templates = await listTemplates(req.query.userId);
+        const templates = await listTemplates(req.user.id);
         res.json({ success: true, templates, total: templates.length });
     } catch (err) {
         console.error('Fetch All Templates Error:', err);
@@ -168,9 +182,9 @@ router.get('/', async (req, res) => {
 
 // @route   GET /api/templates/:userId
 // @desc    Saved templates for a user (array)
-router.get('/:userId', async (req, res) => {
+router.get('/:userId', requirePermission('templates.view'), async (req, res) => {
     try {
-        res.json(await listTemplates(req.params.userId));
+        res.json(await listTemplates(req.user.id));
     } catch (err) {
         console.error('Fetch Templates Error:', err);
         res.status(500).json({ error: 'Database error while fetching templates' });
@@ -179,7 +193,7 @@ router.get('/:userId', async (req, res) => {
 
 // @route   POST /api/templates/create (multipart: title, description, category, content, isShared, templateFile)
 // @desc    Save a new template (written text and/or an uploaded file)
-router.post('/create', uploadTemplateFile, async (req, res) => {
+router.post('/create', requirePermission('templates.create'), uploadTemplateFile, async (req, res) => {
     try {
         await ensureTemplateSchema();
         const input = readTemplateInput(req.body);
@@ -190,7 +204,9 @@ router.post('/create', uploadTemplateFile, async (req, res) => {
         const error = validateTemplate(input, Boolean(req.file));
         if (error) return res.status(400).json({ success: false, error });
 
-        const userId = parseInt(req.body.userId, 10) || 1;
+        const userId = req.user.id;
+        // Sharing with the organization needs "Share templates"; without it the template stays private
+        if (input.isShared && !(await userCan(req.user, 'templates.share'))) input.isShared = false;
         const filePath = req.file ? `/uploads/${req.file.filename}` : null;
         const [result] = await db.query(
             `INSERT INTO templates (user_id, title, description, file_path, category, content, is_shared, source_template)
@@ -229,16 +245,20 @@ router.post('/create', uploadTemplateFile, async (req, res) => {
 
 // @route   PUT /api/templates/:id { title, description, category, content, isShared, userId }
 // @desc    Edit a saved template
-router.put('/:id', async (req, res) => {
+router.put('/:id', requirePermission('templates.edit'), async (req, res) => {
     try {
         await ensureTemplateSchema();
         const [found] = await db.query('SELECT * FROM templates WHERE id = ?', [req.params.id]);
         const template = found[0];
         if (!template) return res.status(404).json({ success: false, error: 'Template not found.' });
-        if (!(await canManage(template, req.body.userId))) {
+        if (!(await canManage(template, req.user.id))) {
             return res.status(403).json({ success: false, error: 'Only the owner of this template or a manager can edit it.' });
         }
         const input = readTemplateInput(req.body);
+        // Changing who can see it needs "Share templates"
+        if (Boolean(input.isShared) !== Boolean(template.is_shared) && !(await userCan(req.user, 'templates.share'))) {
+            input.isShared = Boolean(template.is_shared);
+        }
         const error = validateTemplate(input, Boolean(template.file_path));
         if (error) return res.status(400).json({ success: false, error });
 
@@ -247,7 +267,7 @@ router.put('/:id', async (req, res) => {
             [input.title, input.description || null, input.category, input.content || null, input.isShared ? 1 : 0, template.id]
         );
         const [rows] = await db.query(`${SELECT_TEMPLATES} WHERE t.id = ?`, [template.id]);
-        await logActivity({ req, userId: parseInt(req.body.userId, 10) || null, category: 'template', action: `Updated template "${input.title}"`, entityType: 'template', entityId: template.id });
+        await logActivity({ req, userId: req.user.id, category: 'template', action: `Updated template "${input.title}"`, entityType: 'template', entityId: template.id });
         res.json({ success: true, message: `Template "${input.title}" was updated.`, template: toTemplate(rows[0]) });
     } catch (err) {
         console.error('Update Template Error:', err);
@@ -257,7 +277,7 @@ router.put('/:id', async (req, res) => {
 
 // @route   POST /api/templates/:id/use
 // @desc    Count a template being added to a request (shown as "Used N times")
-router.post('/:id/use', async (req, res) => {
+router.post('/:id/use', requirePermission('templates.view'), async (req, res) => {
     try {
         await ensureTemplateSchema();
         await db.query('UPDATE templates SET usage_count = usage_count + 1, updated_at = updated_at WHERE id = ?', [req.params.id]);
@@ -269,7 +289,7 @@ router.post('/:id/use', async (req, res) => {
 
 // @route   POST /api/templates/bulk-delete { ids, userId }
 // @desc    Delete several saved templates (only those the user may manage)
-router.post('/bulk-delete', async (req, res) => {
+router.post('/bulk-delete', requirePermission('templates.delete'), async (req, res) => {
     try {
         await ensureTemplateSchema();
         const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map((v) => parseInt(v, 10)).filter(Boolean);
@@ -277,17 +297,17 @@ router.post('/bulk-delete', async (req, res) => {
         const [rows] = await db.query('SELECT * FROM templates WHERE id IN (?)', [ids]);
         const allowed = [];
         for (const row of rows) {
-            if (await canManage(row, req.body.userId)) allowed.push(row.id);
+            if (await canManage(row, req.user.id)) allowed.push(row.id);
         }
         if (allowed.length) {
-            await db.query('DELETE FROM templates WHERE id IN (?)', [allowed]);
-            await logActivity({ req, userId: parseInt(req.body.userId, 10) || null, category: 'template', action: `Deleted ${allowed.length} template${allowed.length === 1 ? '' : 's'}`, entityType: 'template', details: rows.filter((r) => allowed.includes(r.id)).map((r) => r.title) });
+            await trashStore.trashTemplates(rows.filter((r) => allowed.includes(r.id)), await trashUser(req.user.id));
+            await logActivity({ req, userId: req.user.id, category: 'template', action: `Deleted ${allowed.length} template${allowed.length === 1 ? '' : 's'}`, entityType: 'template', details: rows.filter((r) => allowed.includes(r.id)).map((r) => r.title) });
         }
         res.json({
             success: true,
             deleted: allowed,
             skipped: ids.filter((id) => !allowed.includes(id)),
-            message: `${allowed.length} template${allowed.length === 1 ? '' : 's'} deleted.`
+            message: `${allowed.length} template${allowed.length === 1 ? '' : 's'} moved to the trash.`
         });
     } catch (err) {
         console.error('Bulk Delete Templates Error:', err);
@@ -297,17 +317,17 @@ router.post('/bulk-delete', async (req, res) => {
 
 // @route   DELETE /api/templates/:id?userId=
 // @desc    Delete a template
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', requirePermission('templates.delete'), async (req, res) => {
     try {
         const [found] = await db.query('SELECT * FROM templates WHERE id = ?', [req.params.id]);
         const template = found[0];
         if (!template) return res.status(404).json({ success: false, error: 'Template not found.' });
-        if (!(await canManage(template, req.query.userId))) {
+        if (!(await canManage(template, req.user.id))) {
             return res.status(403).json({ success: false, error: 'Only the owner of this template or a manager can delete it.' });
         }
-        await db.query('DELETE FROM templates WHERE id = ?', [template.id]);
-        await logActivity({ req, userId: parseInt(req.query.userId, 10) || null, category: 'template', action: `Deleted template "${template.title}"`, entityType: 'template', entityId: template.id });
-        res.json({ success: true, message: 'Template deleted successfully' });
+        await trashStore.trashTemplates([template], await trashUser(req.user.id));
+        await logActivity({ req, userId: req.user.id, category: 'template', action: `Deleted template "${template.title}"`, entityType: 'template', entityId: template.id });
+        res.json({ success: true, message: 'Template moved to the trash. You can restore it from Settings > Trash.' });
     } catch (err) {
         console.error('Delete Template Error:', err);
         res.status(500).json({ success: false, error: err.message });

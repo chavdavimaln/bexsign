@@ -241,7 +241,25 @@ export default function CompletionCertificateModal({ doc, onClose }) {
                   <p className="text-xs text-slate-500">This request has no recipients.</p>
                 )}
 
-                {recipientList.map((rec, index) => (
+                {recipientList.map((rec, index) => rec.isCopy ? (
+                  // Receives a copy: no viewing, signing or device details apply
+                  <div key={rec.id || rec.email || index} className="flex items-start gap-3 border-t border-slate-100 first:border-t-0 pt-4 first:pt-1">
+                    <div className="text-slate-500 flex flex-col items-center shrink-0">
+                      <div className="w-8 h-8 rounded border border-slate-300 bg-slate-50 flex items-center justify-center">
+                        <CheckCircle2 size={16} />
+                      </div>
+                      <span className="text-[10px] font-bold mt-0.5">{rec.role}</span>
+                    </div>
+                    <div className="min-w-0 space-y-1">
+                      <p className="font-bold text-sm text-slate-900 break-words">{rec.name}</p>
+                      <p className="text-xs text-slate-600 font-mono break-all">{rec.email}</p>
+                      <p className="text-xs pt-1">
+                        <span className="font-bold text-slate-700">Status:</span>{' '}
+                        {rec.emailedOn && rec.emailedOn !== '-' ? `Copy sent on ${rec.emailedOn}` : 'Sent on completion'}
+                      </p>
+                    </div>
+                  </div>
+                ) : (
                   <div key={rec.id || rec.email || index} className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-1 border-t border-slate-100 first:border-t-0 pt-4 first:pt-1">
                     {/* Who they are and what they did */}
                     <div className="space-y-3">

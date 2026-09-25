@@ -26,7 +26,7 @@ keeps working. Remove that fallback before exposing an installation to the publi
 
 | Role | Intended for | Default grants |
 |---|---|---|
-| `manager` | Administrator | all 33 permissions (`roles.manage` is locked on) |
+| `manager` | Administrator | all 34 permissions (`roles.manage` is locked on) |
 | `leader` | Team lead | 18 |
 | `team_member` | Everyday user | 8 |
 
@@ -37,7 +37,7 @@ Built-in roles cannot be deleted; deleting a custom role reassigns its users.
 
 ## 3. The permission catalogue
 
-33 keys in 10 modules (`server/utils/permissions.js`):
+34 keys in 10 modules (`server/utils/permissions.js`):
 
 | Module | Keys |
 |---|---|
@@ -47,7 +47,7 @@ Built-in roles cannot be deleted; deleting a custom role reassigns its users.
 | reports | `view`, `export`, `schedule` |
 | users | `view`, `invite`, `edit`, `deactivate`, `delete` |
 | roles | `manage` |
-| settings | `general`, `integrations`, `developer` |
+| settings | `general`, `integrations`, `developer`, `trash` (Organization trash — [24](24-trash.md)) |
 | security | `failed_access`, `document_validity`, `activity_history` |
 | api | `keys`, `webhooks`, `logs` |
 | notifications | `broadcast` |

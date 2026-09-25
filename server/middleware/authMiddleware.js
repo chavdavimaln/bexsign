@@ -5,10 +5,20 @@ const JWT_SECRET = process.env.JWT_SECRET || 'bexsign_secure_secret_key';
 
 /**
  * Authentication Middleware:
- * Verifies JWT token and attaches authenticated user data to req.user.
- * Falls back gracefully to default Manager in demo/development mode if no token is passed.
+ * Verifies JWT token and attaches authenticated user data to req.user; req.authenticated is true only then.
+ * Requests without a sign-in (public signing links, the verify page) get the default account as req.user with
+ * req.authenticated = false: routes that need a real user use requireSignedIn, and requirePermission refuses them.
  */
+const ANONYMOUS_USER = Object.freeze({
+    id: 1,
+    email: 'vimal@bexcodeservices.com',
+    first_name: 'Vimal',
+    last_name: 'Chavda',
+    role: 'manager'
+});
+
 async function authenticateUser(req, res, next) {
+    req.authenticated = false;
     const authHeader = req.headers['authorization'] || req.headers['x-access-token'];
     let token = null;
 
@@ -21,14 +31,7 @@ async function authenticateUser(req, res, next) {
     }
 
     if (!token) {
-        // Fallback to primary Manager user for backward compatibility
-        req.user = {
-            id: 1,
-            email: 'vimal@bexcodeservices.com',
-            first_name: 'Vimal',
-            last_name: 'Chavda',
-            role: 'manager'
-        };
+        req.user = { ...ANONYMOUS_USER };
         return next();
     }
 
@@ -49,14 +52,10 @@ async function authenticateUser(req, res, next) {
                 return res.status(403).json({ error: 'Your account has been deactivated by a Manager.' });
             }
             req.user = user;
+            req.authenticated = true;
         } else {
-            req.user = {
-                id: decoded.id || 1,
-                email: decoded.email || 'vimal@bexcodeservices.com',
-                first_name: 'Vimal',
-                last_name: 'Chavda',
-                role: 'manager'
-            };
+            // A valid token of an account that no longer exists never becomes the default account
+            return res.status(401).json({ success: false, error: 'Your account no longer exists. Please sign in again.', sessionExpired: true });
         }
         next();
     } catch (err) {
@@ -71,16 +70,32 @@ async function authenticateUser(req, res, next) {
                 sessionExpired: true
             });
         }
-        // Demo session tokens (not JWTs) keep the default account
-        req.user = {
-            id: 1,
-            email: 'vimal@bexcodeservices.com',
-            first_name: 'Vimal',
-            last_name: 'Chavda',
-            role: 'manager'
-        };
+        // Anything else (an old demo session value) is treated like no sign-in
+        req.user = { ...ANONYMOUS_USER };
         next();
     }
+}
+
+/**
+ * Like authenticateUser, but a token that is expired or not valid counts as "no sign-in" instead of an error.
+ * For routes that also serve public signing links, which must keep working in a browser with an old session.
+ */
+function authenticateOptional(req, res, next) {
+    const fakeRes = {
+        status() { return this; },
+        json() {
+            req.user = { ...ANONYMOUS_USER };
+            req.authenticated = false;
+            next();
+        }
+    };
+    return authenticateUser(req, fakeRes, next);
+}
+
+/** Only for signed-in users (a valid BexSign sign-in token); the app then sends the user to the login page. */
+function requireSignedIn(req, res, next) {
+    if (req.authenticated) return next();
+    return res.status(401).json({ success: false, error: 'Please sign in to continue.', sessionExpired: true });
 }
 
 /**
@@ -90,8 +105,8 @@ async function authenticateUser(req, res, next) {
  */
 function requireRole(allowedRoles = []) {
     return (req, res, next) => {
-        if (!req.user) {
-            return res.status(401).json({ error: 'Authentication required' });
+        if (!req.user || req.authenticated === false) {
+            return res.status(401).json({ success: false, error: 'Please sign in to continue.', sessionExpired: true });
         }
 
         const userRole = (req.user.role || 'team_member').toLowerCase();
@@ -114,5 +129,7 @@ function requireRole(allowedRoles = []) {
 
 module.exports = {
     authenticateUser,
+    authenticateOptional,
+    requireSignedIn,
     requireRole
 };

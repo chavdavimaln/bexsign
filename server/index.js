@@ -7,12 +7,13 @@ const db = require('./db');
 const { verifySmtpConnection } = require('./utils/emailService');
 const { refreshOutdatedCompletedPdfs } = require('./utils/requestCompletion');
 const authRoutes = require('./routes/auth');
+const oauthRoutes = require('./routes/oauth');
 const documentRoutes = require('./routes/documents');
 const signingRoutes = require('./routes/signing');
 const templateRoutes = require('./routes/templates');
 const reportRoutes = require('./routes/reports');
 const settingRoutes = require('./routes/settings');
-const contactRoutes = require('./contacts');
+const contactRoutes = require('./routes/contacts');
 const trashRoutes = require('./routes/trash');
 const userRoutes = require('./routes/users');
 const permissionRoutes = require('./routes/permissions');
@@ -24,6 +25,8 @@ const verificationRoutes = require('./routes/verification');
 const signatureDirectoryRoutes = require('./routes/signatureDirectory');
 const selfSignRoutes = require('./routes/selfSign');
 const publicApiRoutes = require('./routes/publicApi');
+const integrationRoutes = require('./routes/integrations');
+const oauthApps = require('./routes/oauthApps');
 const { ensurePlatformSchema } = require('./utils/platformSchema');
 const { startReportScheduler } = require('./utils/reportScheduler');
 
@@ -71,6 +74,7 @@ app.get('/api/health', (req, res) => {
 });
 
 // Mount REST Routes
+app.use('/api/auth/oauth', oauthRoutes);
 app.use('/api', authRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/documents', documentRoutes);
@@ -86,7 +90,10 @@ app.use('/api/permissions', permissionRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/security', securityRoutes);
 app.use('/api/platform-settings', platformSettingsRoutes);
+app.use('/api/developer/oauth-apps', oauthApps.manageRouter);
 app.use('/api/developer', developerRoutes);
+app.use('/api/oauth', oauthApps.tokenRouter);
+app.use('/api/integrations', integrationRoutes);
 app.use('/api/verification', verificationRoutes);
 app.use('/api/signature-directory', signatureDirectoryRoutes);
 app.use('/api/self-sign', selfSignRoutes);
@@ -127,6 +134,10 @@ const server = app.listen(PORT, () => {
     setTimeout(() => {
         refreshOutdatedCompletedPdfs().catch((err) => console.warn('[Signed PDFs] refresh skipped:', err.message));
     }, 3000);
+    // Trash: items whose retention period ended are deleted for good (checked hourly)
+    const { purgeExpired } = require('./utils/trashStore');
+    setTimeout(() => purgeExpired(true), 10000);
+    setInterval(() => purgeExpired(true), 60 * 60 * 1000).unref();
     verifySmtpConnection().then((smtp) => {
         if (smtp.dryRun) console.log('[SMTP] EMAIL_DRY_RUN=true: emails are written to server/email_outbox instead of being sent');
         else if (smtp.success) console.log('[SMTP] Mail server connection verified');

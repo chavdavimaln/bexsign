@@ -64,6 +64,7 @@ import {
   SOURCE_LABELS,
   STAGES
 } from '../../components/selfsign/selfSignApi';
+import { usePermissions } from '../../utils/permissions';
 
 const STEPS = [
   { id: 'add', label: 'Add documents', hint: 'Done' },
@@ -81,6 +82,10 @@ export default function SelfSignDetail() {
   const location = useLocation();
   const startOnHistory = location.pathname.endsWith('/history');
   const [toast, showToast] = useToast();
+  const { can } = usePermissions();
+  const canCreate = can('documents.create');
+  const canDownload = can('documents.download');
+  const canDelete = can('documents.delete');
 
   const [tab, setTab] = useState(startOnHistory ? 'history' : 'overview');
   const [state, setState] = useState({ status: 'loading', record: null, documents: [], shares: [], error: '' });
@@ -169,18 +174,18 @@ export default function SelfSignDetail() {
     <div className="space-y-5 max-w-[1200px]">
       <PageHeader
         eyebrow={`Sign yourself · ${SOURCE_LABELS[record.source] || 'Document'}`}
-        title={record.title}
+        title={<span className="break-words">{record.title}</span>}
         description={stageMeta.description}
         icon={isSigned ? FileSignature : PenTool}
         actions={(
           <>
             <Button variant="secondary" icon={ArrowLeft} onClick={() => navigate('/sign-yourself/all')}>All documents</Button>
-            {!isSigned && (
+            {!isSigned && canCreate && (
               <Button icon={PenTool} onClick={() => navigate(`/sign-yourself/prepare/${record.documentId}`)}>
                 {record.hasFields ? 'Continue & sign' : 'Add fields & sign'}
               </Button>
             )}
-            {isSigned && (
+            {isSigned && canDownload && (
               <Button icon={Download} onClick={() => download({ fallbackName: `${record.title}.pdf` }, 'The signed PDF was downloaded.')}>
                 Download signed PDF
               </Button>
@@ -218,7 +223,7 @@ export default function SelfSignDetail() {
         <div className="p-4 sm:p-5">
           {tab === 'overview' && (
             <div className="space-y-4">
-              {!isSigned && state.documents.length > 1 && (
+              {!isSigned && canCreate && state.documents.length > 1 && (
                 <div className="flex flex-wrap items-center gap-2">
                   <Button variant="secondary" icon={Combine} disabled={selectedIds.length < 2} onClick={() => setShowMerge(true)}>
                     Merge{selectedIds.length > 0 ? ` (${selectedIds.length})` : ''}
@@ -235,18 +240,18 @@ export default function SelfSignDetail() {
                     index={index}
                     readOnly={isSigned}
                     selected={selectedIds.includes(String(doc.fileId))}
-                    onToggle={isSigned || state.documents.length < 2 ? undefined : () => setSelectedIds((prev) => (
+                    onToggle={isSigned || !canCreate || state.documents.length < 2 ? undefined : () => setSelectedIds((prev) => (
                       prev.includes(String(doc.fileId)) ? prev.filter((x) => x !== String(doc.fileId)) : [...prev, String(doc.fileId)]
                     ))}
                     actions={[
-                      { label: 'Edit fields', icon: PenTool, onClick: () => navigate(`/sign-yourself/prepare/${record.documentId}`) },
-                      { label: 'Rename', icon: Pencil, onClick: () => setRenamingDoc(doc) },
-                      { label: 'Download', icon: Download, onClick: () => download({ index, fallbackName: doc.name }, `"${doc.name}" was downloaded.`) },
-                      { label: 'Remove', icon: Trash2, danger: true, hidden: state.documents.length <= 1, onClick: () => setRemoving(doc) }
+                      { label: 'Edit fields', icon: PenTool, hidden: !canCreate, onClick: () => navigate(`/sign-yourself/prepare/${record.documentId}`) },
+                      { label: 'Rename', icon: Pencil, hidden: !canCreate, onClick: () => setRenamingDoc(doc) },
+                      { label: 'Download', icon: Download, hidden: !canDownload, onClick: () => download({ index, fallbackName: doc.name }, `"${doc.name}" was downloaded.`) },
+                      { label: 'Remove', icon: Trash2, danger: true, hidden: state.documents.length <= 1 || !canCreate, onClick: () => setRemoving(doc) }
                     ]}
                   />
                 ))}
-                {!isSigned && (
+                {!isSigned && canCreate && (
                   <button
                     type="button"
                     onClick={() => navigate(`/sign-yourself/new/${record.id}?step=2`)}
@@ -265,23 +270,28 @@ export default function SelfSignDetail() {
                 <div className="rounded-2xl border border-slate-200 p-4">
                   <h3 className="text-xs font-extrabold text-slate-900 flex items-center gap-1.5"><Layers size={14} className="text-slate-400" /> What to do next</h3>
                   <div className="mt-3 flex flex-wrap gap-2">
-                    {!isSigned && (
+                    {!isSigned && canCreate && (
                       <Button icon={ArrowRight} onClick={() => navigate(`/sign-yourself/prepare/${record.documentId}`)}>
                         {record.hasFields ? 'Open the editor and sign' : 'Place fields'}
                       </Button>
                     )}
-                    <Button variant="secondary" icon={Download} onClick={() => download({ fallbackName: `${record.title}.pdf` }, isSigned ? 'The signed PDF was downloaded.' : 'A copy was downloaded.')}>
-                      {isSigned ? 'Signed PDF' : 'Download a copy'}
-                    </Button>
-                    {isSigned && (
+                    {canDownload && (
+                      <Button variant="secondary" icon={Download} onClick={() => download({ fallbackName: `${record.title}.pdf` }, isSigned ? 'The signed PDF was downloaded.' : 'A copy was downloaded.')}>
+                        {isSigned ? 'Signed PDF' : 'Download a copy'}
+                      </Button>
+                    )}
+                    {isSigned && canDownload && (
                       <Button variant="secondary" icon={ShieldCheck} onClick={() => download({ type: 'certificate', fallbackName: 'certificate.pdf' }, 'The certificate of completion was downloaded.')}>
                         Certificate
                       </Button>
                     )}
-                    <Button variant="secondary" icon={Mail} onClick={() => setSharing(true)}>Email a copy</Button>
-                    <Button variant="secondary" icon={Printer} onClick={() => window.print()}>Print</Button>
-                    <Button variant="secondary" icon={Pencil} disabled={isSigned} onClick={() => setRenaming(true)}>Rename</Button>
-                    <Button variant="subtleDanger" icon={Trash2} onClick={() => setDeleting(true)}>Delete</Button>
+                    {canDownload && <Button variant="secondary" icon={Mail} onClick={() => setSharing(true)}>Email a copy</Button>}
+                    {canDownload && <Button variant="secondary" icon={Printer} onClick={() => window.print()}>Print</Button>}
+                    {canCreate && <Button variant="secondary" icon={Pencil} disabled={isSigned} onClick={() => setRenaming(true)}>Rename</Button>}
+                    {canDelete && <Button variant="subtleDanger" icon={Trash2} onClick={() => setDeleting(true)}>Delete</Button>}
+                    {!canCreate && !canDownload && !canDelete && (
+                      <p className="text-[11px] text-slate-500">You can view this document and its history.</p>
+                    )}
                   </div>
                 </div>
                 <div className="rounded-2xl border border-slate-200 p-4 text-xs text-slate-600 space-y-1.5">
@@ -320,10 +330,11 @@ export default function SelfSignDetail() {
                 icon={Mail}
                 title="No copy has been emailed yet"
                 description="Emailing a copy records who received it and when, and it also shows up in the history."
-                action={<Button icon={Mail} onClick={() => setSharing(true)}>Email a copy</Button>}
+                action={canDownload ? <Button icon={Mail} onClick={() => setSharing(true)}>Email a copy</Button> : null}
               />
             ) : (
-              <div className={tableWrap}>
+              <>
+              <div className={`hidden md:block ${tableWrap}`}>
                 <table className="w-full min-w-[560px] text-left border-collapse">
                   <thead>
                     <tr>
@@ -351,6 +362,27 @@ export default function SelfSignDetail() {
                   </tbody>
                 </table>
               </div>
+
+              {/* Phone layout: one card per emailed copy */}
+              <ul className="md:hidden divide-y divide-slate-100 -mx-1">
+                {state.shares.map((share) => (
+                  <li key={share.id} className="px-1 py-3 space-y-1.5 min-w-0">
+                    <div className="flex items-start justify-between gap-3 min-w-0">
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-slate-800 break-words">{share.recipient_name || share.recipient_email.split('@')[0]}</p>
+                        <p className="text-[11px] text-slate-500 break-all">{share.recipient_email}</p>
+                      </div>
+                      <span className="shrink-0">
+                        <Badge tone={share.status === 'failed' ? 'rose' : 'emerald'} dot>{share.status === 'failed' ? 'Failed' : 'Sent'}</Badge>
+                      </span>
+                    </div>
+                    {share.message && <p className="text-xs text-slate-700 break-words">{share.message}</p>}
+                    {share.error_message && <p className="text-[10px] text-red-600 break-words">{share.error_message}</p>}
+                    <p className="text-[11px] text-slate-400">Sent {formatDateTime(share.shared_at)}</p>
+                  </li>
+                ))}
+              </ul>
+              </>
             )
           )}
         </div>
@@ -412,7 +444,7 @@ export default function SelfSignDetail() {
       <ConfirmDialog
         open={deleting}
         title="Delete this self-sign document?"
-        message={`"${record.title}" and its documents, fields and history are removed for good. This cannot be undone.`}
+        message={`"${record.title}" and its documents, fields and history are moved to the trash. You can restore it from Settings > Trash.`}
         confirmLabel="Delete"
         danger
         busy={busy}

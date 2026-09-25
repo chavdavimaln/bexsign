@@ -27,7 +27,8 @@ import {
 import { getLoggedInUser } from '../utils/currentUser';
 import { showPopupAlert } from '../components/GlobalAlertModal';
 import DocumentVerificationPanel from '../components/DocumentVerificationPanel';
-import { API_BASE } from '../utils/api';
+import { API_BASE, authHeaders } from '../utils/api';
+import { usePermissions } from '../utils/permissions';
 
 const formatDateTime = (value) => {
   if (!value) return '-';
@@ -57,6 +58,8 @@ const toRecipientStatus = (r) => {
 export default function DocumentDetails() {
   const { id } = useParams();
   const navigate = useNavigate();
+  // Actions follow the signed-in user's permissions (Settings > Roles & permissions)
+  const { can } = usePermissions();
   const docId = parseInt(id) || 1;
   const [placeholderBexsignId] = useState(() => generateBexsignId(docId));
   const [serverBexsignId, setServerBexsignId] = useState('');
@@ -112,7 +115,9 @@ export default function DocumentDetails() {
             actionDevice: describeDevice(r.signed_user_agent),
             signedAt: formatDateTime(r.signed_at),
             viewedAt: formatDateTime(r.viewed_at),
-            mailedAt: formatDateTime(r.sent_at)
+            mailedAt: formatDateTime(r.sent_at),
+            // "Receives a copy": sent_at is when the completed documents reached them
+            copySent: Boolean(r.sent_at)
           }))
         });
       })
@@ -147,7 +152,7 @@ export default function DocumentDetails() {
     try {
       await fetch(`${API_BASE}/trash/move/${id}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json', ...authHeaders() }
       });
     } catch (e) {
       console.error('Error moving doc to trash:', e);
@@ -267,6 +272,7 @@ export default function DocumentDetails() {
             <Eye size={16} className="text-slate-500" /> View document
           </button>
 
+          {can('documents.create') && (
           <button
             onClick={() => {
               // A sent or completed request is never edited in place: editing creates a draft copy that is
@@ -278,8 +284,9 @@ export default function DocumentDetails() {
           >
             <Edit size={16} className="text-slate-500" /> Edit
           </button>
+          )}
 
-          {isCompleted && (
+          {isCompleted && can('documents.download') && (
             <button
               onClick={() => setActionModal('certificate')}
               className="flex items-center gap-1.5 px-3 py-1.5 hover:bg-slate-100 rounded-lg text-xs font-bold text-slate-700 transition cursor-pointer"
@@ -288,7 +295,7 @@ export default function DocumentDetails() {
             </button>
           )}
 
-          {!isDraft && (
+          {!isDraft && can('documents.download') && (
             <button
               onClick={() => setActionModal('email')}
               className="flex items-center gap-1.5 px-3 py-1.5 hover:bg-slate-100 rounded-lg text-xs font-bold text-slate-700 transition cursor-pointer"
@@ -297,7 +304,7 @@ export default function DocumentDetails() {
             </button>
           )}
 
-          {isInProgress && (
+          {isInProgress && can('documents.recall') && (
             <button
               onClick={() => setExtendModal(true)}
               className="hidden md:flex items-center gap-1.5 px-3 py-1.5 hover:bg-slate-100 rounded-lg text-xs font-bold text-slate-700 transition cursor-pointer"
@@ -321,17 +328,21 @@ export default function DocumentDetails() {
               <>
                 <div className="fixed inset-0 z-20" onClick={() => setActiveMenu(false)} />
                 <div className="absolute left-0 mt-1 w-60 bg-white border border-slate-200 rounded-xl shadow-xl z-30 py-1 text-xs font-semibold text-slate-700">
+                  {can('documents.download') && (
                   <button onClick={() => { setActiveMenu(false); setActionModal('download'); }} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2 cursor-pointer">
                     <Download size={14} /> Download
                   </button>
-                  {!isDraft && (
+                  )}
+                  {!isDraft && can('documents.create') && (
                     <button onClick={handleEditAsNew} disabled={actionBusy === 'copy'} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2 cursor-pointer disabled:opacity-60">
                       <Copy size={14} /> {actionBusy === 'copy' ? 'Creating copy...' : 'Edit as new'}
                     </button>
                   )}
+                  {can('documents.download') && (
                   <button onClick={handlePrint} disabled={actionBusy === 'print'} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2 cursor-pointer disabled:opacity-60">
                     <Printer size={14} /> {actionBusy === 'print' ? 'Preparing...' : 'Print'}
                   </button>
+                  )}
                   <button onClick={() => { setActiveMenu(false); setActionModal('formData'); }} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2 cursor-pointer">
                     <FileText size={14} /> Form data
                   </button>
@@ -348,25 +359,29 @@ export default function DocumentDetails() {
                     <Copy size={14} /> Copy document ID
                   </button>
 
-                  {isInProgress && (
+                  {isInProgress && (can('documents.send') || can('documents.recall')) && (
                     <>
                       <div className="border-t border-slate-100 my-1" />
-                      <button onClick={handleRemindAll} disabled={actionBusy === 'remind'} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2 cursor-pointer disabled:opacity-60">
+                      {can('documents.send') && <button onClick={handleRemindAll} disabled={actionBusy === 'remind'} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2 cursor-pointer disabled:opacity-60">
                         <Bell size={14} /> {actionBusy === 'remind' ? 'Sending...' : 'Send reminder'}
-                      </button>
-                      <button onClick={() => { setActiveMenu(false); navigate(`/documents/${document.id}/send`); }} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2 cursor-pointer">
+                      </button>}
+                      {can('documents.recall') && <button onClick={() => { setActiveMenu(false); navigate(`/documents/${document.id}/send`); }} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2 cursor-pointer">
                         <FileCheck size={14} /> Correct document
-                      </button>
-                      <button onClick={() => { setActiveMenu(false); setExtendModal(true); }} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2 cursor-pointer md:hidden">
+                      </button>}
+                      {can('documents.recall') && <button onClick={() => { setActiveMenu(false); setExtendModal(true); }} className="w-full px-3 py-2 hover:bg-slate-50 flex items-center gap-2 cursor-pointer md:hidden">
                         <Clock size={14} /> Extend
-                      </button>
+                      </button>}
                     </>
                   )}
 
-                  <div className="border-t border-slate-100 my-1" />
-                  <button onClick={handleMoveToTrash} className="w-full px-3 py-2 hover:bg-rose-50 text-rose-600 flex items-center gap-2 cursor-pointer">
-                    <Trash2 size={14} /> Delete
-                  </button>
+                  {can('documents.delete') && (
+                    <>
+                      <div className="border-t border-slate-100 my-1" />
+                      <button onClick={handleMoveToTrash} className="w-full px-3 py-2 hover:bg-rose-50 text-rose-600 flex items-center gap-2 cursor-pointer">
+                        <Trash2 size={14} /> Delete
+                      </button>
+                    </>
+                  )}
                 </div>
               </>
             )}
@@ -540,36 +555,53 @@ export default function DocumentDetails() {
                           <p className="text-xs text-amber-700 leading-snug">
                             Email invitation sent on {rec.mailedAt} • <strong>Recipient has not viewed or signed yet</strong>
                           </p>
-                          <button
+                          {can('documents.send') && (<button
                             onClick={() => handleSendReminder(rec)}
                             disabled={remindingId === rec.id}
                             className="text-xs font-bold text-[#00a884] hover:underline flex items-center gap-1 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 shrink-0 disabled:opacity-60"
                           >
                             <Send size={11} /> {remindingId === rec.id ? 'Sending...' : 'Send Reminder'}
-                          </button>
+                          </button>)}
                         </div>
                       )}
 
                       {isWaiting && (
                         <div className="flex items-center gap-3 flex-wrap pt-0.5">
                           <p className="text-xs text-slate-500 leading-snug">The signing email has not reached this recipient yet</p>
-                          <button
+                          {can('documents.send') && (<button
                             onClick={() => handleSendReminder(rec)}
                             disabled={remindingId === rec.id}
                             className="text-xs font-bold text-[#00a884] hover:underline flex items-center gap-1 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 shrink-0 disabled:opacity-60"
                           >
                             <Send size={11} /> {remindingId === rec.id ? 'Sending...' : 'Send email'}
-                          </button>
+                          </button>)}
                         </div>
                       )}
 
                       {isCopy && (
-                        <p className="text-xs text-slate-500 leading-snug">Receives the completed documents by email</p>
+                        <p className="text-xs text-slate-500 leading-snug">
+                          {rec.copySent
+                            ? <>Completed documents emailed on {rec.mailedAt}</>
+                            : 'Receives the completed documents by email once every recipient has signed'}
+                        </p>
                       )}
                     </div>
                   </div>
 
-                  {/* Right: Visual Stepper Progression (Mailed -> Viewed -> Signed) */}
+                  {/* Right: a copy recipient never views or signs, so only whether their copy was sent */}
+                  {isCopy ? (
+                  <div className="w-full lg:w-80 shrink-0 flex lg:justify-end">
+                    <span className={`inline-flex items-center gap-2 text-[11px] font-bold ${rec.copySent ? 'text-slate-700' : 'text-slate-400'}`}>
+                      <span className={`w-3.5 h-3.5 rounded-full flex items-center justify-center ${
+                        rec.copySent ? 'bg-[#00a884] ring-4 ring-emerald-100' : 'bg-white border-2 border-slate-300 ring-2 ring-slate-100'
+                      }`}>
+                        {rec.copySent && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
+                      </span>
+                      {rec.copySent ? 'Copy sent' : 'Copy not sent yet'}
+                    </span>
+                  </div>
+                  ) : (
+                  /* Right: Visual Stepper Progression (Mailed -> Viewed -> Signed) */
                   <div className="w-full lg:w-80 shrink-0">
                     <div className="flex items-center justify-between text-xs">
                       {/* Step 1: Mailed (only once the invitation email was really sent) */}
@@ -625,6 +657,7 @@ export default function DocumentDetails() {
                       </div>
                     </div>
                   </div>
+                  )}
                 </div>
               </div>
             );

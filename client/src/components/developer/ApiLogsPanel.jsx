@@ -78,6 +78,7 @@ function RequestsChart({ data }) {
               role="button"
               aria-label={`${shortDay(d.date)}: ${d.requests} requests, ${d.errors} errors`}
               onMouseEnter={() => setHover(i)}
+              onClick={() => setHover(i)}
               onMouseLeave={() => setHover(null)}
               onFocus={() => setHover(i)}
               onBlur={() => setHover(null)}
@@ -102,7 +103,7 @@ function RequestsChart({ data }) {
           role="tooltip"
           className="absolute z-10 pointer-events-none bg-slate-900 text-white rounded-lg px-2.5 py-1.5 text-[11px] shadow-lg whitespace-nowrap"
           style={{
-            left: Math.min(Math.max(pad.left + band * hover + band / 2, 70), width - 70),
+            left: Math.min(Math.max(pad.left + band * hover + band / 2, 70), Math.max(70, width - 70)),
             top: Math.max(0, y(data[hover].requests) - 58),
             transform: 'translateX(-50%)'
           }}
@@ -212,7 +213,7 @@ export default function ApiLogsPanel() {
         title="Requests per day"
         description="Last 14 days. Hover or focus a day for details."
         actions={(
-          <div className="flex items-center gap-3 text-[11px] text-slate-600">
+          <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-600">
             <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm" style={{ background: OK_COLOR }} /> Successful</span>
             <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm" style={{ background: ERROR_COLOR }} /> Errors</span>
           </div>
@@ -231,14 +232,14 @@ export default function ApiLogsPanel() {
       >
         <div className="px-4 sm:px-5 py-3 border-b border-slate-100 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2">
           <SearchInput value={search} onChange={setSearch} placeholder="Search endpoint..." className="col-span-2 md:col-span-3 xl:col-span-2" />
-          <SelectInput value={filters.status} onChange={(v) => setFilter('status', v)} label="Status" options={[['all', 'All statuses'], ['2xx', '2xx success'], ['4xx', '4xx client errors'], ['5xx', '5xx server errors'], ['errors', 'All errors']]} />
-          <SelectInput value={filters.method} onChange={(v) => setFilter('method', v)} label="Method" options={[['all', 'All methods'], ['GET', 'GET'], ['POST', 'POST'], ['PUT', 'PUT'], ['PATCH', 'PATCH'], ['DELETE', 'DELETE']]} />
-          <SelectInput value={filters.keyId} onChange={(v) => setFilter('keyId', v)} label="API key" options={keyOptions} className="col-span-2 md:col-span-1 xl:col-span-2 min-w-0" />
-          <label className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500 col-span-1">
+          <SelectInput value={filters.status} onChange={(v) => setFilter('status', v)} label="Status" options={[['all', 'All statuses'], ['2xx', '2xx success'], ['4xx', '4xx client errors'], ['5xx', '5xx server errors'], ['errors', 'All errors']]} className="w-full min-w-0" />
+          <SelectInput value={filters.method} onChange={(v) => setFilter('method', v)} label="Method" options={[['all', 'All methods'], ['GET', 'GET'], ['POST', 'POST'], ['PUT', 'PUT'], ['PATCH', 'PATCH'], ['DELETE', 'DELETE']]} className="w-full min-w-0" />
+          <SelectInput value={filters.keyId} onChange={(v) => setFilter('keyId', v)} label="API key" options={keyOptions} className="col-span-2 md:col-span-1 xl:col-span-2 w-full min-w-0" />
+          <label className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500 col-span-2 min-[400px]:col-span-1 min-w-0">
             From
             <input type="date" value={filters.from} max={filters.to || undefined} onChange={(e) => setFilter('from', e.target.value)} className="min-w-0 flex-1 px-2 py-1.5 text-xs border border-slate-300 rounded-xl bg-white text-slate-700" />
           </label>
-          <label className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500 col-span-1">
+          <label className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500 col-span-2 min-[400px]:col-span-1 min-w-0">
             To
             <input type="date" value={filters.to} min={filters.from || undefined} onChange={(e) => setFilter('to', e.target.value)} className="min-w-0 flex-1 px-2 py-1.5 text-xs border border-slate-300 rounded-xl bg-white text-slate-700" />
           </label>
@@ -256,7 +257,34 @@ export default function ApiLogsPanel() {
               description={filtered ? 'Try a wider date range or another status.' : 'Requests made with your API keys appear here, including rejected ones.'}
             />
           ) : (
-            <div className={`overflow-x-auto ${loading ? 'opacity-60' : ''}`}>
+            <>
+            {/* Phones: cards */}
+            <ul className={`md:hidden divide-y divide-slate-100 ${loading ? 'opacity-60' : ''}`}>
+              {logs.rows.map((l) => (
+                <li key={l.id} className="px-4 py-3 space-y-1.5">
+                  <div className="flex items-start gap-2 min-w-0">
+                    <Badge tone={METHOD_TONE[l.method] || 'slate'}>{l.method}</Badge>
+                    <span className="flex-1 min-w-0 font-mono text-[11px] font-semibold text-slate-800 break-all">{l.endpoint}</span>
+                    <Badge tone={statusTone(l.statusCode)}>{l.statusCode}</Badge>
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    {formatDateTime(l.createdAt)} · <span className="tabular-nums">{l.durationMs ?? '-'} ms</span>
+                  </p>
+                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px] text-slate-500 min-w-0">
+                    {l.key ? (
+                      <span className="min-w-0 break-words">
+                        <span className={`font-semibold ${l.key.deleted ? 'text-slate-400 italic' : 'text-slate-700'}`}>{l.key.name}</span>
+                        {l.key.prefix && <span className="font-mono text-[10px] text-slate-500"> ({l.key.prefix}…)</span>}
+                      </span>
+                    ) : <span className="text-slate-400">No valid key</span>}
+                    {l.ipAddress && <span className="font-mono break-all" title={l.userAgent || ''}>{l.ipAddress}</span>}
+                  </div>
+                </li>
+              ))}
+            </ul>
+
+            {/* Tablets and up: table */}
+            <div className={`hidden md:block overflow-x-auto ${loading ? 'opacity-60' : ''}`}>
               <table className="w-full">
                 <thead>
                   <tr>
@@ -294,6 +322,7 @@ export default function ApiLogsPanel() {
                 </tbody>
               </table>
             </div>
+            </>
           )
         )}
         <Pagination page={page} pageSize={pageSize} total={logs.total} onPage={setPage} onPageSize={(n) => { setPageSize(n); setPage(1); }} />

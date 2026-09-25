@@ -7,7 +7,7 @@ const express = require('express');
 const crypto = require('crypto');
 const router = express.Router();
 const db = require('../db');
-const { authenticateUser } = require('../middleware/authMiddleware');
+const { authenticateUser, requireSignedIn } = require('../middleware/authMiddleware');
 const { requirePermission, userCan } = require('../utils/permissions');
 const { notify, logActivity } = require('../utils/platformEvents');
 const { deliverWebhook } = require('../utils/webhooks');
@@ -16,7 +16,8 @@ const {
   maskSecret, parseJsonArray, purgeExpiredLogs, userName
 } = require('../utils/developerApi');
 
-router.use(authenticateUser);
+// Signed-in users only (a request without a sign-in is refused)
+router.use(authenticateUser, requireSignedIn);
 router.use(async (req, res, next) => {
   try {
     await ensureDeliverySchema();

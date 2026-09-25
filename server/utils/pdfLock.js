@@ -14,7 +14,8 @@ const PDFDocument = require('pdfkit');
 const { addCertificationPlaceholder, signPdfBuffer } = require('./pdfCertification');
 
 // Bump when the look of issued PDFs changes: stored files issued with an older layout are rebuilt on download
-const PDF_LAYOUT_VERSION = 3; // 3: placed text fields are printed without a border
+// 3: placed text fields are printed without a border; 4: "receives a copy" recipients only show whether their copy was sent
+const PDF_LAYOUT_VERSION = 4;
 // Page images at 2.5x of 72 dpi (180 dpi): sharp on screen and in print
 const RASTER_SCALE = 2.5;
 

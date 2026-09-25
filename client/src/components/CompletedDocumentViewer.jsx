@@ -278,10 +278,11 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack, mode = '
   return (
     <div className="fixed inset-0 z-50 bg-slate-100 flex flex-col font-sans select-none overflow-hidden text-slate-800">
       {/* 1. TOP CONTROLS TOOLBAR (Page 1 Reference) */}
-      <header className="h-13 bg-white border-b border-slate-200 px-4 flex items-center justify-between shadow-xs shrink-0 z-20">
+      {/* Phones: title and Back on the first line, the page / zoom / download controls on a second line */}
+      <header className="min-h-13 bg-white border-b border-slate-200 px-3 sm:px-4 py-2 sm:py-0 flex flex-wrap sm:flex-nowrap items-center justify-between gap-x-3 gap-y-1.5 shadow-xs shrink-0 z-20">
         {/* Left: Doc Icon + Document Title */}
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="w-8 h-8 rounded bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-600">
+        <div className="flex items-center gap-3 min-w-0 flex-1 sm:flex-none">
+          <div className="w-8 h-8 rounded bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-600 shrink-0">
             <FileText size={18} />
           </div>
           <span className="font-bold text-sm text-slate-800 truncate max-w-xs md:max-w-md" title={documentName}>
@@ -290,7 +291,7 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack, mode = '
         </div>
 
         {/* Center: Pagination & Zoom Controls */}
-        <div className="flex items-center gap-1.5 md:gap-2 text-xs font-semibold text-slate-700">
+        <div className="order-last sm:order-none w-full sm:w-auto flex items-center justify-center gap-1.5 md:gap-2 text-xs font-semibold text-slate-700">
           {/* Page nav */}
           <button
             onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
@@ -365,7 +366,7 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack, mode = '
         </div>
 
         {/* Right: Back Button */}
-        <div>
+        <div className="shrink-0">
           <button
             onClick={handleReturn}
             className="px-3.5 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 hover:border-slate-400 text-slate-700 rounded text-xs font-bold transition shadow-2xs flex items-center gap-1"
@@ -377,7 +378,7 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack, mode = '
       </header>
 
       {/* 2. DIGITALLY SIGNED BANNER (Yellow/Gold Notice Bar from Page 1 Reference) */}
-      <div className={`border-b px-4 py-2 flex items-center justify-between gap-3 text-xs shrink-0 z-10 ${isRequestCompleted || !isSenderView ? 'bg-[#fffbeb] border-[#fde68a] text-[#92400e]' : 'bg-sky-50 border-sky-200 text-sky-900'}`}>
+      <div className={`border-b px-3 sm:px-4 py-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-3 text-xs shrink-0 z-10 ${isRequestCompleted || !isSenderView ? 'bg-[#fffbeb] border-[#fde68a] text-[#92400e]' : 'bg-sky-50 border-sky-200 text-sky-900'}`}>
         <div className="flex items-center gap-2.5 min-w-0">
           <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${isRequestCompleted || !isSenderView ? 'bg-[#fef3c7] text-[#b45309]' : 'bg-sky-100 text-sky-700'}`}>
             {isRequestCompleted || !isSenderView ? <ShieldCheck size={16} className="stroke-[2.2]" /> : <Clock size={14} className="stroke-[2.2]" />}
@@ -392,7 +393,7 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack, mode = '
         </div>
         <button
           onClick={() => setShowSignaturePanel(true)}
-          className="bg-white hover:bg-[#fef3c7] text-[#92400e] border border-[#f59e0b] hover:border-[#d97706] font-bold text-xs px-3.5 py-1 rounded shadow-2xs transition shrink-0"
+          className="self-start sm:self-auto bg-white hover:bg-[#fef3c7] text-[#92400e] border border-[#f59e0b] hover:border-[#d97706] font-bold text-xs px-3.5 py-1 rounded shadow-2xs transition shrink-0"
         >
           Signature panel
         </button>

@@ -1,12 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const db = require('../db');
 const requestHelpers = require('../utils/requestHelpers');
 const { sendPasswordResetEmail, sendPasswordChangedEmail } = require('../utils/emailService');
 const { notify, logActivity, logFailedAccess } = require('../utils/platformEvents');
+const { buildSession } = require('../utils/authSession');
 
 // A new account is announced to the people who manage users
 const announceNewUser = (user, how) => notify({
@@ -20,14 +20,13 @@ const announceNewUser = (user, how) => notify({
     entityId: user.id
 });
 
-const JWT_SECRET = process.env.JWT_SECRET || 'bexsign_secure_secret_key';
-
 // @route   POST /api/register or /api/auth/register
 // @desc    Register a new BexSign user & save to MySQL database
 router.post(['/register', '/auth/register'], async (req, res) => {
     const { firstName, lastName, first_name, last_name, email, password, company, job_title } = req.body;
-    const userFirstName = firstName || first_name || 'User';
-    const userLastName = lastName || last_name || 'Admin';
+    // The register page only asks for email + password; the name starts as the email's local part (editable in My Profile)
+    const userFirstName = firstName || first_name || String(email || '').split('@')[0] || 'User';
+    const userLastName = lastName || last_name || '';
 
     if (!email || !password) {
         return res.status(400).json({ error: 'Please provide email and password.' });
@@ -36,7 +35,7 @@ router.post(['/register', '/auth/register'], async (req, res) => {
     try {
         const [existingUser] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
         if (existingUser && existingUser.length > 0) {
-            return res.status(400).json({ error: 'User already exists with this email' });
+            return res.status(400).json({ error: 'An account with this email already exists. Please sign in instead.' });
         }
 
         const salt = await bcrypt.genSalt(10);
@@ -143,33 +142,7 @@ router.post(['/login', '/auth/login'], async (req, res) => {
         } catch (e) {}
         await logActivity({ req, userId: user.id, userEmail: user.email, category: 'auth', action: 'Signed in' });
 
-        const token = jwt.sign({ id: user.id, email: user.email, role: userRole }, JWT_SECRET, { expiresIn: '7d' });
-
-        // Get latest profile and role name
-        const [prof] = await db.query('SELECT department, designation, status FROM user_profiles WHERE user_id = ?', [user.id]);
-        const [r] = await db.query('SELECT role_name, permissions FROM roles WHERE role_key = ?', [userRole]);
-
-        res.json({
-            message: 'Login successful',
-            token,
-            user: {
-                id: user.id,
-                firstName: user.first_name,
-                lastName: user.last_name,
-                first_name: user.first_name,
-                last_name: user.last_name,
-                email: user.email,
-                name: `${user.first_name} ${user.last_name}`,
-                company: user.company,
-                job_title: user.job_title,
-                role: userRole,
-                role_name: r[0]?.role_name || (userRole === 'manager' ? 'Manager (Admin)' : (userRole === 'leader' ? 'Leader' : 'Team Member')),
-                department: prof[0]?.department || 'Executive',
-                designation: prof[0]?.designation || (userRole === 'manager' ? 'Manager' : 'Team Member'),
-                status: prof[0]?.status || 'active',
-                permissions: r[0]?.permissions || { all: userRole === 'manager' }
-            }
-        });
+        res.json({ message: 'Login successful', ...(await buildSession(user)) });
     } catch (err) {
         console.error('Login Error:', err);
         res.status(500).json({ error: err.message || 'Server error' });

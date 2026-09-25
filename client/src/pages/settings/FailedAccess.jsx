@@ -304,7 +304,7 @@ export default function FailedAccess() {
                   disabled={bulkBusy}
                   title={`Resolve all ${r.open} open attempts from ${r.ip}`}
                   aria-label={`Resolve all open attempts from ${r.ip}`}
-                  className="p-1.5 rounded-lg text-slate-400 hover:text-[#007355] hover:bg-emerald-50 cursor-pointer disabled:opacity-50"
+                  className="p-2.5 sm:p-1.5 shrink-0 rounded-lg text-slate-400 hover:text-[#007355] hover:bg-emerald-50 cursor-pointer disabled:opacity-50"
                 >
                   <CheckCircle2 size={16} />
                 </button>
@@ -350,15 +350,15 @@ export default function FailedAccess() {
           {hasFilters && (
             <div className="flex flex-wrap items-center gap-2 text-xs">
               {filters.ip && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 pl-2.5 pr-1 py-1 font-semibold text-slate-700">
-                  IP <span className="font-mono">{filters.ip}</span>
-                  <button type="button" onClick={() => setFilter({ ip: '' })} aria-label="Remove IP filter" className="p-0.5 rounded-full hover:bg-slate-200 cursor-pointer"><X size={12} /></button>
+                <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 pl-2.5 pr-1 py-1 font-semibold text-slate-700 max-w-full min-w-0">
+                  IP <span className="font-mono break-all min-w-0">{filters.ip}</span>
+                  <button type="button" onClick={() => setFilter({ ip: '' })} aria-label="Remove IP filter" className="p-1.5 -my-1 sm:p-0.5 sm:my-0 rounded-full hover:bg-slate-200 cursor-pointer shrink-0"><X size={12} /></button>
                 </span>
               )}
               {filters.email && (
                 <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 pl-2.5 pr-1 py-1 font-semibold text-slate-700 max-w-full">
                   <span className="truncate">Account {filters.email}</span>
-                  <button type="button" onClick={() => setFilter({ email: '' })} aria-label="Remove account filter" className="p-0.5 rounded-full hover:bg-slate-200 cursor-pointer"><X size={12} /></button>
+                  <button type="button" onClick={() => setFilter({ email: '' })} aria-label="Remove account filter" className="p-1.5 -my-1 sm:p-0.5 sm:my-0 rounded-full hover:bg-slate-200 cursor-pointer shrink-0"><X size={12} /></button>
                 </span>
               )}
               <button type="button" onClick={() => setFilter(EMPTY_FILTERS)} className="font-bold text-[#007355] hover:underline cursor-pointer">Clear all filters</button>
@@ -381,10 +381,10 @@ export default function FailedAccess() {
           </p>
           <div className="flex flex-wrap gap-2">
             {selected.length > 0 && (
-              <Button icon={CheckCircle2} busy={bulkBusy} onClick={() => resolveMany({ ids: selected })}>Resolve selected</Button>
+              <Button icon={CheckCircle2} busy={bulkBusy} onClick={() => resolveMany({ ids: selected })} className="w-full sm:w-auto">Resolve selected</Button>
             )}
             {selected.length === 0 && summary?.unresolved > 0 && (
-              <Button variant="secondary" icon={CheckCircle2} onClick={() => setConfirmResolveAll(true)}>
+              <Button variant="secondary" icon={CheckCircle2} onClick={() => setConfirmResolveAll(true)} className="w-full sm:w-auto [overflow-wrap:anywhere]">
                 {filters.ip ? `Resolve all open from ${filters.ip}` : 'Resolve all open'}
               </Button>
             )}
@@ -418,39 +418,70 @@ export default function FailedAccess() {
           )
         ) : (
           <>
-            {/* Phones and tablets: cards */}
-            <ul className={`lg:hidden divide-y divide-slate-100 ${state.loading ? 'opacity-60' : ''}`}>
-              {state.items.map((item) => (
-                <li key={item.id} className="p-3 flex gap-3">
-                  <input
-                    type="checkbox"
-                    className="mt-1 w-4 h-4 accent-[#007355] shrink-0"
-                    disabled={item.resolved}
-                    checked={selected.includes(item.id)}
-                    onChange={(e) => setSelected((ids) => (e.target.checked ? [...ids, item.id] : ids.filter((id) => id !== item.id)))}
-                    aria-label={`Select attempt from ${item.ip}`}
-                  />
-                  <div className="min-w-0 flex-1 space-y-1.5">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <SourceBadge source={item.source} />
-                      <StatusBadge item={item} />
-                      <span className="text-[11px] text-slate-500 ml-auto" title={formatDateTime(item.attemptTime)}>{formatRelative(item.attemptTime)}</span>
+            {/* Phones: cards */}
+            <div className={`md:hidden ${state.loading ? 'opacity-60' : ''}`}>
+              {openRows.length > 0 && (
+                <label className="px-3 py-1.5 border-b border-slate-100 flex items-center gap-2 text-xs font-semibold text-slate-600 cursor-pointer">
+                  <span className="w-9 h-9 -ml-2.5 inline-flex items-center justify-center shrink-0">
+                    <input
+                      type="checkbox"
+                      className="w-4 h-4 accent-[#007355]"
+                      checked={allSelected}
+                      onChange={(e) => setSelected(e.target.checked ? openRows.map((i) => i.id) : [])}
+                      aria-label="Select all open attempts on this page"
+                    />
+                  </span>
+                  Select all open on this page
+                </label>
+              )}
+              <ul className="divide-y divide-slate-100">
+                {state.items.map((item) => (
+                  <li key={item.id} className={`p-3 flex gap-2 ${selected.includes(item.id) ? 'bg-emerald-50/40' : ''}`}>
+                    <label className="w-9 h-9 -ml-2.5 -mt-1.5 inline-flex items-center justify-center shrink-0 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="w-4 h-4 accent-[#007355]"
+                        disabled={item.resolved}
+                        checked={selected.includes(item.id)}
+                        onChange={(e) => setSelected((ids) => (e.target.checked ? [...ids, item.id] : ids.filter((id) => id !== item.id)))}
+                        aria-label={`Select attempt from ${item.ip}`}
+                      />
+                    </label>
+                    <div className="min-w-0 flex-1 space-y-1.5">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <SourceBadge source={item.source} />
+                        <StatusBadge item={item} />
+                        <span className="text-[11px] text-slate-500 ml-auto" title={formatDateTime(item.attemptTime)}>{formatRelative(item.attemptTime)}</span>
+                      </div>
+                      <p className="text-sm font-bold text-slate-900 break-words">{item.reason}</p>
+                      {item.document && (
+                        <p className="flex items-center gap-1 text-[11px] text-slate-500 min-w-0"><FileText size={11} className="shrink-0" /> <span className="truncate">{item.document.name}</span></p>
+                      )}
+                      <div className="text-xs text-slate-600 min-w-0">
+                        {item.email ? (
+                          <button type="button" onClick={() => setFilter({ email: item.email })} className="max-w-full text-left font-semibold text-slate-800 break-all hover:underline cursor-pointer" title={`Show attempts for ${item.email}`}>{item.email}</button>
+                        ) : <span className="inline-flex items-center gap-1 text-slate-400"><UserX size={13} /> No account</span>}
+                        {item.user?.name && <span className="block text-[11px] text-slate-500 break-words">{item.user.name}</span>}
+                      </div>
+                      <p className="text-xs text-slate-600">
+                        <button type="button" onClick={() => setFilter({ ip: item.ip })} className="font-mono text-left break-all hover:underline cursor-pointer" title={`Show attempts from ${item.ip}`}>{item.ip}</button>
+                        <span className="block text-[11px] text-slate-500 mt-0.5 min-w-0"><DeviceLabel device={item.device} userAgent={item.userAgent} /></span>
+                      </p>
+                      <p className="text-[11px] text-slate-400">{formatDateTime(item.attemptTime)}</p>
+                      <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                        <Button variant={item.resolved ? 'ghost' : 'secondary'} icon={item.resolved ? RotateCcw : CheckCircle2} busy={busyId === item.id} onClick={() => toggleResolved(item)} className="min-h-[36px]">
+                          {item.resolved ? 'Reopen' : 'Resolve'}
+                        </Button>
+                        {item.resolved && item.resolvedBy && <span className="text-[11px] text-slate-400 min-w-0 truncate">by {item.resolvedBy.name || item.resolvedBy.email}</span>}
+                      </div>
                     </div>
-                    <p className="text-sm font-bold text-slate-900 break-words">{item.reason}</p>
-                    <p className="text-xs text-slate-600 break-all">
-                      {item.email || 'No account'} · <button type="button" onClick={() => setFilter({ ip: item.ip })} className="font-mono hover:underline cursor-pointer">{item.ip}</button>
-                    </p>
-                    <p className="text-xs text-slate-500"><DeviceLabel device={item.device} userAgent={item.userAgent} /></p>
-                    <Button variant={item.resolved ? 'ghost' : 'secondary'} icon={item.resolved ? RotateCcw : CheckCircle2} busy={busyId === item.id} onClick={() => toggleResolved(item)} className="!px-2.5 !py-1.5">
-                      {item.resolved ? 'Reopen' : 'Resolve'}
-                    </Button>
-                  </div>
-                </li>
-              ))}
-            </ul>
+                  </li>
+                ))}
+              </ul>
+            </div>
 
-            {/* Laptops and up: table */}
-            <div className={`hidden lg:block relative overflow-x-auto ${state.loading ? 'opacity-60' : ''}`}>
+            {/* Tablets and up: table */}
+            <div className={`hidden md:block relative overflow-x-auto ${state.loading ? 'opacity-60' : ''}`}>
               <table className="w-full text-left">
                 <thead>
                   <tr>

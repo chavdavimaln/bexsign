@@ -1,10 +1,19 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const { authenticateUser, requireSignedIn } = require('../middleware/authMiddleware');
+const { userCan } = require('../utils/permissions');
+
+// Signed-in users only: your own profile, or anyone's with "Edit users"
+router.use(authenticateUser, requireSignedIn);
+async function profileGuard(req, res, next) {
+    if (parseInt(req.params.userId, 10) === Number(req.user.id) || (await userCan(req.user, 'users.edit'))) return next();
+    return res.status(403).json({ success: false, error: 'You can only view and change your own profile.' });
+}
 
 // @route   GET /api/settings/profile/:userId
 // @desc    Get user profile details
-router.get('/profile/:userId', async (req, res) => {
+router.get('/profile/:userId', profileGuard, async (req, res) => {
     const userId = req.params.userId;
     try {
         // The requested user's own profile (the first account only when that user does not exist)
@@ -30,7 +39,7 @@ router.get('/profile/:userId', async (req, res) => {
 
 // @route   PUT /api/settings/profile/:userId
 // @desc    Update user profile details
-router.put('/profile/:userId', async (req, res) => {
+router.put('/profile/:userId', profileGuard, async (req, res) => {
     const userId = req.params.userId;
     const { firstName, first_name, lastName, last_name, email, company, phone } = req.body;
     
@@ -107,8 +116,8 @@ router.post('/delegate', async (req, res) => {
     try {
         await db.query(
             `INSERT INTO delegates (user_id, delegate_to_email, start_date, end_date, reason)
-             VALUES (1, ?, ?, ?, ?)`,
-            [delegateTo, startDate, endDate, reason]
+             VALUES (?, ?, ?, ?, ?)`,
+            [req.user.id, delegateTo, startDate, endDate, reason]
         );
         res.json({ success: true, message: 'Vacation delegation saved successfully!' });
     } catch (err) {

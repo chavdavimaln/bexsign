@@ -12,9 +12,10 @@ import TemplatesUsedModal from '../components/documents/TemplatesUsedModal';
 import BexDocumentSheet from '../components/BexDocumentSheet';
 import { getDefaultDocContent } from '../utils/documentDefaults';
 import { getDocumentOwner } from '../utils/currentUser';
+import { usePermissions } from '../utils/permissions';
 import EditCopyModal from '../components/EditCopyModal';
 import { downloadAllSignedDocuments, printAllLockedDocuments } from '../utils/signedPdf';
-import { API_BASE, API_ORIGIN } from '../utils/api';
+import { API_BASE, API_ORIGIN, authHeaders } from '../utils/api';
 import {
   FileText,
   Plus,
@@ -69,6 +70,7 @@ const INITIAL_COLUMNS = [
 export default function DocumentsList() {
   const { statusFilter } = useParams();
   const navigate = useNavigate();
+  const { can } = usePermissions();
   const location = useLocation();
 
   const isTrashView = location.pathname.includes('/trash') || statusFilter === 'trashed';
@@ -487,7 +489,7 @@ export default function DocumentsList() {
     try {
       await fetch(`${API_BASE}/trash/move/${docToDelete.id}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json', ...authHeaders() }
       });
     } catch (e) {
       console.error('Error moving document to trash:', e);
@@ -506,7 +508,8 @@ export default function DocumentsList() {
 
     try {
       await fetch(`${API_BASE}/trash/delete/${docToDelete.id}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers: { ...authHeaders() }
       });
     } catch (e) {
       console.error('Error permanently deleting document:', e);
@@ -521,7 +524,8 @@ export default function DocumentsList() {
 
     try {
       await fetch(`${API_BASE}/trash/restore/${doc.id}`, {
-        method: 'POST'
+        method: 'POST',
+        headers: { ...authHeaders() }
       });
     } catch (e) {
       console.error('Error restoring document:', e);
@@ -691,7 +695,7 @@ export default function DocumentsList() {
         try {
           await fetch(`${API_BASE}/trash/bulk-delete`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
             body: JSON.stringify({ ids: idsToDelete })
           });
         } catch (e) {
@@ -707,7 +711,7 @@ export default function DocumentsList() {
         try {
           await fetch(`${API_BASE}/trash/bulk-move`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
             body: JSON.stringify({ ids: idsToDelete })
           });
         } catch (e) {
@@ -746,6 +750,53 @@ export default function DocumentsList() {
     setSearchQuery('');
   };
 
+  // Status badges of a document: its state, and whether it still waits to be confirmed (table and phone cards)
+  const renderStatusBadges = (doc) => {
+    const status = (doc.status || 'Draft').toUpperCase();
+    return (
+      <div className="flex flex-col items-start gap-1">
+      {status === 'COMPLETED' && (
+        <span className="bg-[#007355] text-white text-[10px] px-2 py-0.5 rounded font-black tracking-wider uppercase inline-block">
+          COMPLETED
+        </span>
+      )}
+      {status === 'COMPLETED' && doc.verification_status === 'pending' && (
+        <span
+          className="bg-amber-100 text-amber-800 border border-amber-200 text-[10px] px-2 py-0.5 rounded font-black tracking-wider uppercase inline-block whitespace-nowrap"
+          title="Everyone has signed. The documents still have to be verified and confirmed."
+        >
+          Pending confirmation
+        </span>
+      )}
+      {status === 'COMPLETED' && doc.verification_status === 'rejected' && (
+        <span className="bg-rose-100 text-rose-700 border border-rose-200 text-[10px] px-2 py-0.5 rounded font-black tracking-wider uppercase inline-block whitespace-nowrap">
+          Confirmation rejected
+        </span>
+      )}
+      {(status === 'IN PROGRESS' || status === 'IN PROCESS') && (
+        <span className="bg-[#d97706] text-white text-[10px] px-2 py-0.5 rounded font-black tracking-wider uppercase inline-block">
+          IN PROCESS
+        </span>
+      )}
+      {status === 'DRAFT' && (
+        <span className="bg-[#0284c7] text-white text-[10px] px-2 py-0.5 rounded font-black tracking-wider uppercase inline-block">
+          DRAFT
+        </span>
+      )}
+      {status === 'RECALLED' && (
+        <span className="bg-[#e11d48] text-white text-[10px] px-2 py-0.5 rounded font-black tracking-wider uppercase inline-block">
+          RECALLED
+        </span>
+      )}
+      {!['COMPLETED', 'IN PROGRESS', 'IN PROCESS', 'DRAFT', 'RECALLED'].includes(status) && (
+        <span className="bg-slate-200 text-slate-700 text-[10px] px-2 py-0.5 rounded font-black uppercase inline-block">
+          {status}
+        </span>
+      )}
+      </div>
+    );
+  };
+
   const hasActiveFilters =
     Object.values(columnFilters).some((v) => v !== '') || searchQuery !== '';
 
@@ -761,7 +812,7 @@ export default function DocumentsList() {
             {isTrashView ? 'View trashed documents. Restore them to Drafts or permanently delete them.' : 'View status, manage signers, and execute document actions.'}
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           {!isTrashView && (
             <Link
               to="/verify"
@@ -771,7 +822,7 @@ export default function DocumentsList() {
               <ShieldCheck size={15} className="text-[#007355]" /> Verify document
             </Link>
           )}
-          {!isTrashView && (
+          {!isTrashView && can('documents.create') && (
             <Link
               to="/documents/create"
               className="bg-[#007355] hover:bg-[#005c44] text-white px-5 py-2 rounded-lg font-extrabold text-xs shadow-md flex items-center gap-2 transition cursor-pointer"
@@ -799,7 +850,7 @@ export default function DocumentsList() {
           setCurrentPage(1);
         }}
         selectedCount={selectedDocIds.length}
-        onBulkDelete={handleBulkDelete}
+        onBulkDelete={can('documents.delete') ? handleBulkDelete : undefined}
         onBulkMoveFolder={handleBulkMoveFolder}
         showInlineFilters={showInlineFilters}
         onToggleInlineFilters={() => setShowInlineFilters(!showInlineFilters)}
@@ -808,8 +859,96 @@ export default function DocumentsList() {
         storageKey="bexsign_documents_columns"
       />
 
-      {/* Documents Table with BexSign Responsive Flow - ZERO Horizontal Scrollbar */}
+      {/* Documents: a table from tablet width up (scrolls sideways when the columns do not fit), cards on phones */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-2xs w-full overflow-hidden min-w-0">
+        {/* Phones: search, select all, one card per document */}
+        <div className="md:hidden">
+          <div className="p-3 border-b border-slate-100 flex items-center gap-2.5">
+            <input
+              type="checkbox"
+              checked={allPageSelected}
+              onChange={handleSelectAllOnPage}
+              aria-label="Select all documents on this page"
+              className="w-4 h-4 rounded accent-[#007355] cursor-pointer shrink-0"
+            />
+            <div className="relative flex-1 min-w-0">
+              <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="search"
+                value={columnFilters.name}
+                onChange={(e) => {
+                  setColumnFilters({ ...columnFilters, name: e.target.value });
+                  setCurrentPage(1);
+                }}
+                placeholder="Search documents"
+                aria-label="Search documents by name"
+                className="w-full pl-8 pr-3 py-2 text-sm border border-slate-300 rounded-lg bg-white outline-none focus:border-[#007355] focus:ring-2 focus:ring-emerald-100"
+              />
+            </div>
+          </div>
+          {paginatedDocs.length === 0 ? (
+            <div className="py-12 px-4 text-center text-slate-400">
+              <FileText size={32} className="mx-auto mb-2 text-slate-300" />
+              <p className="font-semibold text-sm text-slate-700">No documents found</p>
+              {hasActiveFilters && (
+                <button type="button" onClick={clearAllFilters} className="mt-3 px-4 py-1.5 bg-[#007355] text-white rounded text-xs font-bold">
+                  Clear Filters
+                </button>
+              )}
+            </div>
+          ) : (
+            <ul className="divide-y divide-slate-100">
+              {paginatedDocs.map((doc) => {
+                const docName = doc.document_name || doc.name || 'Untitled.pdf';
+                const isSelected = selectedDocIds.includes(doc.id);
+                const openDoc = () => navigate(doc.status === 'Draft' && can('documents.create') ? `/documents/${doc.id}/edit` : `/documents/${doc.id}`);
+                return (
+                  <li key={doc.id} className={`flex items-start gap-3 p-3 ${isSelected ? 'bg-emerald-50/50' : ''}`}>
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => handleToggleSelectDoc(doc.id)}
+                      aria-label={`Select ${docName}`}
+                      className="mt-1 w-4 h-4 rounded accent-[#007355] cursor-pointer shrink-0"
+                    />
+                    <button type="button" onClick={openDoc} className="flex-1 min-w-0 text-left cursor-pointer">
+                      <span className="flex items-start gap-2">
+                        <span className="w-8 h-8 rounded-lg bg-slate-100 text-slate-500 flex items-center justify-center shrink-0">
+                          <FileText size={15} />
+                        </span>
+                        <span className="min-w-0">
+                          <span className="block text-sm font-bold text-slate-900 break-words leading-snug">{docName}</span>
+                          <span className="block text-[11px] text-slate-500 truncate">
+                            {doc.recipient_email || doc.recipient || getDocumentOwner(doc).name}
+                          </span>
+                          <span className="block text-[11px] text-slate-400 mt-0.5">
+                            {doc.created_at ? new Date(doc.created_at).toLocaleDateString() : ''}
+                            {(() => {
+                              const folder = doc.folder || doc.folder_name;
+                              if (doc.self_sign_id) return ' · Sign yourself';
+                              return folder && folder !== 'None' ? ` · ${folder}` : '';
+                            })()}
+                          </span>
+                        </span>
+                      </span>
+                      <span className="block mt-2">{renderStatusBadges(doc)}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => handleToggleMenu(e, doc)}
+                      aria-label={`Actions for ${docName}`}
+                      className={`p-2 rounded-lg shrink-0 cursor-pointer ${activeMenuDoc?.id === doc.id ? 'bg-slate-200 text-[#007355]' : 'text-slate-600 hover:bg-slate-100'}`}
+                    >
+                      <MoreVertical size={18} />
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+
+        <div className="hidden md:block overflow-x-auto">
         <table className="w-full text-left text-xs border-collapse table-auto">
           <thead>
             {/* 1st Row: Column Header Titles with Resizers */}
@@ -1126,11 +1265,11 @@ export default function DocumentsList() {
 
                     {/* Document Name */}
                     {isColVisible('name') && (
-                      <td className="p-2.5 w-[22%] font-bold text-slate-900 align-middle break-words">
+                      <td className="p-2.5 w-[22%] min-w-[170px] font-bold text-slate-900 align-middle break-words">
                         <div
                           onClick={() =>
                             navigate(
-                              doc.status === 'Draft' ? `/documents/${doc.id}/edit` : `/documents/${doc.id}`
+                              doc.status === 'Draft' && can('documents.create') ? `/documents/${doc.id}/edit` : `/documents/${doc.id}`
                             )
                           }
                           className="flex items-start gap-2 cursor-pointer group/item"
@@ -1140,7 +1279,7 @@ export default function DocumentsList() {
                               : 'Click to view document status and details'
                           }
                         >
-                          <span className="break-all leading-snug group-hover/item:text-[#007355] group-hover/item:underline">
+                          <span className="break-words [overflow-wrap:anywhere] leading-snug group-hover/item:text-[#007355] group-hover/item:underline">
                             {docName}
                           </span>
                         </div>
@@ -1216,46 +1355,7 @@ export default function DocumentsList() {
                     {/* Status: the request's state, and whether it still waits to be confirmed */}
                     {isColVisible('status') && (
                       <td className="p-2.5 w-[12%] align-middle">
-                        <div className="flex flex-col items-start gap-1">
-                        {docStatus === 'COMPLETED' && (
-                          <span className="bg-[#007355] text-white text-[10px] px-2 py-0.5 rounded font-black tracking-wider uppercase inline-block">
-                            COMPLETED
-                          </span>
-                        )}
-                        {docStatus === 'COMPLETED' && doc.verification_status === 'pending' && (
-                          <span
-                            className="bg-amber-100 text-amber-800 border border-amber-200 text-[10px] px-2 py-0.5 rounded font-black tracking-wider uppercase inline-block whitespace-nowrap"
-                            title="Everyone has signed. The documents still have to be verified and confirmed."
-                          >
-                            Pending confirmation
-                          </span>
-                        )}
-                        {docStatus === 'COMPLETED' && doc.verification_status === 'rejected' && (
-                          <span className="bg-rose-100 text-rose-700 border border-rose-200 text-[10px] px-2 py-0.5 rounded font-black tracking-wider uppercase inline-block whitespace-nowrap">
-                            Confirmation rejected
-                          </span>
-                        )}
-                        {(docStatus === 'IN PROGRESS' || docStatus === 'IN PROCESS') && (
-                          <span className="bg-[#d97706] text-white text-[10px] px-2 py-0.5 rounded font-black tracking-wider uppercase inline-block">
-                            IN PROCESS
-                          </span>
-                        )}
-                        {docStatus === 'DRAFT' && (
-                          <span className="bg-[#0284c7] text-white text-[10px] px-2 py-0.5 rounded font-black tracking-wider uppercase inline-block">
-                            DRAFT
-                          </span>
-                        )}
-                        {docStatus === 'RECALLED' && (
-                          <span className="bg-[#e11d48] text-white text-[10px] px-2 py-0.5 rounded font-black tracking-wider uppercase inline-block">
-                            RECALLED
-                          </span>
-                        )}
-                        {!['COMPLETED', 'IN PROGRESS', 'IN PROCESS', 'DRAFT', 'RECALLED'].includes(docStatus) && (
-                          <span className="bg-slate-200 text-slate-700 text-[10px] px-2 py-0.5 rounded font-black uppercase inline-block">
-                            {docStatus}
-                          </span>
-                        )}
-                        </div>
+                        {renderStatusBadges(doc)}
                       </td>
                     )}
 
@@ -1295,6 +1395,7 @@ export default function DocumentsList() {
             )}
           </tbody>
         </table>
+        </div>
       </div>
 
         {/* Universal Floating Context Action Menu (Fixed Positioning - NEVER CLIPPED on Web, iPad, or Mobile) */}
@@ -1322,11 +1423,11 @@ export default function DocumentsList() {
               {/* TRASHED ACTIONS */}
               {(isTrashView || activeMenuDoc.status?.toLowerCase() === 'trashed') ? (
                 <>
-                  <button onClick={() => handleRestoreDoc(activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-emerald-50 text-emerald-700 flex items-center gap-2.5 font-bold"><RotateCcw size={15} /> Restore to Drafts</button>
-                  <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleDownloadDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Download size={15} className="text-[#00a884]" /> Download</button>
+                  {can('documents.delete') && <button onClick={() => handleRestoreDoc(activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-emerald-50 text-emerald-700 flex items-center gap-2.5 font-bold"><RotateCcw size={15} /> Restore to Drafts</button>}
+                  {can('documents.download') && <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleDownloadDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Download size={15} className="text-[#00a884]" /> Download</button>}
                   <button onClick={() => triggerModal('history', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Clock size={15} /> Activity history</button>
                   <div className="border-t my-1" />
-                  <button onClick={() => triggerModal('deletePermanent', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-rose-50 text-rose-600 flex items-center gap-2.5 font-bold"><Trash2 size={15} /> Delete permanently</button>
+                  {can('documents.delete') && <button onClick={() => triggerModal('deletePermanent', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-rose-50 text-rose-600 flex items-center gap-2.5 font-bold"><Trash2 size={15} /> Delete permanently</button>}
                 </>
               ) : (
                 <>
@@ -1335,24 +1436,24 @@ export default function DocumentsList() {
                     <>
                       <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><UserCheck size={15} /> Recipient status</button>
                       <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/view`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Eye size={15} /> View document</button>
-                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); setEditCopyDoc(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Edit size={15} /> Edit</button>
-                      <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/send`); handleActionToast('Document in correction state.'); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><FileCheck size={15} /> Correct document</button>
-                      <button onClick={() => triggerModal('extend', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Clock size={15} /> Extend</button>
-                      <button onClick={() => triggerModal('reminder', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Bell size={15} /> Send reminder</button>
-                      <button onClick={() => triggerModal('reminderSettings', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Sliders size={15} /> Reminder settings</button>
-                      <button onClick={() => triggerModal('recall', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 text-rose-600"><RotateCcw size={15} /> Recall</button>
-                      <button onClick={() => triggerModal('uploadSigned', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Upload size={15} /> Upload signed document</button>
-                      <button onClick={() => triggerModal('email', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Mail size={15} /> Email document</button>
-                      <button onClick={() => triggerModal('saveCloud', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Cloud size={15} /> Save to cloud</button>
-                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleDownloadDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Download size={15} className="text-[#00a884]" /> Download</button>
-                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleEditAsNew(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Copy size={15} /> Edit as new</button>
-                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handlePrintDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Printer size={15} /> Print</button>
+                      {can('documents.create') && <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); setEditCopyDoc(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Edit size={15} /> Edit</button>}
+                      {can('documents.recall') && <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/send`); handleActionToast('Document in correction state.'); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><FileCheck size={15} /> Correct document</button>}
+                      {can('documents.recall') && <button onClick={() => triggerModal('extend', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Clock size={15} /> Extend</button>}
+                      {can('documents.send') && <button onClick={() => triggerModal('reminder', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Bell size={15} /> Send reminder</button>}
+                      {can('documents.send') && <button onClick={() => triggerModal('reminderSettings', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Sliders size={15} /> Reminder settings</button>}
+                      {can('documents.recall') && <button onClick={() => triggerModal('recall', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 text-rose-600"><RotateCcw size={15} /> Recall</button>}
+                      {can('documents.send') && <button onClick={() => triggerModal('uploadSigned', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Upload size={15} /> Upload signed document</button>}
+                      {can('documents.download') && <button onClick={() => triggerModal('email', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Mail size={15} /> Email document</button>}
+                      {can('documents.download') && <button onClick={() => triggerModal('saveCloud', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Cloud size={15} /> Save to cloud</button>}
+                      {can('documents.download') && <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleDownloadDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Download size={15} className="text-[#00a884]" /> Download</button>}
+                      {can('documents.create') && <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleEditAsNew(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Copy size={15} /> Edit as new</button>}
+                      {can('documents.download') && <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handlePrintDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Printer size={15} /> Print</button>}
                       <button onClick={() => triggerModal('versions', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><History size={15} /> Previous versions</button>
                       <button onClick={() => triggerModal('history', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Clock size={15} /> Activity history</button>
                       <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleCopyDebugInfo(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Info size={15} /> Copy debug info</button>
                       <button onClick={() => triggerModal('legal', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><ShieldCheck size={15} /> View legal disclosure</button>
                       <div className="border-t my-1" />
-                      <button onClick={() => triggerModal('delete', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-rose-50 text-rose-600 flex items-center gap-2.5"><Trash2 size={15} /> Delete</button>
+                      {can('documents.delete') && <button onClick={() => triggerModal('delete', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-rose-50 text-rose-600 flex items-center gap-2.5"><Trash2 size={15} /> Delete</button>}
                     </>
                   )}
 
@@ -1361,20 +1462,20 @@ export default function DocumentsList() {
                     <>
                       <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><UserCheck size={15} /> Recipient status</button>
                       <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/view`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Eye size={15} /> View document</button>
-                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); setEditCopyDoc(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Edit size={15} /> Edit</button>
-                      <button onClick={() => triggerModal('certificate', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><FileCheck size={15} /> Completion certificate</button>
-                      <button onClick={() => triggerModal('email', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Mail size={15} /> Email document</button>
-                      <button onClick={() => triggerModal('saveCloud', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Cloud size={15} /> Save to cloud</button>
-                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleDownloadDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Download size={15} className="text-[#00a884]" /> Download</button>
-                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleEditAsNew(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Copy size={15} /> Edit as new</button>
-                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handlePrintDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Printer size={15} /> Print</button>
+                      {can('documents.create') && <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); setEditCopyDoc(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Edit size={15} /> Edit</button>}
+                      {can('documents.download') && <button onClick={() => triggerModal('certificate', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><FileCheck size={15} /> Completion certificate</button>}
+                      {can('documents.download') && <button onClick={() => triggerModal('email', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Mail size={15} /> Email document</button>}
+                      {can('documents.download') && <button onClick={() => triggerModal('saveCloud', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Cloud size={15} /> Save to cloud</button>}
+                      {can('documents.download') && <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleDownloadDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Download size={15} className="text-[#00a884]" /> Download</button>}
+                      {can('documents.create') && <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleEditAsNew(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Copy size={15} /> Edit as new</button>}
+                      {can('documents.download') && <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handlePrintDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Printer size={15} /> Print</button>}
                       <button onClick={() => triggerModal('formData', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Layers size={15} /> Form data</button>
                       <button onClick={() => triggerModal('versions', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><History size={15} /> Previous versions</button>
                       <button onClick={() => triggerModal('history', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Clock size={15} /> Activity history</button>
                       <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleCopyDebugInfo(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Info size={15} /> Copy debug info</button>
                       <button onClick={() => triggerModal('legal', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><ShieldCheck size={15} /> View legal disclosure</button>
                       <div className="border-t my-1" />
-                      <button onClick={() => triggerModal('delete', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-rose-50 text-rose-600 flex items-center gap-2.5"><Trash2 size={15} /> Delete</button>
+                      {can('documents.delete') && <button onClick={() => triggerModal('delete', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-rose-50 text-rose-600 flex items-center gap-2.5"><Trash2 size={15} /> Delete</button>}
                     </>
                   )}
 
@@ -1382,18 +1483,18 @@ export default function DocumentsList() {
                   {activeMenuDoc.status === 'Draft' && (
                     <>
                       <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-800"><UserCheck size={15} /> Recipient status</button>
-                      <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/edit`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Edit size={15} /> Edit document</button>
-                      <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/send`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><ArrowRight size={15} /> Continue</button>
+                      {can('documents.create') && <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/edit`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Edit size={15} /> Edit document</button>}
+                      {can('documents.create') && <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/send`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><ArrowRight size={15} /> Continue</button>}
                       <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/view`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Eye size={15} /> View document</button>
-                      <button onClick={() => triggerModal('saveCloud', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Cloud size={15} /> Save to cloud</button>
-                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleDownloadDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Download size={15} className="text-[#00a884]" /> Download</button>
-                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleEditAsNew(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Copy size={15} /> Edit as new</button>
-                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handlePrintDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Printer size={15} /> Print</button>
+                      {can('documents.download') && <button onClick={() => triggerModal('saveCloud', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Cloud size={15} /> Save to cloud</button>}
+                      {can('documents.download') && <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleDownloadDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Download size={15} className="text-[#00a884]" /> Download</button>}
+                      {can('documents.create') && <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleEditAsNew(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Copy size={15} /> Edit as new</button>}
+                      {can('documents.download') && <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handlePrintDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Printer size={15} /> Print</button>}
                       <button onClick={() => triggerModal('history', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Clock size={15} /> Activity history</button>
                       <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleCopyDebugInfo(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Info size={15} /> Copy debug info</button>
                       <button onClick={() => triggerModal('legal', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><ShieldCheck size={15} /> View legal disclosure</button>
                       <div className="border-t my-1" />
-                      <button onClick={() => triggerModal('delete', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-rose-50 text-rose-600 flex items-center gap-2.5"><Trash2 size={15} /> Delete</button>
+                      {can('documents.delete') && <button onClick={() => triggerModal('delete', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-rose-50 text-rose-600 flex items-center gap-2.5"><Trash2 size={15} /> Delete</button>}
                     </>
                   )}
 
@@ -1402,13 +1503,13 @@ export default function DocumentsList() {
                     <>
                       <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><UserCheck size={15} /> Recipient status</button>
                       <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/view`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Eye size={15} /> View document</button>
-                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleDownloadDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Download size={15} className="text-[#00a884]" /> Download</button>
-                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleEditAsNew(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Copy size={15} /> Edit as new</button>
-                      <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handlePrintDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Printer size={15} /> Print</button>
+                      {can('documents.download') && <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleDownloadDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Download size={15} className="text-[#00a884]" /> Download</button>}
+                      {can('documents.create') && <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handleEditAsNew(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Copy size={15} /> Edit as new</button>}
+                      {can('documents.download') && <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); handlePrintDocument(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Printer size={15} /> Print</button>}
                       <button onClick={() => triggerModal('history', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Clock size={15} /> Activity history</button>
                       <button onClick={() => triggerModal('legal', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><ShieldCheck size={15} /> View legal disclosure</button>
                       <div className="border-t my-1" />
-                      <button onClick={() => triggerModal('delete', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-rose-50 text-rose-600 flex items-center gap-2.5"><Trash2 size={15} /> Delete</button>
+                      {can('documents.delete') && <button onClick={() => triggerModal('delete', activeMenuDoc)} className="w-full px-3.5 py-2 hover:bg-rose-50 text-rose-600 flex items-center gap-2.5"><Trash2 size={15} /> Delete</button>}
                     </>
                   )}
                 </>

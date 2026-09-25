@@ -250,7 +250,7 @@ export default function ApiKeysPanel({ meta, showToast }) {
     <Card
       title="API keys"
       description={canManageAll ? 'Every key in the organization. Keys act with the permissions of their owner.' : 'Your keys. Each key acts on your behalf with the scopes you choose.'}
-      actions={<Button icon={Plus} onClick={() => setCreating(true)} className="whitespace-nowrap">Create API key</Button>}
+      actions={<Button icon={Plus} onClick={() => setCreating(true)} className="whitespace-nowrap w-full sm:w-auto">Create API key</Button>}
       bodyClassName=""
     >
       <div className="px-4 sm:px-5 py-3 flex flex-col sm:flex-row gap-2 border-b border-slate-100">
@@ -273,7 +273,70 @@ export default function ApiKeysPanel({ meta, showToast }) {
             action={!keys.length && <Button icon={Plus} onClick={() => setCreating(true)}>Create API key</Button>}
           />
         ) : (
-          <div className="overflow-x-auto">
+          <>
+          {/* Phones: cards */}
+          <ul className="md:hidden divide-y divide-slate-100">
+            {filtered.map((k) => (
+              <li key={k.id} className={`px-4 py-3 ${k.status !== 'active' ? 'opacity-70' : ''}`}>
+                <div className="flex items-start gap-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="font-bold text-sm text-slate-900 break-words">{k.name}</p>
+                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                      <Badge tone={k.environment === 'sandbox' ? 'amber' : 'sky'}>{k.environment}</Badge>
+                      <Badge tone={STATUS_TONE[k.status]} dot>{k.status}</Badge>
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 -mr-1.5">
+                    {k.status !== 'revoked' && (
+                      <button type="button" onClick={() => setEditing(k)} aria-label={`Edit ${k.name}`} title="Rename or change scopes" className="w-9 h-9 inline-flex items-center justify-center rounded-lg text-slate-500 hover:text-[#007355] hover:bg-emerald-50 cursor-pointer"><Pencil size={15} /></button>
+                    )}
+                    {k.status !== 'revoked' && (
+                      <button type="button" onClick={() => setConfirm({ type: 'revoke', key: k })} aria-label={`Revoke ${k.name}`} title="Revoke" className="w-9 h-9 inline-flex items-center justify-center rounded-lg text-slate-500 hover:text-amber-700 hover:bg-amber-50 cursor-pointer"><Ban size={15} /></button>
+                    )}
+                    <button type="button" onClick={() => setConfirm({ type: 'delete', key: k })} aria-label={`Delete ${k.name}`} title="Delete" className="w-9 h-9 inline-flex items-center justify-center rounded-lg text-slate-500 hover:text-red-600 hover:bg-red-50 cursor-pointer"><Trash2 size={15} /></button>
+                  </div>
+                </div>
+                <p className="font-mono text-[11px] text-slate-500 mt-1.5 break-all">{k.maskedKey}</p>
+                {k.scopes.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-2">
+                    {k.scopes.map((s) => <span key={s} className="px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-600 text-[10px] font-mono break-all">{s}</span>)}
+                  </div>
+                )}
+                <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px]">
+                  <div className="min-w-0">
+                    <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Last used</dt>
+                    <dd className="text-slate-700" title={k.lastUsedAt ? formatDateTime(k.lastUsedAt) : ''}>{k.lastUsedAt ? formatRelative(k.lastUsedAt) : <span className="text-slate-400">Never</span>}</dd>
+                  </div>
+                  <div className="min-w-0">
+                    <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Requests</dt>
+                    <dd className="text-slate-700 tabular-nums">{k.requestCount.toLocaleString()}</dd>
+                  </div>
+                  <div className="min-w-0">
+                    <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Expires</dt>
+                    <dd className="text-slate-700">
+                      {k.revokedAt ? <span className="text-slate-400">Revoked {formatDateTime(k.revokedAt, { withTime: false })}</span> : k.expiresAt ? formatDateTime(k.expiresAt, { withTime: false }) : <span className="text-slate-400">Never</span>}
+                    </dd>
+                  </div>
+                  <div className="min-w-0">
+                    <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Created</dt>
+                    <dd className="text-slate-700">{formatDateTime(k.createdAt, { withTime: false })}</dd>
+                  </div>
+                  {canManageAll && (
+                    <div className="min-w-0 col-span-2">
+                      <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Owner</dt>
+                      <dd className="text-slate-700 break-all">
+                        <span className="font-semibold text-slate-800">{k.isOwn ? 'You' : k.owner?.name}</span>
+                        {!k.isOwn && k.owner?.email && <span className="text-slate-500"> · {k.owner.email}</span>}
+                      </dd>
+                    </div>
+                  )}
+                </dl>
+              </li>
+            ))}
+          </ul>
+
+          {/* Tablets and up: table */}
+          <div className="hidden md:block overflow-x-auto">
             <table className="w-full">
               <thead>
                 <tr>
@@ -332,6 +395,7 @@ export default function ApiKeysPanel({ meta, showToast }) {
               </tbody>
             </table>
           </div>
+          </>
         )
       )}
 

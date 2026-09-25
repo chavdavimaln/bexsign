@@ -13,6 +13,7 @@ import { applySignerDefaults } from '../utils/documentFields';
 import { canvasHasInk, isTypedSignatureValid, typedSignatureImage } from '../utils/signatureInk';
 import { downloadSignedDocument, printLockedDocument } from '../utils/signedPdf';
 import { API_BASE, API_ORIGIN } from '../utils/api';
+import PasswordInput from '../components/ui/PasswordInput';
 import {
   TermsModal,
   QuickFillModal,
@@ -1098,20 +1099,20 @@ export default function PublicSigning() {
           </div>
 
           <div className="space-y-3.5 text-xs">
-            <div className="flex justify-between border-b border-slate-100 pb-2">
-              <span className="font-bold text-slate-500">Document name</span>
-              <span className="font-bold text-slate-900">{documentDetails.title}</span>
+            <div className="flex justify-between items-start gap-4 border-b border-slate-100 pb-2">
+              <span className="font-bold text-slate-500 shrink-0">Document name</span>
+              <span className="font-bold text-slate-900 text-right break-words min-w-0">{documentDetails.title}</span>
             </div>
-            <div className="flex justify-between border-b border-slate-100 pb-2">
-              <span className="font-bold text-slate-500">Sender</span>
-              <span className="font-semibold text-slate-800">{documentDetails.sender}</span>
+            <div className="flex justify-between items-start gap-4 border-b border-slate-100 pb-2">
+              <span className="font-bold text-slate-500 shrink-0">Sender</span>
+              <span className="font-semibold text-slate-800 text-right break-words min-w-0">{documentDetails.sender}</span>
             </div>
-            <div className="flex justify-between border-b border-slate-100 pb-2">
-              <span className="font-bold text-slate-500">Organization</span>
-              <span className="font-semibold text-slate-800">{documentDetails.org}</span>
+            <div className="flex justify-between items-start gap-4 border-b border-slate-100 pb-2">
+              <span className="font-bold text-slate-500 shrink-0">Organization</span>
+              <span className="font-semibold text-slate-800 text-right break-words min-w-0">{documentDetails.org}</span>
             </div>
-            <div className="flex justify-between border-b border-slate-100 pb-2">
-              <span className="font-bold text-slate-500">Sent on</span>
+            <div className="flex justify-between items-start gap-4 border-b border-slate-100 pb-2">
+              <span className="font-bold text-slate-500 shrink-0">Sent on</span>
               <span className="font-semibold text-slate-800 text-right">{documentDetails.sentOn ? new Date(documentDetails.sentOn).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : 'Sep 02, 2026'} &lt;Expires in {documentDetails.expiresIn}&gt;</span>
             </div>
           </div>
@@ -1282,8 +1283,8 @@ export default function PublicSigning() {
               {documentPicker('password-document-picker')}
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">Password</label>
-                <input
-                  type="password"
+                <PasswordInput
+                  iconSize={14}
                   placeholder="Enter document password..."
                   value={downloadPassword}
                   onChange={(e) => setDownloadPassword(e.target.value)}
@@ -1319,19 +1320,22 @@ export default function PublicSigning() {
   return (
     <div className="min-h-screen bg-slate-200 text-slate-900 flex flex-col font-sans">
       {/* Top Disclosure Consent Header Bar (Page 8 bottom) */}
-      <div className="bg-white border-b border-slate-200 px-3 sm:px-6 py-2 flex flex-wrap items-center justify-between text-xs sticky top-0 z-30 shadow-xs gap-2 sm:gap-4">
-        <div className="flex items-center gap-3">
+      {/* Phones: the consent text gets the full width and the buttons a row of their own; the bar only stays
+          pinned from tablet width up, so the signing toolbar below can stick to the top on a phone */}
+      <div className="bg-white border-b border-slate-200 px-3 sm:px-6 py-2.5 sm:py-2 flex flex-wrap items-center justify-between text-xs sm:sticky top-0 z-30 shadow-xs gap-2.5 sm:gap-4">
+        <div className="flex items-start sm:items-center gap-3 w-full sm:w-auto min-w-0 flex-1">
           <button
             type="button"
             onClick={() => (window.history.length > 1 ? navigate(-1) : navigate('/documents'))}
-            className="px-3 py-1.5 border border-slate-300 rounded text-xs font-semibold text-slate-700 hover:bg-slate-50 flex items-center gap-1.5 bg-white transition shadow-xs shrink-0 cursor-pointer"
+            className="px-2.5 sm:px-3 py-1.5 border border-slate-300 rounded text-xs font-semibold text-slate-700 hover:bg-slate-50 flex items-center gap-1.5 bg-white transition shadow-xs shrink-0 cursor-pointer"
             title="Go back"
+            aria-label="Go back"
           >
             <ArrowLeft size={14} />
-            <span>Back</span>
+            <span className="hidden sm:inline">Back</span>
           </button>
 
-          <label className="flex items-center gap-2.5 cursor-pointer font-medium text-slate-700">
+          <label className="flex items-start sm:items-center gap-2.5 cursor-pointer font-medium text-slate-700 min-w-0 flex-1 leading-snug">
             <input
               type="checkbox"
               checked={agreedConsent}
@@ -1339,7 +1343,7 @@ export default function PublicSigning() {
                 setAgreedConsent(e.target.checked);
                 if (e.target.checked) setValidationError('');
               }}
-              className="accent-[#007355] h-4 w-4"
+              className="accent-[#007355] h-4 w-4 shrink-0 mt-0.5 sm:mt-0"
             />
             <span>
               I confirm that I have read and understood the{' '}
@@ -1364,11 +1368,11 @@ export default function PublicSigning() {
           )}
         </div>
 
-        <div className="flex items-center gap-3 ml-auto">
+        <div className="flex items-center gap-2 sm:gap-3 ml-auto w-full sm:w-auto justify-end">
           {!agreedConsent && moreActionsMenu}
           <button
             onClick={handleAgreeAndContinue}
-            className={`px-4 py-1.5 rounded font-bold text-xs transition shadow-xs ${
+            className={`flex-1 sm:flex-none px-4 py-2 sm:py-1.5 rounded font-bold text-xs transition shadow-xs ${
               agreedConsent ? 'bg-[#007355] text-white' : 'bg-[#007355] hover:bg-[#005c44] text-white'
             }`}
           >
@@ -1380,7 +1384,7 @@ export default function PublicSigning() {
 
       {/* Guided Navigator Toolbar (Page 9) */}
       {agreedConsent && (
-        <header className="min-h-12 bg-white border-b border-slate-300 px-3 sm:px-6 py-2 flex flex-wrap items-center justify-between gap-2 sticky top-9 z-20 shadow-xs">
+        <header className="min-h-12 bg-white border-b border-slate-300 px-3 sm:px-6 py-2 flex flex-wrap items-center justify-between gap-2 sticky top-0 sm:top-9 z-20 shadow-xs">
           <div className="flex items-center gap-3">
             <button
               type="button"

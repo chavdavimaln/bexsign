@@ -28,6 +28,7 @@ import {
 import SignatureStamp from '../components/SignatureStamp';
 import BexTableToolbar from '../components/BexTableToolbar';
 import { canvasHasInk, canvasPoint } from '../utils/signatureInk';
+import { usePermissions } from '../utils/permissions';
 import {
   fetchMySignatures,
   fetchDirectorySignatures,
@@ -109,6 +110,9 @@ export default function SignaturesModule() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [toast, showToast] = useToast();
+  // Viewing, history and copying IDs are open to everyone; adding or changing a signature needs signatures.manage
+  const { can, loading: permissionsLoading } = usePermissions();
+  const canManage = can('signatures.manage');
 
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
@@ -230,6 +234,7 @@ export default function SignaturesModule() {
   };
 
   const handleOpenAdd = () => {
+    if (!canManage) return;
     resetForm();
     setEditingItem(null);
     setFormName(owner?.name || '');
@@ -245,7 +250,7 @@ export default function SignaturesModule() {
 
   const handleOpenEdit = (item) => {
     // Another person's signature is never editable: no card offers this, and the server refuses it too
-    if (!item.canEdit) return;
+    if (!item.canEdit || !canManage) return;
     resetForm();
     setEditingItem(item);
     setFormName(item.employee_name || '');
@@ -496,7 +501,7 @@ export default function SignaturesModule() {
         <button
           type="button"
           onClick={() => handleCopyId(sig.signature_id)}
-          className="text-[10px] font-mono text-slate-500 hover:text-slate-800 flex items-center gap-1 font-bold cursor-pointer"
+          className="text-[10px] font-mono text-slate-500 hover:text-slate-800 flex items-center gap-1 font-bold cursor-pointer min-h-9 sm:min-h-0"
           title="Copy the unique signature ID"
         >
           {copiedId === sig.signature_id
@@ -505,12 +510,12 @@ export default function SignaturesModule() {
         </button>
 
         {sig.canEdit ? (
-          <div className="flex items-center gap-1">
-            {!sig.is_default && (
+          <div className="flex items-center gap-0.5 sm:gap-1">
+            {canManage && !sig.is_default && (
               <button
                 type="button"
                 onClick={() => handleSetDefault(sig)}
-                className="p-1.5 text-slate-400 hover:text-amber-500 hover:bg-amber-50 rounded-lg transition cursor-pointer"
+                className="p-2.5 sm:p-1.5 text-slate-400 hover:text-amber-500 hover:bg-amber-50 rounded-lg transition cursor-pointer"
                 title="Use this signature by default"
               >
                 <Star size={15} />
@@ -519,27 +524,31 @@ export default function SignaturesModule() {
             <button
               type="button"
               onClick={() => openHistory(sig)}
-              className="p-1.5 text-slate-600 hover:text-sky-600 hover:bg-sky-50 rounded-lg transition cursor-pointer"
+              className="p-2.5 sm:p-1.5 text-slate-600 hover:text-sky-600 hover:bg-sky-50 rounded-lg transition cursor-pointer"
               title="Usage history"
             >
               <History size={15} />
             </button>
-            <button
-              type="button"
-              onClick={() => handleOpenEdit(sig)}
-              className="p-1.5 text-slate-600 hover:text-[#00a884] hover:bg-emerald-50 rounded-lg transition cursor-pointer"
-              title="Edit signature"
-            >
-              <Edit3 size={15} />
-            </button>
-            <button
-              type="button"
-              onClick={() => setConfirmDelete(sig)}
-              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
-              title="Delete signature"
-            >
-              <Trash2 size={15} />
-            </button>
+            {canManage && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => handleOpenEdit(sig)}
+                  className="p-2.5 sm:p-1.5 text-slate-600 hover:text-[#00a884] hover:bg-emerald-50 rounded-lg transition cursor-pointer"
+                  title="Edit signature"
+                >
+                  <Edit3 size={15} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmDelete(sig)}
+                  className="p-2.5 sm:p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
+                  title="Delete signature"
+                >
+                  <Trash2 size={15} />
+                </button>
+              </>
+            )}
           </div>
         ) : (
           <span className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-400 uppercase tracking-wide">
@@ -559,7 +568,7 @@ export default function SignaturesModule() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 pb-16 font-sans overflow-x-hidden">
-      <header className="bg-white border-b border-slate-200 sticky top-0 z-20 shadow-sm">
+      <header className="bg-white border-b border-slate-200 relative md:sticky md:top-0 z-20 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div className="min-w-0">
@@ -577,13 +586,20 @@ export default function SignaturesModule() {
                   ? 'Your own signature stamps. Pick the one that prefills your signing screens and see every document it has signed.'
                   : 'Signatures registered by other people. They are shown so you can recognise a stamp - they cannot be edited.'}
               </p>
+              {/* Waits for the permissions to load so the note does not flash for managers */}
+              {!permissionsLoading && !canManage && (
+                <p className="mt-1.5 inline-flex items-start gap-1.5 text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1">
+                  <Lock size={12} className="shrink-0 mt-px" />
+                  You can view signatures. Ask a manager for the Manage signatures permission to add or change them.
+                </p>
+              )}
             </div>
 
             <div className="flex items-center gap-2 shrink-0 flex-wrap">
               <button
                 type="button"
                 onClick={load}
-                className="p-2 border border-slate-200 hover:bg-slate-100 rounded-lg text-slate-600 transition cursor-pointer"
+                className="p-2.5 sm:p-2 border border-slate-200 hover:bg-slate-100 rounded-lg text-slate-600 transition cursor-pointer"
                 title="Refresh"
                 aria-label="Refresh signatures"
               >
@@ -595,7 +611,7 @@ export default function SignaturesModule() {
                   type="button"
                   onClick={() => setViewMode('grid')}
                   aria-label="Grid view"
-                  className={`p-1.5 rounded transition cursor-pointer ${viewMode === 'grid' ? 'bg-white shadow text-[#00a884]' : 'text-slate-500 hover:text-slate-800'}`}
+                  className={`p-2 sm:p-1.5 rounded transition cursor-pointer ${viewMode === 'grid' ? 'bg-white shadow text-[#00a884]' : 'text-slate-500 hover:text-slate-800'}`}
                 >
                   <LayoutGrid size={15} />
                 </button>
@@ -603,17 +619,17 @@ export default function SignaturesModule() {
                   type="button"
                   onClick={() => setViewMode('table')}
                   aria-label="Table view"
-                  className={`p-1.5 rounded transition cursor-pointer ${viewMode === 'table' ? 'bg-white shadow text-[#00a884]' : 'text-slate-500 hover:text-slate-800'}`}
+                  className={`p-2 sm:p-1.5 rounded transition cursor-pointer ${viewMode === 'table' ? 'bg-white shadow text-[#00a884]' : 'text-slate-500 hover:text-slate-800'}`}
                 >
                   <List size={15} />
                 </button>
               </div>
 
-              {tab === 'mine' && (
+              {tab === 'mine' && canManage && (
                 <button
                   type="button"
                   onClick={handleOpenAdd}
-                  className="bg-[#00a884] hover:bg-[#008f70] text-white px-3.5 py-2 rounded-lg font-bold text-xs flex items-center gap-1.5 shadow transition cursor-pointer"
+                  className="bg-[#00a884] hover:bg-[#008f70] text-white px-3.5 py-2.5 sm:py-2 rounded-lg font-bold text-xs flex items-center gap-1.5 shadow transition cursor-pointer"
                 >
                   <Plus size={16} /> Add signature
                 </button>
@@ -678,7 +694,7 @@ export default function SignaturesModule() {
                 ? 'Register a signature to sign documents and to have it prefilled on your signing screens.'
                 : 'Nobody else has registered a signature, or none matches your search.'}
               action={tab === 'mine'
-                ? <Button icon={Plus} onClick={handleOpenAdd}>Add signature</Button>
+                ? (canManage ? <Button icon={Plus} onClick={handleOpenAdd}>Add signature</Button> : null)
                 : (hasActiveSigFilters ? <Button variant="secondary" onClick={clearAllSigFilters}>Clear filters</Button> : null)}
             />
           </div>
@@ -706,7 +722,7 @@ export default function SignaturesModule() {
               storageKey="bexsign_signatures_columns"
             />
 
-            <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden min-w-0">
+            <div className="hidden md:block bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden min-w-0">
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs border-collapse min-w-[720px]">
                   <thead>
@@ -840,12 +856,16 @@ export default function SignaturesModule() {
                                 <button type="button" onClick={() => openHistory(sig)} className="p-1.5 text-slate-600 hover:text-sky-600 hover:bg-sky-50 rounded-lg transition cursor-pointer" title="Usage history">
                                   <History size={15} />
                                 </button>
-                                <button type="button" onClick={() => handleOpenEdit(sig)} className="p-1.5 text-slate-600 hover:text-[#007355] hover:bg-emerald-50 rounded-lg transition cursor-pointer" title="Edit">
-                                  <Edit3 size={15} />
-                                </button>
-                                <button type="button" onClick={() => setConfirmDelete(sig)} className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer" title="Delete">
-                                  <Trash2 size={15} />
-                                </button>
+                                {canManage && (
+                                  <>
+                                    <button type="button" onClick={() => handleOpenEdit(sig)} className="p-1.5 text-slate-600 hover:text-[#007355] hover:bg-emerald-50 rounded-lg transition cursor-pointer" title="Edit">
+                                      <Edit3 size={15} />
+                                    </button>
+                                    <button type="button" onClick={() => setConfirmDelete(sig)} className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer" title="Delete">
+                                      <Trash2 size={15} />
+                                    </button>
+                                  </>
+                                )}
                               </div>
                             ) : (
                               <span className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-400 uppercase"><Lock size={11} /> Protected</span>
@@ -858,6 +878,120 @@ export default function SignaturesModule() {
                 </table>
               </div>
             </div>
+
+            {/* Phone layout: the per-column filters and one card per signature */}
+            {showSigInlineFilters && (
+              <div className="md:hidden bg-white border border-slate-200 rounded-2xl shadow-sm p-3 grid grid-cols-1 min-[420px]:grid-cols-2 gap-2">
+                <input
+                  type="text"
+                  value={sigColumnFilters.employee}
+                  onChange={(e) => { setSigColumnFilters({ ...sigColumnFilters, employee: e.target.value }); setPage(1); }}
+                  placeholder="Signer"
+                  aria-label="Filter by signer"
+                  className="w-full min-w-0 bg-white border border-slate-300 rounded-lg px-2.5 py-2 text-xs text-slate-800 focus:outline-none focus:border-[#007355]"
+                />
+                <input
+                  type="text"
+                  value={sigColumnFilters.empId}
+                  onChange={(e) => { setSigColumnFilters({ ...sigColumnFilters, empId: e.target.value }); setPage(1); }}
+                  placeholder="Employee ID"
+                  aria-label="Filter by employee ID"
+                  className="w-full min-w-0 bg-white border border-slate-300 rounded-lg px-2.5 py-2 text-xs text-slate-800 focus:outline-none focus:border-[#007355]"
+                />
+                <input
+                  type="text"
+                  value={sigColumnFilters.dept}
+                  onChange={(e) => { setSigColumnFilters({ ...sigColumnFilters, dept: e.target.value }); setPage(1); }}
+                  placeholder="Department"
+                  aria-label="Filter by department"
+                  className="w-full min-w-0 bg-white border border-slate-300 rounded-lg px-2.5 py-2 text-xs text-slate-800 focus:outline-none focus:border-[#007355]"
+                />
+                <input
+                  type="text"
+                  value={sigColumnFilters.signId}
+                  onChange={(e) => { setSigColumnFilters({ ...sigColumnFilters, signId: e.target.value }); setPage(1); }}
+                  placeholder="Signature ID"
+                  aria-label="Filter by signature ID"
+                  className="w-full min-w-0 bg-white border border-slate-300 rounded-lg px-2.5 py-2 text-xs text-slate-800 focus:outline-none focus:border-[#007355]"
+                />
+                <select
+                  value={sigColumnFilters.status}
+                  onChange={(e) => { setSigColumnFilters({ ...sigColumnFilters, status: e.target.value }); setPage(1); }}
+                  aria-label="Filter by status"
+                  className="w-full min-w-0 bg-white border border-slate-300 rounded-lg px-2.5 py-2 text-xs text-slate-800 focus:outline-none focus:border-[#007355]"
+                >
+                  <option value="">All statuses</option>
+                  <option value="Active">Active</option>
+                  <option value="Inactive">Inactive</option>
+                  <option value="Revoked">Revoked</option>
+                </select>
+                {hasActiveSigFilters && (
+                  <button
+                    type="button"
+                    onClick={clearAllSigFilters}
+                    className="inline-flex items-center justify-center gap-1 rounded-lg border border-slate-200 px-2.5 py-2 text-xs font-bold text-slate-600 hover:text-red-600 hover:bg-red-50 transition cursor-pointer"
+                  >
+                    <X size={13} /> Clear filters
+                  </button>
+                )}
+              </div>
+            )}
+
+            <ul className="md:hidden bg-white border border-slate-200 rounded-2xl shadow-sm divide-y divide-slate-100">
+              {paginated.map((sig) => (
+                <li key={sig.id} className="p-3 space-y-2.5 min-w-0">
+                  <div className="flex items-start justify-between gap-3 min-w-0">
+                    <div className="min-w-0">
+                      <div className="font-extrabold text-slate-900 text-sm flex items-center gap-1.5 min-w-0">
+                        <span className="truncate">{sig.employee_name}</span>
+                        {sig.is_default && <Star size={11} className="text-amber-500 fill-amber-400 shrink-0" />}
+                      </div>
+                      <div className="text-[11px] text-slate-500 font-semibold break-all">{sig.employee_email}</div>
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-600">
+                        <span className="px-2 py-0.5 rounded bg-slate-100 font-mono font-bold text-slate-700 text-[10px] border">{sig.employee_id || '-'}</span>
+                        <span className="break-words">{sig.department || 'Operations'}</span>
+                      </div>
+                    </div>
+                    <span className="shrink-0"><Badge tone={statusTone(sig.status)}>{sig.status || 'Active'}</Badge></span>
+                  </div>
+
+                  <div className="bg-slate-50/80 rounded-xl border border-slate-200 px-2 py-1 overflow-x-auto">
+                    <SignatureStamp
+                      signerName={sig.employee_name}
+                      signatureImage={sig.signature_image}
+                      signatureStyle={sig.signature_style || 'font-signature-1'}
+                      signId={sig.signature_id}
+                      employeeId={sig.employee_id}
+                      showBaseline
+                      showByPrefix={false}
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 min-w-0">
+                    <span className="font-mono text-[10px] text-slate-500 select-all break-all min-w-0">{sig.signature_id}</span>
+                    {sig.canEdit ? (
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button type="button" onClick={() => openHistory(sig)} className="w-9 h-9 inline-flex items-center justify-center text-slate-600 hover:text-sky-600 hover:bg-sky-50 rounded-lg transition cursor-pointer" title="Usage history" aria-label="Usage history">
+                          <History size={16} />
+                        </button>
+                        {canManage && (
+                          <>
+                            <button type="button" onClick={() => handleOpenEdit(sig)} className="w-9 h-9 inline-flex items-center justify-center text-slate-600 hover:text-[#007355] hover:bg-emerald-50 rounded-lg transition cursor-pointer" title="Edit" aria-label="Edit signature">
+                              <Edit3 size={16} />
+                            </button>
+                            <button type="button" onClick={() => setConfirmDelete(sig)} className="w-9 h-9 inline-flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer" title="Delete" aria-label="Delete signature">
+                              <Trash2 size={16} />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="shrink-0 inline-flex items-center gap-1 text-[10px] font-bold text-slate-400 uppercase"><Lock size={11} /> Protected</span>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
           </div>
         )}
       </main>
@@ -1047,7 +1181,7 @@ export default function SignaturesModule() {
                   <p className="text-[11px] text-slate-500 font-mono truncate">{historyFor.signature_id}</p>
                 </div>
               </div>
-              <button type="button" onClick={() => setHistoryFor(null)} aria-label="Close" className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer">
+              <button type="button" onClick={() => setHistoryFor(null)} aria-label="Close" className="p-2 sm:p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer">
                 <X size={18} />
               </button>
             </div>

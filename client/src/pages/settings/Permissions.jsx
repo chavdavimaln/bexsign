@@ -211,7 +211,7 @@ export default function Permissions() {
                     </div>
                   </div>
                   {canManage && (
-                    <div className="flex gap-2 shrink-0">
+                    <div className="flex flex-wrap gap-2 shrink-0">
                       <Button variant="secondary" icon={Pencil} onClick={() => setRoleForm({ key: role.key, name: role.name, description: role.description, color: roleColor(role) })}>Edit</Button>
                       {!role.isSystem && (
                         <Button variant="subtleDanger" icon={Trash2} onClick={() => { setReassignTo('team_member'); setDeleteRole(role); }}>Delete</Button>
@@ -232,7 +232,7 @@ export default function Permissions() {
                     return (
                       <section key={m.id} className="rounded-xl border border-slate-200 overflow-hidden">
                         <div className="px-3.5 py-2.5 bg-slate-50 border-b border-slate-100 flex items-center justify-between gap-2">
-                          <div>
+                          <div className="min-w-0">
                             <h3 className="text-xs font-extrabold text-slate-900">{m.label}</h3>
                             <p className="text-[10px] text-slate-500">{onCount} of {m.permissions.length} allowed</p>
                           </div>
@@ -243,7 +243,7 @@ export default function Permissions() {
                                 ...prev,
                                 ...Object.fromEntries(m.permissions.map((p) => [p.key, role.locked.includes(p.key) ? true : !allOn]))
                               }))}
-                              className="text-[11px] font-bold text-[#007355] hover:underline"
+                              className="shrink-0 py-2 -my-2 sm:py-0 sm:my-0 text-[11px] font-bold text-[#007355] hover:underline"
                             >
                               {allOn ? 'Remove all' : 'Allow all'}
                             </button>
@@ -259,11 +259,11 @@ export default function Permissions() {
                                   <Toggle checked={Boolean(draft[p.key])} onChange={(v) => setDraft((prev) => ({ ...prev, [p.key]: v }))} label={p.label} description={p.description} />
                                 ) : (
                                   <div className="flex items-start justify-between gap-3">
-                                    <span>
+                                    <span className="min-w-0">
                                       <span className="block text-sm font-semibold text-slate-800">{p.label}</span>
                                       <span className="block text-xs text-slate-500">{locked ? 'Always on for this role, so the organization cannot be locked out.' : p.description}</span>
                                     </span>
-                                    {locked ? <Lock size={15} className="text-slate-400 mt-1" /> : draft[p.key] ? <Check size={16} className="text-[#007355] mt-1" /> : <Minus size={16} className="text-slate-300 mt-1" />}
+                                    {locked ? <Lock size={15} className="text-slate-400 mt-1 shrink-0" /> : draft[p.key] ? <Check size={16} className="text-[#007355] mt-1 shrink-0" /> : <Minus size={16} className="text-slate-300 mt-1 shrink-0" />}
                                   </div>
                                 )}
                               </li>
@@ -323,7 +323,7 @@ export default function Permissions() {
             </Field>
             <fieldset>
               <legend className="text-xs font-bold text-slate-700 mb-1.5">Colour</legend>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 {ROLE_COLORS.map((c) => (
                   <button key={c} type="button" onClick={() => setRoleForm({ ...roleForm, color: c })} aria-label={`Colour ${c}`} aria-pressed={roleForm.color === c} className={`w-8 h-8 rounded-full border-2 ${roleForm.color === c ? 'border-slate-900 scale-110' : 'border-white shadow'}`} style={{ backgroundColor: c }} />
                 ))}
@@ -371,14 +371,15 @@ export default function Permissions() {
 function CompareMatrix({ modules, roles }) {
   return (
     <div className="p-3 sm:p-4">
-      <div className="overflow-x-auto rounded-xl border border-slate-200">
+      {roles.length > 1 && <p className="md:hidden mb-2 text-[11px] text-slate-500">Swipe the table sideways to see every role.</p>}
+      <div className="overflow-x-auto overscroll-x-contain rounded-xl border border-slate-200">
         <table className="w-full text-xs border-collapse">
           <thead>
             <tr className="bg-slate-50">
-              <th className="sticky left-0 z-10 bg-slate-50 text-left px-4 py-3 text-[10px] font-bold uppercase tracking-wide text-slate-500 min-w-[220px]">Permission</th>
+              <th className="sticky left-0 z-10 bg-slate-50 text-left px-3 sm:px-4 py-3 text-[10px] font-bold uppercase tracking-wide text-slate-500 min-w-[150px] w-[150px] sm:w-auto sm:min-w-[220px] max-md:shadow-[inset_-1px_0_0_#e2e8f0]">Permission</th>
               {roles.map((r) => (
-                <th key={r.key} className="px-3 py-3 text-center min-w-[110px]">
-                  <span className="inline-flex items-center gap-1.5 font-bold text-slate-800"><RoleDot role={r} /> {r.name}</span>
+                <th key={r.key} className="px-2 sm:px-3 py-3 text-center min-w-[92px] sm:min-w-[110px]">
+                  <span className="inline-flex items-center gap-1.5 font-bold text-slate-800 break-words"><RoleDot role={r} /> {r.name}</span>
                   <span className="block text-[10px] font-medium text-slate-400">{r.permissions.length} allowed</span>
                 </th>
               ))}
@@ -388,16 +389,16 @@ function CompareMatrix({ modules, roles }) {
             {modules.map((m) => (
               <React.Fragment key={m.id}>
                 <tr className="bg-slate-100/70">
-                  <td colSpan={roles.length + 1} className="sticky left-0 px-4 py-2 text-[11px] font-extrabold uppercase tracking-wide text-slate-600">{m.label}</td>
+                  <td colSpan={roles.length + 1} className="sticky left-0 px-3 sm:px-4 py-2 text-[11px] font-extrabold uppercase tracking-wide text-slate-600">{m.label}</td>
                 </tr>
                 {m.permissions.map((p) => (
                   <tr key={p.key} className="border-t border-slate-100 hover:bg-slate-50">
-                    <td className="sticky left-0 z-10 bg-white px-4 py-2.5">
-                      <span className="block font-semibold text-slate-800">{p.label}</span>
-                      <span className="block text-[10px] text-slate-400 font-mono">{p.key}</span>
+                    <td className="sticky left-0 z-10 bg-white px-3 sm:px-4 py-2.5 max-md:shadow-[inset_-1px_0_0_#e2e8f0]">
+                      <span className="block font-semibold text-slate-800 break-words">{p.label}</span>
+                      <span className="block text-[10px] text-slate-400 font-mono break-all">{p.key}</span>
                     </td>
                     {roles.map((r) => (
-                      <td key={r.key} className="px-3 py-2.5 text-center">
+                      <td key={r.key} className="px-2 sm:px-3 py-2.5 text-center">
                         {r.locked.includes(p.key) ? (
                           <Lock size={14} className="inline text-slate-500" aria-label="Always allowed" />
                         ) : r.permissions.includes(p.key) ? (
@@ -621,7 +622,7 @@ function UserPermissions({ modules, roles, canManage, showToast, onChanged }) {
                                     disabled={!canManage || (locked && id === 'deny')}
                                     onClick={() => setMode(p.key, id)}
                                     aria-pressed={mode === id}
-                                    className={`px-2.5 py-1.5 flex items-center gap-1 transition disabled:opacity-40 disabled:cursor-not-allowed ${
+                                    className={`px-2.5 py-2.5 sm:py-1.5 flex items-center gap-1 transition disabled:opacity-40 disabled:cursor-not-allowed ${
                                       mode === id
                                         ? id === 'allow' ? 'bg-sky-600 text-white' : id === 'deny' ? 'bg-rose-600 text-white' : 'bg-slate-800 text-white'
                                         : 'bg-white text-slate-600 hover:bg-slate-50'

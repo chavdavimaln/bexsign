@@ -22,6 +22,9 @@ const {
 } = require('../utils/emailService');
 const requestHelpers = require('../utils/requestHelpers');
 const { emitDocumentWebhook, notifyRecipientUsers } = require('../utils/documentEvents');
+const trashStore = require('../utils/trashStore');
+const { authenticateUser, authenticateOptional } = require('../middleware/authMiddleware');
+const { guardDocument, accessFor, visibilityCondition, canSeeDocument } = require('../utils/documentAccess');
 const { isUsableSignature } = require('../utils/signatureValidation');
 const { sha256, findFingerprint, recordFingerprint } = require('../utils/pdfFingerprints');
 const { protectWithPassword } = require('../utils/pdfLock');
@@ -152,9 +155,12 @@ async function applyRequestSettings(documentId, settings) {
     );
 }
 
+// Who is asking: a signed-in user (their permissions apply) or a public signing link / the verify page
+router.use(authenticateOptional);
+
 // @route   GET /api/documents
 // @desc    Get all documents from database with generated BexSign document IDs
-router.get('/', async (req, res) => {
+router.get('/', guardDocument(), async (req, res) => {
     const { status, folder, userId } = req.query;
     try {
         let query = `
@@ -183,10 +189,11 @@ router.get('/', async (req, res) => {
         `;
         const params = [];
 
-        if (userId) {
-            query += ' AND (d.user_id = ? OR d.user_id = 1)';
-            params.push(userId);
-        }
+        // Only the documents this user may see (own, team, all, or sent to them)
+        const access = await accessFor(req);
+        const visible = visibilityCondition(access);
+        query += ` AND ${visible.sql}`;
+        params.push(...visible.params);
 
         if (status && status.toLowerCase() !== 'all') {
             query += ' AND LOWER(d.status) = LOWER(?)';
@@ -212,7 +219,7 @@ router.get('/', async (req, res) => {
 
 // @route   POST /api/documents/upload or /api/documents/create
 // @desc    Create or update a signing request draft: documents (multiple files), recipients and settings
-router.post('/upload', uploadRequestFiles, async (req, res) => {
+router.post('/upload', guardDocument({ permission: 'documents.create' }), uploadRequestFiles, async (req, res) => {
     const {
         documentId, document_id, id,
         userId, user_id, documentName, document_name, folderName, folder_name,
@@ -227,7 +234,7 @@ router.post('/upload', uploadRequestFiles, async (req, res) => {
     const recipName = recipientName || recipient_name || firstRecipient?.name || undefined;
     const folder = folderName || folder_name || 'General';
     const template = templateUsed || template_used || null;
-    const uId = parseInt(userId || user_id) || 1;
+    const uId = req.authenticated ? req.user.id : (parseInt(userId || user_id) || 1);
     const docStatus = status || 'Draft';
     const metaDocs = requestHelpers.parseJsonInput(req.body.documentsMeta, null);
 
@@ -242,7 +249,12 @@ router.post('/upload', uploadRequestFiles, async (req, res) => {
         let targetId = 0;
         if (existingDocId > 0) {
             const [found] = await db.query('SELECT id FROM documents WHERE id = ?', [existingDocId]);
-            if (found.length > 0) targetId = existingDocId;
+            if (found.length > 0) {
+                if (req.authenticated && !(await canSeeDocument(await accessFor(req), existingDocId))) {
+                    return res.status(403).json({ success: false, error: 'You do not have access to this document.' });
+                }
+                targetId = existingDocId;
+            }
         }
         const isNew = targetId === 0;
 
@@ -332,7 +344,7 @@ const verifyUpload = multer({ storage: multer.memoryStorage(), limits: { fileSiz
 // @route   POST /api/documents/verify
 // @desc    Check whether a PDF is an unchanged copy of a PDF issued by BexSign (SHA-256 fingerprint registry).
 //          Any change to a file, by any application, changes its fingerprint.
-router.post('/verify', (req, res, next) => {
+router.post('/verify', guardDocument({ public: true }), (req, res, next) => {
     verifyUpload.single('document')(req, res, (err) => {
         if (err) {
             return res.status(400).json({ success: false, error: err.code === 'LIMIT_FILE_SIZE' ? 'The file must be 25 MB or smaller.' : err.message });
@@ -405,7 +417,7 @@ router.post('/verify', (req, res, next) => {
 
 // @route   GET /api/documents/employees/signatures
 // @desc    Get all employee signatures from employee_signatures table
-router.get('/employees/signatures', async (req, res) => {
+router.get('/employees/signatures', guardDocument({ public: true }), async (req, res) => {
     try {
         const [rows] = await db.query('SELECT * FROM employee_signatures ORDER BY id ASC');
         res.json({ success: true, employees: rows.map(withUsableSignature) });
@@ -416,7 +428,7 @@ router.get('/employees/signatures', async (req, res) => {
 
 // @route   GET /api/documents/employees/:empId/signature
 // @desc    Get or generate specific employee signature
-router.get('/employees/:empId/signature', async (req, res) => {
+router.get('/employees/:empId/signature', guardDocument({ public: true }), async (req, res) => {
     const { empId } = req.params;
     try {
         const employee = await getOrCreateEmployeeSignature(empId);
@@ -428,7 +440,7 @@ router.get('/employees/:empId/signature', async (req, res) => {
 
 // @route   GET /api/documents/employees/by-email/:email
 // @desc    Find existing employee signature by email address (for auto-fetching)
-router.get('/employees/by-email/:email', async (req, res) => {
+router.get('/employees/by-email/:email', guardDocument({ public: true }), async (req, res) => {
     const { email } = req.params;
     try {
         const employee = withUsableSignature(await getEmployeeSignatureByEmail(email));
@@ -443,7 +455,7 @@ router.get('/employees/by-email/:email', async (req, res) => {
 
 // @route   POST /api/documents/employees/signatures
 // @desc    Create new employee signature entry in database
-router.post('/employees/signatures', async (req, res) => {
+router.post('/employees/signatures', guardDocument({ permission: 'signatures.manage' }), async (req, res) => {
     const { 
         employee_id, employeeId, 
         employee_name, employeeName, 
@@ -491,7 +503,7 @@ router.post('/employees/signatures', async (req, res) => {
 
 // @route   PUT /api/documents/employees/signatures/:id
 // @desc    Update employee signature details
-router.put('/employees/signatures/:id', async (req, res) => {
+router.put('/employees/signatures/:id', guardDocument({ permission: 'signatures.manage', own: false }), async (req, res) => {
     const { id } = req.params;
     const { 
         employee_name, employee_email, employee_id, 
@@ -542,7 +554,7 @@ router.put('/employees/signatures/:id', async (req, res) => {
 
 // @route   DELETE /api/documents/employees/signatures/:id
 // @desc    Delete employee signature entry
-router.delete('/employees/signatures/:id', async (req, res) => {
+router.delete('/employees/signatures/:id', guardDocument({ permission: 'signatures.manage', own: false }), async (req, res) => {
     const { id } = req.params;
     try {
         await db.query('DELETE FROM employee_signatures WHERE id = ?', [id]);
@@ -554,7 +566,7 @@ router.delete('/employees/signatures/:id', async (req, res) => {
 
 // @route   GET /api/documents/:id/identifier
 // @desc    Get or generate BexSign ID from separate document_identifiers table
-router.get('/:id/identifier', async (req, res) => {
+router.get('/:id/identifier', guardDocument({ public: true, recipientLink: true }), async (req, res) => {
     const { id } = req.params;
     try {
         const identifier = await getOrCreateDocumentIdentifier(id);
@@ -567,7 +579,7 @@ router.get('/:id/identifier', async (req, res) => {
 // @route   GET /api/documents/:id
 // @desc    Get document details by ID joined with document_identifiers table
 //          (?email=<recipient> returns only that recipient's fields while the request is in progress)
-router.get('/:id', async (req, res) => {
+router.get('/:id', guardDocument({ public: true, recipientLink: true }), async (req, res) => {
     const { id } = req.params;
     const viewerEmail = String(req.query.email || '').trim().toLowerCase();
     try {
@@ -713,7 +725,7 @@ router.get('/:id', async (req, res) => {
 
 // @route   POST /api/documents/:id/save
 // @desc    Save draft: request name, status, documents, recipients and placed fields (per document)
-router.post('/:id/save', async (req, res) => {
+router.post('/:id/save', guardDocument({ permission: 'documents.create' }), async (req, res) => {
     const { id } = req.params;
     const { documentTitle, document_name, status, documents, fields, fieldsOnDoc, fieldsByDoc } = req.body;
     const titleToSave = documentTitle || document_name;
@@ -761,7 +773,7 @@ router.post('/:id/save', async (req, res) => {
 // @route   POST /api/documents/send/:id
 // @desc    Save the request and send it. "In order": only the recipients in the first signing step are emailed now,
 //          the next step follows once this one has signed. "All at once": every signer is emailed immediately.
-router.post('/send/:id', async (req, res) => {
+router.post('/send/:id', guardDocument({ permission: 'documents.send' }), async (req, res) => {
     const { id } = req.params;
     const { documentName, documents, fieldsByDoc, fields, recipientEmail, recipientName } = req.body;
 
@@ -886,7 +898,7 @@ router.post('/send/:id', async (req, res) => {
 // @route   POST /api/documents/:id/bundle-pdf
 // @desc    The request's signed documents and/or its certificate of completion merged into a single PDF,
 //          optionally protected with a password. Used by "Download" on the document page.
-router.post('/:id/bundle-pdf', async (req, res) => {
+router.post('/:id/bundle-pdf', guardDocument({ permission: 'documents.download', public: true, recipientLink: true }), async (req, res) => {
     const { id } = req.params;
     const include = String(req.body?.include || 'both').toLowerCase(); // documents | certificate | both
     const password = String(req.body?.password || '').trim();
@@ -923,7 +935,7 @@ router.post('/:id/bundle-pdf', async (req, res) => {
 // @route   GET /api/documents/:id/activity
 // @desc    Everything that happened to one request, for the Activity history panel: who did it, what action it
 //          was, and the sentence describing it. `?format=csv` downloads the same rows.
-router.get('/:id/activity', async (req, res) => {
+router.get('/:id/activity', guardDocument(), async (req, res) => {
     const { id } = req.params;
     try {
         const [docs] = await db.query('SELECT id, document_name, user_id FROM documents WHERE id = ?', [id]);
@@ -1021,7 +1033,7 @@ router.get('/:id/activity', async (req, res) => {
 // @route   GET /api/documents/:id/signing-flow
 // @desc    How this request is sent (order and field visibility), which step it is waiting on, and every signing
 //          email it has sent so far (document_signing_flow + signing_email_dispatch)
-router.get('/:id/signing-flow', async (req, res) => {
+router.get('/:id/signing-flow', guardDocument(), async (req, res) => {
     const { id } = req.params;
     try {
         const [docs] = await db.query('SELECT id, document_name, status, signing_order FROM documents WHERE id = ?', [id]);
@@ -1049,7 +1061,7 @@ router.get('/:id/signing-flow', async (req, res) => {
 
 // @route   PUT /api/documents/:id/signing-flow
 // @desc    Change the signing flow of a request that has not been sent yet
-router.put('/:id/signing-flow', async (req, res) => {
+router.put('/:id/signing-flow', guardDocument({ permission: 'documents.send' }), async (req, res) => {
     const { id } = req.params;
     try {
         const [docs] = await db.query('SELECT id, status FROM documents WHERE id = ?', [id]);
@@ -1067,7 +1079,7 @@ router.put('/:id/signing-flow', async (req, res) => {
 
 // @route   POST /api/documents/:id/remind
 // @desc    Send reminder via SMTP to the recipients whose turn it is
-router.post(['/:id/remind', '/remind/:id'], async (req, res) => {
+router.post(['/:id/remind', '/remind/:id'], guardDocument({ permission: 'documents.send' }), async (req, res) => {
     const { id } = req.params;
     try {
         const [docs] = await db.query('SELECT * FROM documents WHERE id = ?', [id]);
@@ -1105,7 +1117,7 @@ router.post(['/:id/remind', '/remind/:id'], async (req, res) => {
 
 // @route   POST /api/documents/:id/recall
 // @desc    Recall a sent document with reason and dispatch recalled email to notified recipients
-router.post(['/:id/recall', '/recall/:id'], async (req, res) => {
+router.post(['/:id/recall', '/recall/:id'], guardDocument({ permission: 'documents.recall' }), async (req, res) => {
     const { id } = req.params;
     const { reason } = req.body;
     const recallReason = reason || 'first recall';
@@ -1151,7 +1163,7 @@ router.post(['/:id/recall', '/recall/:id'], async (req, res) => {
 
 // @route   POST /api/documents/:id/correct
 // @desc    Handle "Correct document" and "Correct & save" flow (PDF 2 p.2)
-router.post('/:id/correct', async (req, res) => {
+router.post('/:id/correct', guardDocument({ permission: 'documents.recall' }), async (req, res) => {
     const { id } = req.params;
     const { documentName, recipients, customMessage } = req.body;
     try {
@@ -1182,7 +1194,7 @@ router.post('/:id/correct', async (req, res) => {
 
 // @route   POST /api/documents/:id/extend
 // @desc    Extend expiry date for document (PDF 2 p.3)
-router.post(['/:id/extend', '/extend/:id'], async (req, res) => {
+router.post(['/:id/extend', '/extend/:id'], guardDocument({ permission: 'documents.recall' }), async (req, res) => {
     const { id } = req.params;
     const { newExpiryDate } = req.body;
     try {
@@ -1202,7 +1214,7 @@ router.post(['/:id/extend', '/extend/:id'], async (req, res) => {
 
 // @route   POST /api/documents/:id/reminder-settings
 // @desc    Update automatic reminder frequency (PDF 2 p.5)
-router.post(['/:id/reminder-settings', '/reminder-settings/:id'], async (req, res) => {
+router.post(['/:id/reminder-settings', '/reminder-settings/:id'], guardDocument({ permission: 'documents.send' }), async (req, res) => {
     const { id } = req.params;
     const reminderDays = req.body.reminderDays ?? req.body.reminderFrequencyDays;
     const autoReminders = req.body.autoReminders ?? req.body.autoReminder;
@@ -1222,7 +1234,7 @@ router.post(['/:id/reminder-settings', '/reminder-settings/:id'], async (req, re
 
 // @route   POST /api/documents/:id/upload-signed
 // @desc    Upload physically signed document copy & mark completed (PDF 2 p.7)
-router.post(['/:id/upload-signed', '/upload-signed/:id'], upload.single('signedDocument'), async (req, res) => {
+router.post(['/:id/upload-signed', '/upload-signed/:id'], guardDocument({ permission: 'documents.send' }), upload.single('signedDocument'), async (req, res) => {
     const { id } = req.params;
     const { signerEmail } = req.body;
     const filePath = req.file ? `/uploads/${req.file.filename}` : null;
@@ -1272,7 +1284,7 @@ router.post(['/:id/upload-signed', '/upload-signed/:id'], upload.single('signedD
 // @route   POST /api/documents/:id/email-copy
 // @desc    Email a copy of the document to up to three addresses (PDF 3 p.7).
 //          Completed requests attach every signed PDF and the certificate of completion.
-router.post('/:id/email-copy', async (req, res) => {
+router.post('/:id/email-copy', guardDocument({ permission: 'documents.download', public: true, recipientLink: true }), async (req, res) => {
     const { id } = req.params;
     const { emails } = req.body;
 
@@ -1357,7 +1369,7 @@ const withCopySuffix = (name, suffix) => {
 // @desc    Edit a sent or completed request as a new draft copy. Its documents, recipients (pending again), placed
 //          fields (without signatures or signer-entered values) and settings are copied; the original request and
 //          its signed documents are never changed. The copy is renamed automatically ("... (Copy)").
-router.post('/:id/clone', async (req, res) => {
+router.post('/:id/clone', guardDocument({ permission: 'documents.create' }), async (req, res) => {
     const { id } = req.params;
     try {
         await requestHelpers.ensureRequestSchema();
@@ -1366,7 +1378,7 @@ router.post('/:id/clone', async (req, res) => {
             return res.status(404).json({ success: false, error: 'Original document not found' });
         }
         const source = existing[0];
-        const ownerId = parseInt(req.body?.userId, 10) || source.user_id || 1;
+        const ownerId = req.authenticated ? req.user.id : (parseInt(req.body?.userId, 10) || source.user_id || 1);
         const suffix = await nextCopySuffix(source.document_name);
         const copyName = withCopySuffix(source.document_name, suffix);
         const sourceFiles = await requestHelpers.getDocumentFiles(id);
@@ -1462,8 +1474,8 @@ const completedPdfBuffers = getCompletedPdfFiles;
 // @desc    Download a locked PDF (flattened, encrypted, certified) of a sent request: the final signed document of a
 //          completed request; while in progress, a recipient's own copy (email) or the sender's copy with every
 //          signature collected so far. Drafts are not issued.
-router.get('/:id/signed-pdf', (req, res) => serveLockedPdf(req, res, req.query));
-router.post('/:id/signed-pdf', (req, res) => serveLockedPdf(req, res, req.body || {}));
+router.get('/:id/signed-pdf', guardDocument({ permission: 'documents.download', public: true, recipientLink: true }), (req, res) => serveLockedPdf(req, res, req.query));
+router.post('/:id/signed-pdf', guardDocument({ permission: 'documents.download', public: true, recipientLink: true }), (req, res) => serveLockedPdf(req, res, req.body || {}));
 
 async function serveLockedPdf(req, res, params) {
     const { id } = req.params;
@@ -1514,7 +1526,7 @@ async function serveLockedPdf(req, res, params) {
 
 // @route   GET /api/documents/:id/certificate-pdf
 // @desc    Download the locked Certificate of Completion of a completed request
-router.get('/:id/certificate-pdf', async (req, res) => {
+router.get('/:id/certificate-pdf', guardDocument({ permission: 'documents.download', public: true, recipientLink: true }), async (req, res) => {
     const { id } = req.params;
     try {
         const [docs] = await db.query('SELECT id, status FROM documents WHERE id = ?', [id]);
@@ -1531,18 +1543,28 @@ router.get('/:id/certificate-pdf', async (req, res) => {
 
 // @route   DELETE /api/documents/:id
 // @desc    Delete document (supports permanent deletion or moving to trash)
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', guardDocument(), async (req, res) => {
     const { id } = req.params;
     const { permanent } = req.query;
     try {
+        // Moving to the trash needs "Delete documents"; discarding an unsent draft is part of creating one
+        const access = await accessFor(req);
+        const [drafts] = await db.query("SELECT status FROM documents WHERE id = ?", [id]);
+        const isDraft = String(drafts[0]?.status || '').toLowerCase() === 'draft';
+        const discardingDraft = (permanent === 'true' || permanent === true) && isDraft;
+        if (!access.can('documents.delete') && !(discardingDraft && access.can('documents.create'))) {
+            return res.status(403).json({ success: false, error: 'You do not have permission for this action (Delete documents). Ask a manager to grant it.' });
+        }
         if (permanent === 'true' || permanent === true) {
+            // Discarding an unsent draft: removed at once, never listed in the trash
             try {
                 await db.query('DELETE FROM document_identifiers WHERE document_id = ?', [id]);
             } catch (e) {}
             await db.query('DELETE FROM documents WHERE id = ?', [id]);
+            await db.query("DELETE FROM trash_items WHERE item_type = 'document' AND item_id = ?", [id]).catch(() => {});
             res.json({ success: true, message: 'Document permanently deleted.' });
         } else {
-            await db.query(`UPDATE documents SET status = 'Trashed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [id]);
+            await trashStore.trashDocuments([id], req.user);
             res.json({ success: true, message: 'Document moved to trash successfully.' });
         }
     } catch (err) {
@@ -1553,10 +1575,10 @@ router.delete('/:id', async (req, res) => {
 
 // @route   POST /api/documents/:id/trash
 // @desc    Move document to trash
-router.post('/:id/trash', async (req, res) => {
+router.post('/:id/trash', guardDocument({ permission: 'documents.delete' }), async (req, res) => {
     const { id } = req.params;
     try {
-        await db.query(`UPDATE documents SET status = 'Trashed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [id]);
+        await trashStore.trashDocuments([id], req.user);
         res.json({ success: true, message: 'Document moved to trash successfully.' });
     } catch (err) {
         console.error('Move Document To Trash Error:', err);
@@ -1566,7 +1588,7 @@ router.post('/:id/trash', async (req, res) => {
 
 // @route   GET /api/documents/:id/versions
 // @desc    Get all versions for a document (PDF 4 Page 3 Item 5)
-router.get('/:id/versions', async (req, res) => {
+router.get('/:id/versions', guardDocument(), async (req, res) => {
     const { id } = req.params;
     try {
         let [rows] = await db.query(
@@ -1631,7 +1653,7 @@ router.get('/:id/versions', async (req, res) => {
 
 // @route   POST /api/documents/:id/versions
 // @desc    Add a new version for a document
-router.post('/:id/versions', async (req, res) => {
+router.post('/:id/versions', guardDocument({ permission: 'documents.create' }), async (req, res) => {
     const { id } = req.params;
     const { version_label, created_by, details, file_path, action_type } = req.body;
     try {
@@ -1680,7 +1702,7 @@ router.post('/:id/versions', async (req, res) => {
 
 // @route   GET /api/documents/:id/form-data
 // @desc    Get filled form fields and recipient values for Form Data Modal (PDF 4 Page 3 Item 4)
-router.get('/:id/form-data', async (req, res) => {
+router.get('/:id/form-data', guardDocument({ public: true, recipientLink: true }), async (req, res) => {
     const { id } = req.params;
     try {
         const [docs] = await db.query('SELECT * FROM documents WHERE id = ?', [id]);
@@ -1759,7 +1781,7 @@ router.get('/:id/form-data', async (req, res) => {
 
 // @route   GET /api/documents/:id/certificate-data
 // @desc    Get complete audit trail & metadata for authentic Completion Certificate (PDF 4 Page 3)
-router.get('/:id/certificate-data', async (req, res) => {
+router.get('/:id/certificate-data', guardDocument({ public: true, recipientLink: true }), async (req, res) => {
     const { id } = req.params;
     try {
         const [docs] = await db.query(
@@ -1848,6 +1870,8 @@ router.get('/:id/certificate-data', async (req, res) => {
                 name: r.name || r.email,
                 email: r.email,
                 role: roleOf(r),
+                // "Receives a copy": never views or signs; emailedOn is when the completed documents reached them
+                isCopy: !requestHelpers.isSigningRole(r.role),
                 status: r.status,
                 order: r.signing_order_index || 1,
                 // What this recipient actually signed with: their drawn or uploaded image, or - when they typed

@@ -20,7 +20,8 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const db = require('../db');
-const { authenticateUser } = require('../middleware/authMiddleware');
+const { authenticateUser, requireSignedIn } = require('../middleware/authMiddleware');
+const { requirePermission } = require('../utils/permissions');
 const helpers = require('../utils/requestHelpers');
 const selfSign = require('../utils/selfSign');
 const pdfMerge = require('../utils/pdfMerge');
@@ -51,7 +52,8 @@ const acceptFiles = (req, res, next) => {
   });
 };
 
-router.use(authenticateUser);
+// Signed-in users only (a request without a sign-in is refused)
+router.use(authenticateUser, requireSignedIn);
 selfSign.ensureSelfSignSchema();
 
 const FOLDER = 'Sign Yourself';
@@ -236,7 +238,7 @@ router.get('/signatures', async (req, res) => {
 /* ------------------------------------------------------------------ create */
 
 // POST /api/self-sign - start a self-sign document from uploads, templates or a blank document
-router.post('/', acceptFiles, async (req, res) => {
+router.post('/', requirePermission('documents.create'), acceptFiles, async (req, res) => {
   try {
     await selfSign.ensureSelfSignSchema();
     await helpers.ensureRequestSchema();
@@ -343,7 +345,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // PATCH /api/self-sign/:id - rename the self-sign document
-router.patch('/:id', async (req, res) => {
+router.patch('/:id', requirePermission('documents.create'), async (req, res) => {
   try {
     const row = await requireOwned(req, res);
     if (!row) return undefined;
@@ -364,7 +366,7 @@ router.patch('/:id', async (req, res) => {
 /* ------------------------------------------------------------------ documents inside it */
 
 // POST /api/self-sign/:id/documents - add documents (upload, template or blank)
-router.post('/:id/documents', acceptFiles, async (req, res) => {
+router.post('/:id/documents', requirePermission('documents.create'), acceptFiles, async (req, res) => {
   try {
     const row = await requireOwned(req, res);
     if (!row) return undefined;
@@ -404,7 +406,7 @@ router.post('/:id/documents', acceptFiles, async (req, res) => {
 });
 
 // PUT /api/self-sign/:id/documents/:fileId - replace one document (new file, new text or a new name)
-router.put('/:id/documents/:fileId', acceptFiles, async (req, res) => {
+router.put('/:id/documents/:fileId', requirePermission('documents.create'), acceptFiles, async (req, res) => {
   try {
     const row = await requireOwned(req, res);
     if (!row) return undefined;
@@ -439,7 +441,7 @@ router.put('/:id/documents/:fileId', acceptFiles, async (req, res) => {
 });
 
 // DELETE /api/self-sign/:id/documents/:fileId - remove one document from this self-sign document
-router.delete('/:id/documents/:fileId', async (req, res) => {
+router.delete('/:id/documents/:fileId', requirePermission('documents.create'), async (req, res) => {
   try {
     const row = await requireOwned(req, res);
     if (!row) return undefined;
@@ -466,7 +468,7 @@ router.delete('/:id/documents/:fileId', async (req, res) => {
 /* ------------------------------------------------------------------ merge */
 
 // POST /api/self-sign/:id/merge  { fileIds: [], fileName }
-router.post('/:id/merge', async (req, res) => {
+router.post('/:id/merge', requirePermission('documents.create'), async (req, res) => {
   try {
     const row = await requireOwned(req, res);
     if (!row) return undefined;
@@ -522,7 +524,7 @@ router.post('/:id/merge', async (req, res) => {
 /* ------------------------------------------------------------------ prepare (fields placed) */
 
 // POST /api/self-sign/:id/prepare - recompute the stage after fields were placed in the editor
-router.post('/:id/prepare', async (req, res) => {
+router.post('/:id/prepare', requirePermission('documents.create'), async (req, res) => {
   try {
     const row = await requireOwned(req, res);
     if (!row) return undefined;
@@ -571,7 +573,7 @@ function autofillValue(type, signer) {
 }
 
 // POST /api/self-sign/:id/complete  { signatureId? }
-router.post('/:id/complete', async (req, res) => {
+router.post('/:id/complete', requirePermission('documents.create'), async (req, res) => {
   try {
     const row = await requireOwned(req, res);
     if (!row) return undefined;
@@ -707,7 +709,7 @@ function sendPdf(res, buffer, fileName) {
 }
 
 // GET /api/self-sign/:id/download?index=0&type=document|certificate
-router.get('/:id/download', async (req, res) => {
+router.get('/:id/download', requirePermission('documents.download'), async (req, res) => {
   try {
     const row = await requireOwned(req, res);
     if (!row) return undefined;
@@ -746,7 +748,7 @@ router.get('/:id/download', async (req, res) => {
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 // POST /api/self-sign/:id/share  { email, name, message, includeCertificate }
-router.post('/:id/share', async (req, res) => {
+router.post('/:id/share', requirePermission('documents.download'), async (req, res) => {
   try {
     const row = await requireOwned(req, res);
     if (!row) return undefined;
@@ -843,28 +845,13 @@ router.get('/:id/history', async (req, res) => {
 
 /* ------------------------------------------------------------------ delete */
 
-// DELETE /api/self-sign/:id - removes the self-sign document and the `documents` row behind it
-router.delete('/:id', async (req, res) => {
+// DELETE /api/self-sign/:id - moves the self-sign document (and the `documents` row behind it) to the trash
+router.delete('/:id', requirePermission('documents.delete'), async (req, res) => {
   try {
     const row = await requireOwned(req, res);
     if (!row) return undefined;
-    const documentId = row.document_id;
-    for (const [table, column] of [
-      ['self_sign_events', 'self_sign_id'],
-      ['self_sign_shares', 'self_sign_id']
-    ]) {
-      try {
-        await db.query(`DELETE FROM ${table} WHERE ${column} = ?`, [row.id]);
-      } catch (e) {}
-    }
-    await db.query('DELETE FROM self_sign_documents WHERE id = ?', [row.id]);
-    for (const table of ['document_fields', 'document_recipients', 'document_files', 'document_identifiers']) {
-      try {
-        await db.query(`DELETE FROM ${table} WHERE document_id = ?`, [documentId]);
-      } catch (e) {}
-    }
-    await db.query('DELETE FROM documents WHERE id = ?', [documentId]);
-    return res.json({ success: true, message: 'The self-sign document was deleted.' });
+    await require('../utils/trashStore').trashSelfSign(row, req.user);
+    return res.json({ success: true, message: 'The self-sign document was moved to the trash. You can restore it from Settings > Trash.' });
   } catch (err) {
     console.error('[SelfSign] delete failed:', err);
     return fail(res, 500, 'The self-sign document could not be deleted.');

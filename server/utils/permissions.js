@@ -40,6 +40,7 @@ const CATALOG = [
   ['settings.general', 'settings', 'General settings', 'Change organization-wide settings'],
   ['settings.integrations', 'settings', 'Integrations', 'Connect and configure integrations'],
   ['settings.developer', 'settings', 'Developer settings', 'Change API and webhook settings'],
+  ['settings.trash', 'settings', 'Organization trash', 'See, restore and permanently delete items anyone in the organization deleted'],
   // Security and compliance
   ['security.failed_access', 'security', 'Failed access log', 'View and resolve failed access attempts'],
   ['security.document_validity', 'security', 'Document validity', 'Verify documents and see verification history'],
@@ -152,7 +153,10 @@ async function userCan(user, permissionKey) {
 function requirePermission(...keys) {
   return async (req, res, next) => {
     try {
-      if (!req.user) return res.status(401).json({ success: false, error: 'Authentication required.' });
+      // No sign-in (req.authenticated === false) never passes a permission check
+      if (!req.user || req.authenticated === false) {
+        return res.status(401).json({ success: false, error: 'Please sign in to continue.', sessionExpired: true });
+      }
       const { permissions } = await getEffectivePermissions(req.user.id, req.user.role);
       req.permissions = permissions;
       if (keys.some((k) => permissions.includes(k))) return next();

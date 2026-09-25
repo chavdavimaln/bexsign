@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Link, useNavigate, Outlet, useLocation } from 'react-router-dom';
+import { Link, useNavigate, Outlet, useLocation, Navigate } from 'react-router-dom';
 import {
   LayoutDashboard,
   FileText,
@@ -27,16 +27,16 @@ import {
   FolderOpen,
   PanelLeftClose,
   PanelLeftOpen,
-  Building2,
   KeyRound,
   BellRing,
   Contact,
   SlidersHorizontal,
-  Wrench
+  Wrench,
+  AppWindow
 } from 'lucide-react';
 import NotificationBell from './notifications/NotificationBell';
 import { PermissionsProvider, usePermissions } from '../utils/permissions';
-import { API_BASE } from '../utils/api';
+import { API_BASE, sessionToken, clearSession } from '../utils/api';
 
 /**
  * Sidebar menu. Groups open one at a time (opening a group closes the one that was open, at every level), and the
@@ -73,7 +73,7 @@ const NAV_SECTIONS = [
               { label: 'Expired', to: '/documents/sent/expired', dot: '#94a3b8', count: 'expired' },
               { label: 'Recalled', to: '/documents/sent/recalled', dot: '#f97316', count: 'recalled' },
               { label: 'Draft', to: '/documents/sent/draft', dot: '#64748b', count: 'draft' },
-              { label: 'Bulk Send', to: '/documents/sent/bulk', dot: '#6366f1' }
+              { label: 'Bulk Send', to: '/documents/sent/bulk', dot: '#6366f1', perm: 'documents.send' }
             ]
           },
           {
@@ -108,19 +108,12 @@ const NAV_SECTIONS = [
         label: 'Settings',
         icon: SettingsIcon,
         children: [
-          {
-            key: 'settings-org',
-            label: 'Organization',
-            icon: Building2,
-            children: [
-              { label: 'General', to: '/settings/general', match: ['/settings'], icon: SlidersHorizontal },
-              { label: 'Users & Roles', to: '/users', match: ['/settings/users'], icon: Users, perm: 'users.view' },
-              { label: 'Roles & Permissions', to: '/settings/permissions', icon: KeyRound, perm: ['roles.manage', 'users.view'] },
-              { label: 'Integrations', to: '/settings/integrations', icon: Layers },
-              { label: 'Contacts', to: '/settings/contacts', icon: Contact },
-              { label: 'Trash', to: '/settings/trash', icon: Trash2, tone: 'danger' }
-            ]
-          },
+          { label: 'General', to: '/settings/general', match: ['/settings'], icon: SlidersHorizontal },
+          { label: 'Users & Roles', to: '/users', match: ['/settings/users'], icon: Users, perm: 'users.view' },
+          { label: 'Roles & Permissions', to: '/settings/permissions', icon: KeyRound, perm: ['roles.manage', 'users.view'] },
+          { label: 'Integrations', to: '/settings/integrations', icon: Layers, prefix: '/settings/integrations/' },
+          { label: 'Contacts', to: '/settings/contacts', icon: Contact },
+          { label: 'Trash', to: '/settings/trash', icon: Trash2, tone: 'danger' },
           {
             key: 'settings-account',
             label: 'My Account',
@@ -146,7 +139,8 @@ const NAV_SECTIONS = [
             icon: Code,
             children: [
               { label: 'Developer Settings', to: '/settings/developer', icon: Wrench, perm: 'settings.developer' },
-              { label: 'Developer API', to: '/settings/developer-api', match: ['/others/api'], icon: Code, perm: ['api.keys', 'api.webhooks', 'api.logs'] }
+              { label: 'Developer API', to: '/settings/developer-api', match: ['/others/api'], icon: Code, perm: ['api.keys', 'api.webhooks', 'api.logs'] },
+              { label: 'OAuth Apps', to: '/settings/developer/oauth-apps', icon: AppWindow, perm: 'api.keys' }
             ]
           }
         ]
@@ -157,7 +151,7 @@ const NAV_SECTIONS = [
         icon: PenTool,
         children: [
           { label: 'My Signatures', to: '/signatures', match: ['/settings/signatures'], icon: PenTool },
-          { label: 'Send for Signatures', to: '/documents/create', match: ['/send-for-signatures'], icon: Send },
+          { label: 'Send for Signatures', to: '/documents/create', match: ['/send-for-signatures'], icon: Send, perm: 'documents.create' },
           {
             key: 'sign-yourself',
             label: 'Sign Yourself',
@@ -165,7 +159,7 @@ const NAV_SECTIONS = [
             tone: 'accent',
             children: [
               { label: 'All documents', to: '/sign-yourself/all', match: ['/sign-yourself'], icon: FileText },
-              { label: 'New document', to: '/sign-yourself/new', icon: Plus },
+              { label: 'New document', to: '/sign-yourself/new', icon: Plus, perm: 'documents.create' },
               { label: 'Generated', to: '/sign-yourself/documents', dot: '#94a3b8' },
               { label: 'Ready to sign', to: '/sign-yourself/ready', dot: '#f59e0b' },
               { label: 'Signed', to: '/sign-yourself/signed', dot: '#10b981' },
@@ -186,7 +180,9 @@ function filterNav(items, can) {
     .filter((item) => !item.children || item.children.length > 0);
 }
 
-const itemMatches = (item, pathname) => Boolean(item.to) && (pathname === item.to || (item.match || []).includes(pathname));
+// `prefix`: pages below the item (e.g. one integration's Configure page) keep it highlighted
+const itemMatches = (item, pathname) => Boolean(item.to)
+  && (pathname === item.to || (item.match || []).includes(pathname) || Boolean(item.prefix && pathname.startsWith(item.prefix)));
 
 /** Keys of the groups leading to the item of the current page, e.g. ['documents', 'sent']; null when none. */
 function findActivePath(pathname) {
@@ -223,6 +219,12 @@ function Collapse({ open, id, children }) {
 }
 
 export default function Layout() {
+  const location = useLocation();
+  // The app is for signed-in users only; everything they see follows their own roles and permissions
+  if (!sessionToken()) {
+    clearSession();
+    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  }
   return (
     <PermissionsProvider>
       <AppLayout />
@@ -241,13 +243,17 @@ function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(isDesktopWidth);
   const [searchQuery, setSearchQuery] = useState('');
 
+  const { role: permissionRole } = usePermissions();
   const currentUser = useMemo(() => {
     try {
-      const saved = localStorage.getItem('user');
-      if (saved) return JSON.parse(saved);
-    } catch (e) {}
-    return { name: 'Vimal Chavda', email: 'vimal@bexcodeservices.com', role: 'manager' };
+      const saved = JSON.parse(localStorage.getItem('user') || '{}');
+      const name = (saved.name || `${saved.first_name || saved.firstName || ''} ${saved.last_name || saved.lastName || ''}`).trim();
+      return { ...saved, name: name || String(saved.email || '').split('@')[0] || 'User' };
+    } catch (e) {
+      return { name: 'User', email: '' };
+    }
   }, []);
+  const displayRole = String(permissionRole || currentUser.role || 'team_member').replace(/_/g, ' ');
 
   // Modal triggers
   const [showAnnouncementsModal, setShowAnnouncementsModal] = useState(false);
@@ -265,8 +271,7 @@ function AppLayout() {
   const navRef = useRef(null);
 
   const handleLogout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
+    clearSession();
     navigate('/login');
   };
 
@@ -540,6 +545,7 @@ function AppLayout() {
               {sidebarOpen && <span className="truncate">My Portals</span>}
             </button>
           </div>
+          {can('documents.create') && (
           <Link
             to="/documents/create"
             title="Create Document"
@@ -548,6 +554,7 @@ function AppLayout() {
             <PlusCircle size={18} className="transition-transform duration-300 group-hover:rotate-90" />
             {sidebarOpen && <span>Create Document</span>}
           </Link>
+          )}
         </div>
       </aside>
 
@@ -591,18 +598,18 @@ function AppLayout() {
 
             <div className="flex items-center gap-2 sm:gap-3 border-l pl-2 sm:pl-4 border-slate-200">
               <div className="h-9 w-9 rounded-full bg-gradient-to-tr from-purple-700 to-indigo-600 text-white flex items-center justify-center font-bold text-sm shadow-sm">
-                {(currentUser.name || 'Vimal Chavda')[0]}
+                {(currentUser.name || 'U')[0].toUpperCase()}
               </div>
               <div className="hidden sm:block text-left text-xs">
                 <div className="flex items-center gap-1.5">
-                  <p className="font-bold text-slate-800">{currentUser.name || 'Vimal Chavda'}</p>
+                  <p className="font-bold text-slate-800">{currentUser.name}</p>
                   <span className={`px-1.5 py-0.2 rounded text-[9px] font-black uppercase ${
-                    currentUser.role === 'leader' ? 'bg-blue-100 text-blue-700' : (currentUser.role === 'team_member' ? 'bg-slate-100 text-slate-700' : 'bg-purple-100 text-purple-700')
+                    displayRole === 'leader' ? 'bg-blue-100 text-blue-700' : (displayRole === 'team member' ? 'bg-slate-100 text-slate-700' : 'bg-purple-100 text-purple-700')
                   }`}>
-                    {currentUser.role || 'Manager'}
+                    {displayRole}
                   </span>
                 </div>
-                <p className="text-slate-500 text-[11px]">{currentUser.email || 'vimal@bexcodeservices.com'}</p>
+                <p className="text-slate-500 text-[11px]">{currentUser.email}</p>
               </div>
               <button
                 onClick={handleLogout}

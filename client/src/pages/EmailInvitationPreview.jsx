@@ -58,7 +58,7 @@ export default function EmailInvitationPreview() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-100 flex flex-col font-sans -m-6 pb-16">
+    <div className="min-h-screen bg-slate-100 flex flex-col font-sans -m-4 sm:-m-6 pb-16">
       {/* Top Navigation Bar */}
       <header className="h-14 bg-white border-b border-slate-200 px-8 flex items-center justify-between shrink-0 shadow-2xs">
         <div className="flex items-center gap-3">

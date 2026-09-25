@@ -129,6 +129,8 @@ export default function BexTableToolbar({
         {/* Bulk Actions (Visible when items selected) */}
         {selectedCount > 0 && (
           <div className="flex items-center gap-1.5 pl-2 border-l border-slate-300 animate-in fade-in">
+            {/* Without a delete handler (no permission) there is no delete button */}
+            {onBulkDelete && (
             <button
               type="button"
               onClick={onBulkDelete}
@@ -138,6 +140,7 @@ export default function BexTableToolbar({
               <Trash2 size={14} />
               <span>({selectedCount})</span>
             </button>
+            )}
             {onBulkMoveFolder && (
               <button
                 type="button"

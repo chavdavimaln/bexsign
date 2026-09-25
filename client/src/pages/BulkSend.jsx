@@ -41,16 +41,16 @@ export default function BulkSend() {
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-extrabold text-slate-900">Bulk Send (Mail Merge Engine)</h1>
+        <h1 className="text-xl sm:text-2xl font-extrabold text-slate-900 break-words">Bulk Send (Mail Merge Engine)</h1>
         <p className="text-xs text-slate-500 mt-1">Upload a CSV file to map columns and batch dispatch personalized signature envelopes.</p>
       </div>
 
-      <div className="bg-white rounded-xl border border-slate-200 p-8 shadow-2xs space-y-6">
+      <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-8 shadow-2xs space-y-6">
         <div>
-          <h2 className="text-sm font-bold text-slate-900 mb-2 flex items-center gap-2">
-            <Upload size={18} className="text-[#E71414]" /> 1. Select Template & CSV File
+          <h2 className="text-sm font-bold text-slate-900 mb-2 flex items-start sm:items-center gap-2">
+            <Upload size={18} className="text-[#E71414] shrink-0" /> 1. Select Template & CSV File
           </h2>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="p-4 border border-slate-200 rounded-xl bg-slate-50">
               <label className="block text-xs font-bold text-slate-700 mb-1">Selected Template</label>
               <select className="w-full p-2 bg-white border border-slate-300 rounded text-xs font-semibold">
@@ -74,11 +74,11 @@ export default function BulkSend() {
 
         {/* CSV Mapping & Preview */}
         <div>
-          <h2 className="text-sm font-bold text-slate-900 mb-3 flex items-center gap-2">
-            <Table size={18} className="text-[#E71414]" /> 2. CSV Columns Mapping & Recipient Preview ({sampleData.length} Envelopes)
+          <h2 className="text-sm font-bold text-slate-900 mb-3 flex items-start sm:items-center gap-2">
+            <Table size={18} className="text-[#E71414] shrink-0" /> 2. CSV Columns Mapping & Recipient Preview ({sampleData.length} Envelopes)
           </h2>
 
-          <div className="border border-slate-200 bg-white rounded-xl shadow-2xs w-full overflow-hidden">
+          <div className="hidden md:block border border-slate-200 bg-white rounded-xl shadow-2xs w-full overflow-x-auto">
             <table className="w-full text-left text-xs border-collapse table-fixed">
               <thead>
               <tr className="bg-slate-50 text-slate-500 uppercase font-bold border-b">
@@ -106,12 +106,27 @@ export default function BulkSend() {
             </tbody>
             </table>
           </div>
+
+          {/* Phone layout: one card per recipient row */}
+          <ul className="md:hidden border border-slate-200 bg-white rounded-xl shadow-2xs divide-y divide-slate-100">
+            {sampleData.map((row, idx) => (
+              <li key={idx} className="p-3 flex items-start gap-3 min-w-0">
+                <span className="text-[11px] text-slate-400 font-mono pt-0.5 shrink-0">#{idx + 1}</span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-bold text-slate-900 break-words leading-snug">{row.name}</p>
+                  <p className="text-[11px] text-slate-600 break-all leading-snug mt-0.5">{row.email}</p>
+                  <p className="text-[11px] text-slate-500 break-words leading-snug mt-0.5">{row.company}</p>
+                </div>
+                <span className="bg-emerald-100 text-emerald-800 text-[10px] px-2 py-0.5 rounded font-extrabold inline-block shrink-0">Ready</span>
+              </li>
+            ))}
+          </ul>
         </div>
 
         {/* Batch Dispatch Progress */}
         {isProcessing && (
           <div className="p-4 bg-red-50 border border-red-200 rounded-xl space-y-2">
-            <div className="flex justify-between text-xs font-bold text-[#E71414]">
+            <div className="flex flex-wrap justify-between gap-x-3 gap-y-1 text-xs font-bold text-[#E71414]">
               <span>Dispatching Batch Envelopes...</span>
               <span>{completedCount} of {sampleData.length} Sent</span>
             </div>
@@ -128,7 +143,7 @@ export default function BulkSend() {
           <button
             onClick={handleStartBulkSend}
             disabled={isProcessing}
-            className="btn-primary px-6 py-2.5 rounded-lg text-xs font-extrabold flex items-center gap-2 shadow-md"
+            className="btn-primary w-full sm:w-auto justify-center px-6 py-2.5 rounded-lg text-xs font-extrabold flex items-center gap-2 shadow-md"
           >
             <Layers size={16} /> {isProcessing ? 'Processing Batch...' : 'Start Bulk Mail Merge Dispatch'}
           </button>
