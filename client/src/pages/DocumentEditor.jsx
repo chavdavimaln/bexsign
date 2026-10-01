@@ -74,6 +74,7 @@ import { generateAndDownloadPdf } from '../utils/pdfGenerator';
 import TemplatePickerModal from '../components/templates/TemplatePickerModal';
 import { countTemplateUse } from '../components/templates/templateUi';
 import { API_BASE, API_ORIGIN } from '../utils/api';
+import { isAutoResizeField, autoResizeWidth } from '../utils/fieldSizing';
 import {
   PAGE,
   EDITOR_BASE_FONT,
@@ -2814,6 +2815,7 @@ export default function DocumentEditor() {
                     }
 
                     // 4. Standard Text-Based Fields (Company, Full Name, Email, Date, Text, Job Title, Signature)
+                    const autoResize = isAutoResizeField(field);
                     return (
                       <div
                         id={`doc-field-${field.id}`}
@@ -2826,9 +2828,11 @@ export default function DocumentEditor() {
                           backgroundColor: '#ffffff',
                           zIndex: fieldZIndex,
                           touchAction: 'none',
+                          // Auto-resize fields grow to fit their text but never shrink below the configured width
+                          ...(autoResize ? { width: `${autoResizeWidth(field, { paddingPx: 84 })}px`, maxWidth: '90%' } : {}),
                           ...fieldEmphasisStyle(field, rec, isSelected)
                         }}
-                        className={`${addedClass}absolute p-2 border-2 rounded-lg shadow-md cursor-move transition flex items-center gap-2 min-w-[150px] max-w-[260px] bg-white ${
+                        className={`${addedClass}absolute p-2 border-2 rounded-lg shadow-md cursor-move transition flex items-center gap-2 ${autoResize ? '' : 'min-w-[150px] max-w-[260px]'} bg-white ${
                           isSelected ? 'ring-2 ring-offset-1 scale-105 border-solid shadow-xl' : `${fieldOfSelectedRecipient ? 'border-solid' : 'border-dashed'} hover:border-solid hover:shadow-lg`
                         }`}
                       >
@@ -3177,6 +3181,26 @@ export default function DocumentEditor() {
                       />
                     </div>
                   </div>
+                </div>
+              )}
+
+              {/* Auto-resize width: the field's box grows to fit its content at signing time, never below this width */}
+              {['Company', 'Full name', 'Sign date', 'Text', 'Job title', 'Email'].includes(activeField.type) && (
+                <div className="flex items-center justify-between gap-3 bg-slate-900 border border-slate-800 rounded-lg p-3">
+                  <div className="min-w-0">
+                    <span className="block text-xs font-bold text-slate-200">Auto-resize width</span>
+                    <span className="block text-[10px] text-slate-500 mt-0.5">Grows to fit the signer's text at signing time; never smaller than this field's current width.</span>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={Boolean(activeField.autoResize)}
+                    aria-label="Auto-resize width"
+                    onClick={() => updateActiveFieldProperty('autoResize', !activeField.autoResize)}
+                    className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition ${activeField.autoResize ? 'bg-[#00a884]' : 'bg-slate-700'}`}
+                  >
+                    <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${activeField.autoResize ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                  </button>
                 </div>
               )}
 

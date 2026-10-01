@@ -6,6 +6,7 @@ import { generateBexsignId } from '../utils/documentId';
 import { generateAndDownloadPdf } from '../utils/pdfGenerator';
 import { showPopupAlert } from '../components/GlobalAlertModal';
 import { API_BASE } from '../utils/api';
+import FolderSelect from '../components/folders/FolderSelect';
 
 export default function SendDocument() {
   const { id } = useParams();
@@ -23,6 +24,7 @@ export default function SendDocument() {
   const [agreementValidUntil, setAgreementValidUntil] = useState('Forever');
   const [documentType, setDocumentType] = useState('Others');
   const [folder, setFolder] = useState('None');
+  const [folderId, setFolderId] = useState(null);
   const [description, setDescription] = useState('Description setting');
   const [allowComments, setAllowComments] = useState(false);
   const [autoReminders, setAutoReminders] = useState(true);
@@ -96,7 +98,8 @@ export default function SendDocument() {
           noteToAll,
           daysToComplete,
           autoReminders,
-          reminderEveryDays
+          reminderEveryDays,
+          folderId
         })
       });
     } catch (e) {
@@ -281,15 +284,11 @@ export default function SendDocument() {
 
               <div>
                 <label className="block font-bold text-slate-700 mb-1">Folder</label>
-                <select
-                  value={folder}
-                  onChange={(e) => setFolder(e.target.value)}
+                <FolderSelect
+                  value={folderId}
+                  onChange={(newFolderId, newFolderName) => { setFolderId(newFolderId); setFolder(newFolderName); }}
                   className="w-full p-2 bg-slate-50 border border-slate-300 rounded font-semibold"
-                >
-                  <option value="None">None</option>
-                  <option value="Legal">Legal</option>
-                  <option value="HR">HR</option>
-                </select>
+                />
               </div>
 
               <div className="col-span-2">

@@ -22,6 +22,7 @@ import SendDocument from './pages/SendDocument';
 import SendForSignatures from './pages/SendForSignatures';
 import EmailInvitationPreview from './pages/EmailInvitationPreview';
 import DocumentsList from './pages/DocumentsList';
+import Folders from './pages/Folders';
 import PublicSigning from './pages/PublicSigning';
 import SignYourself from './pages/SignYourself';
 import SelfSignCreate from './pages/selfsign/SelfSignCreate';
@@ -112,6 +113,9 @@ export default function App() {
           <Route path="/sign-yourself/:tab" element={<SignYourself />} />
           <Route path="/signatures" element={<SignaturesModule />} />
           <Route path="/settings/signatures" element={<Navigate to="/signatures" replace />} />
+
+          {/* Folders */}
+          <Route path="/folders" element={<Folders />} />
 
           {/* Templates & Reports */}
           <Route path="/templates" element={<RequirePermission any={['templates.view']}><Templates /></RequirePermission>} />

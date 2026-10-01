@@ -9,7 +9,9 @@ const db = require('../db');
 
 const SIGNING_ROLES = ['signer', 'approver'];
 const ROLE_LABELS = ['Needs to sign', 'In-person signer', 'Approver', 'Receives a copy'];
-const RECIPIENT_COLUMNS = 'id, document_id, name, email, role, role_label, delivery_mode, private_note, signing_order_index, status, sent_at, viewed_at, signed_at, signed_ip, signature_image, declined_at, decline_reason, physical_copy_path, delegated_from, delegated_reason, consent_at, consent_ip';
+// otp_code, access_passcode and otp_expires_at are deliberately left out of this general projection (they're
+// access-gate secrets) — otpService.js reads/writes them directly with its own narrow queries.
+const RECIPIENT_COLUMNS = 'id, document_id, name, email, role, role_label, delivery_mode, private_note, signing_order_index, status, sent_at, viewed_at, signed_at, signed_ip, signature_image, declined_at, decline_reason, physical_copy_path, delegated_from, delegated_reason, consent_at, consent_ip, phone, auth_type, otp_verified_at';
 
 function mapRecipientRole(label) {
   const low = String(label || '').toLowerCase();
@@ -81,6 +83,13 @@ function ensureRequestSchema() {
         ['document_recipients', 'physical_copy_path', 'VARCHAR(255) NULL'],
         ['document_recipients', 'delegated_from', 'VARCHAR(255) NULL'],
         ['document_recipients', 'delegated_reason', 'TEXT NULL'],
+        // Recipient access gate (Customize > Authentication Type): email/SMS one-time code, or a sender-set passcode
+        ['document_recipients', 'phone', 'VARCHAR(20) NULL'],
+        ['document_recipients', 'auth_type', "VARCHAR(20) NULL DEFAULT 'None'"],
+        ['document_recipients', 'access_passcode', 'VARCHAR(50) NULL'],
+        ['document_recipients', 'otp_code', 'VARCHAR(10) NULL'],
+        ['document_recipients', 'otp_expires_at', 'DATETIME NULL'],
+        ['document_recipients', 'otp_verified_at', 'DATETIME NULL'],
         ['document_files', 'document_text', 'LONGTEXT NULL'],
         ['document_files', 'signed_file_path', 'VARCHAR(255) NULL'],
         ['document_files', 'sort_order', 'INT DEFAULT 0']
@@ -159,20 +168,30 @@ async function saveRecipients(documentId, list) {
     const name = String(r.name || '').trim() || email.split('@')[0];
     const deliveryMode = r.deliveryMode ?? r.delivery_mode ?? existing?.delivery_mode ?? 'Email';
     const privateNote = r.privateNote ?? r.private_note ?? existing?.private_note ?? null;
+    const phone = (r.phone ?? existing?.phone ?? null) || null;
+    const authType = r.authType ?? r.auth_type ?? r.auth ?? existing?.auth_type ?? 'None';
+    // access_passcode is a secret and never sent back to the client (see RECIPIENT_COLUMNS), so the Customize
+    // modal always shows this field blank — an empty value here means "unchanged", not "clear it", or every
+    // autosave would silently wipe a passcode the sender already set.
+    const accessPasscode = (r.accessPasscode ?? r.access_passcode ?? r.passcode) || existing?.access_passcode || null;
+    // Changing the access gate (or its passcode) re-locks a recipient who already verified under the old one
+    const gateChanged = existing && (authType !== (existing.auth_type || 'None')
+      || (authType === 'Offline Passcode' && accessPasscode !== existing.access_passcode));
 
     if (existing) {
       await db.query(
         `UPDATE document_recipients
-         SET name = ?, email = ?, role = ?, role_label = ?, delivery_mode = ?, private_note = ?, signing_order_index = ?
+         SET name = ?, email = ?, role = ?, role_label = ?, delivery_mode = ?, private_note = ?, signing_order_index = ?,
+             phone = ?, auth_type = ?, access_passcode = ?${gateChanged ? ', otp_verified_at = NULL, otp_code = NULL, otp_expires_at = NULL' : ''}
          WHERE id = ?`,
-        [name, email, role, roleLabel, deliveryMode, privateNote, position, existing.id]
+        [name, email, role, roleLabel, deliveryMode, privateNote, position, phone, authType, accessPasscode, existing.id]
       );
       existingByEmail.delete(key);
     } else {
       await db.query(
-        `INSERT INTO document_recipients (document_id, name, email, role, role_label, delivery_mode, private_note, signing_order_index, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
-        [documentId, name, email, role, roleLabel, deliveryMode, privateNote, position]
+        `INSERT INTO document_recipients (document_id, name, email, role, role_label, delivery_mode, private_note, signing_order_index, status, phone, auth_type, access_passcode)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+        [documentId, name, email, role, roleLabel, deliveryMode, privateNote, position, phone, authType, accessPasscode]
       );
     }
   }
@@ -209,7 +228,8 @@ async function restartSigningRound(documentId) {
     `UPDATE document_recipients
      SET status = 'pending', sent_at = NULL, viewed_at = NULL, signed_at = NULL,
          signed_ip = NULL, signed_user_agent = NULL, signature_image = NULL,
-         consent_at = NULL, consent_ip = NULL
+         consent_at = NULL, consent_ip = NULL,
+         otp_code = NULL, otp_expires_at = NULL, otp_verified_at = NULL
      WHERE document_id = ?`,
     [documentId]
   );
@@ -556,6 +576,21 @@ async function sendSigningInvitations(doc, group, { req = null, isReminder = fal
       privateMessage: r.private_note || '-',
       signingUrl: buildSigningUrl(doc.id, r.email)
     });
+
+    // Also text the signing link when this recipient's delivery mode includes SMS
+    if (['SMS', 'Email + SMS'].includes(r.delivery_mode) && r.phone) {
+      const { sendSms } = require('./smsService');
+      const smsText = isReminder
+        ? `Reminder: "${doc.document_name || 'Document'}" is waiting for your signature. Sign here: ${buildSigningUrl(doc.id, r.email)}`
+        : `${sender.name} asked you to sign "${doc.document_name || 'Document'}". Sign here: ${buildSigningUrl(doc.id, r.email)}`;
+      const smsResult = await sendSms({ to: r.phone, body: smsText });
+      await logRequestEvent(doc.id, {
+        recipientId: r.id || null,
+        description: smsResult.success
+          ? `${isReminder ? 'Reminder' : 'Signature request'} texted to ${r.name || r.email} (${r.phone})`
+          : `SMS to ${r.phone} failed: ${smsResult.error}`
+      });
+    }
 
     if (result.success && !isReminder && r.id) {
       await db.query(

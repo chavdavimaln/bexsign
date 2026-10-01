@@ -25,6 +25,7 @@ import {
   History,
   AlertOctagon,
   FolderOpen,
+  FolderKanban,
   PanelLeftClose,
   PanelLeftOpen,
   KeyRound,
@@ -87,6 +88,7 @@ const NAV_SECTIONS = [
           }
         ]
       },
+      { key: 'folders', label: 'Folders', icon: FolderKanban, to: '/folders' },
       { key: 'templates', label: 'Templates', icon: FileBox, to: '/templates', perm: 'templates.view' },
       {
         key: 'reports',

@@ -307,6 +307,8 @@ function ensurePlatformSchema() {
       await require('./documentVerification').ensureVerificationSchema();
       // Integrations, contact book, trash bin and OAuth apps
       await require('./workspaceSchema').ensureWorkspaceSchema();
+      // Folders: a flat list used to group documents, and documents.folder_id
+      await require('./folderStore').ensureFoldersSchema();
       // The organization default moves from 'parallel' / 'sequential' to a signing flow key
       await db.query(
         `UPDATE general_settings SET default_signing_order = ?

@@ -57,6 +57,15 @@ export default function PublicSigning() {
   const [showLandingScreen, setShowLandingScreen] = useState(true);
   const [agreedConsent, setAgreedConsent] = useState(false);
 
+  // Access gate (Customize > Authentication Type: Email OTP / SMS OTP / Offline Passcode), only present when
+  // Settings > General > "Recipient access codes" is turned on and this recipient has a gate chosen
+  const [accessGate, setAccessGate] = useState(null);
+  const [gateEmail, setGateEmail] = useState('');
+  const [gateCode, setGateCode] = useState('');
+  const [gateError, setGateError] = useState('');
+  const [gateBusy, setGateBusy] = useState(false);
+  const [gateResent, setGateResent] = useState(false);
+
   // Document & Guided Navigator State
   const [documentDetails, setDocumentDetails] = useState({
     title: 'Document Sign 4',
@@ -225,6 +234,11 @@ export default function PublicSigning() {
       try {
         const res = await fetch(`${API_BASE}/documents/${docId}${activeUserEmail ? `?email=${encodeURIComponent(activeUserEmail)}` : ''}`);
         const data = await res.json();
+        if (data.accessGate) {
+          setGateEmail(activeUserEmail);
+          setAccessGate(data.accessGate);
+          return;
+        }
         if (data.success && data.document) {
           doc = data.document;
         }
@@ -1313,6 +1327,99 @@ export default function PublicSigning() {
             </div>
           </div>
         )}
+      </div>
+    );
+  }
+
+  if (accessGate) {
+    const isPasscode = accessGate.type === 'passcode';
+    const requestGateCode = async () => {
+      setGateError('');
+      setGateBusy(true);
+      try {
+        const res = await fetch(`${API_BASE}/signatures/${docId}/access/request-code`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: gateEmail })
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'The code could not be sent.');
+        setGateResent(true);
+        setTimeout(() => setGateResent(false), 4000);
+      } catch (err) {
+        setGateError(err.message);
+      } finally {
+        setGateBusy(false);
+      }
+    };
+    const submitGateCode = async () => {
+      if (!gateCode.trim()) return;
+      setGateError('');
+      setGateBusy(true);
+      try {
+        const res = await fetch(`${API_BASE}/signatures/${docId}/access/verify`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: gateEmail, code: gateCode.trim() })
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'That code is not correct.');
+        setAccessGate(null);
+        setGateCode('');
+        fetchDocumentDetails();
+      } catch (err) {
+        setGateError(err.message);
+      } finally {
+        setGateBusy(false);
+      }
+    };
+    return (
+      <div className="min-h-screen bg-slate-200 text-slate-900 flex items-center justify-center p-4 font-sans">
+        <div className="bg-white rounded-xl max-w-sm w-full p-6 shadow-2xl border border-slate-200 space-y-4 text-center">
+          <span className="mx-auto w-12 h-12 rounded-full bg-emerald-50 text-[#007355] flex items-center justify-center">
+            <Lock size={22} />
+          </span>
+          <div>
+            <h2 className="text-base font-bold text-slate-900">
+              {isPasscode ? 'Enter the access passcode' : 'Enter your access code'}
+            </h2>
+            <p className="text-xs text-slate-500 mt-1">
+              {isPasscode
+                ? 'The sender shared a passcode with you separately.'
+                : `We sent a code to ${accessGate.maskedDestination} by ${accessGate.channel === 'sms' ? 'SMS' : 'email'}.`}
+            </p>
+          </div>
+          <input
+            type="text"
+            inputMode={isPasscode ? 'text' : 'numeric'}
+            autoFocus
+            value={gateCode}
+            onChange={(e) => setGateCode(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && submitGateCode()}
+            placeholder={isPasscode ? 'Passcode' : '6-digit code'}
+            className="w-full p-3 text-center text-lg tracking-widest border border-slate-300 rounded-lg outline-none focus:border-[#007355] focus:ring-2 focus:ring-emerald-100"
+          />
+          {gateError && <p className="text-xs font-semibold text-rose-600">{gateError}</p>}
+          {gateResent && <p className="text-xs font-semibold text-emerald-600">A new code was sent.</p>}
+          <button
+            type="button"
+            onClick={submitGateCode}
+            disabled={gateBusy || !gateCode.trim()}
+            className="w-full bg-[#007355] hover:bg-[#005c44] disabled:opacity-50 text-white py-2.5 rounded-lg text-sm font-bold transition"
+          >
+            {gateBusy ? 'Checking...' : 'Continue'}
+          </button>
+          {!isPasscode && (
+            <button
+              type="button"
+              onClick={requestGateCode}
+              disabled={gateBusy}
+              className="text-xs font-semibold text-[#007355] hover:underline disabled:opacity-50"
+            >
+              Resend code
+            </button>
+          )}
+        </div>
       </div>
     );
   }

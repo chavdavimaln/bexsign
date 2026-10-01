@@ -32,6 +32,8 @@ const { getCompletedPdfFiles, buildProgressCopy } = require('../utils/requestCom
 const { recordValidityCheck, verifyPdfBuffer } = require('../utils/validityLog');
 const signingFlow = require('../utils/signingFlow');
 const documentVerification = require('../utils/documentVerification');
+const folderStore = require('../utils/folderStore');
+const otpService = require('../utils/otpService');
 
 const EMPTY_SIGNATURE_ERROR = 'The signature is empty. Draw, type or upload a signature before saving.';
 
@@ -161,7 +163,7 @@ router.use(authenticateOptional);
 // @route   GET /api/documents
 // @desc    Get all documents from database with generated BexSign document IDs
 router.get('/', guardDocument(), async (req, res) => {
-    const { status, folder, userId } = req.query;
+    const { status, folder, folderId, userId } = req.query;
     try {
         let query = `
             SELECT d.*,
@@ -205,6 +207,11 @@ router.get('/', guardDocument(), async (req, res) => {
         if (folder) {
             query += ' AND d.folder_name = ?';
             params.push(folder);
+        } else if (folderId === 'none' || folderId === '0') {
+            query += ' AND d.folder_id IS NULL';
+        } else if (folderId) {
+            query += ' AND d.folder_id = ?';
+            params.push(parseInt(folderId, 10) || 0);
         }
 
         query += ' ORDER BY d.created_at DESC';
@@ -222,7 +229,7 @@ router.get('/', guardDocument(), async (req, res) => {
 router.post('/upload', guardDocument({ permission: 'documents.create' }), uploadRequestFiles, async (req, res) => {
     const {
         documentId, document_id, id,
-        userId, user_id, documentName, document_name, folderName, folder_name,
+        userId, user_id, documentName, document_name, folderName, folder_name, folderId, folder_id,
         recipientEmail, recipient_email, recipientName, recipient_name,
         templateUsed, template_used, status, recipients
     } = req.body;
@@ -232,7 +239,10 @@ router.post('/upload', guardDocument({ permission: 'documents.create' }), upload
     const firstRecipient = Array.isArray(recipientList) ? recipientList.find((r) => r && r.email && String(r.email).trim()) : null;
     const recipEmail = recipientEmail || recipient_email || (firstRecipient ? String(firstRecipient.email).trim() : null);
     const recipName = recipientName || recipient_name || firstRecipient?.name || undefined;
-    const folder = folderName || folder_name || 'General';
+    const requestedFolderId = folderId || folder_id;
+    const folderAssignment = requestedFolderId ? await folderStore.resolveFolderAssignment(requestedFolderId) : null;
+    const folder = folderAssignment ? folderAssignment.folder_name : (folderName || folder_name || 'General');
+    const folderIdValue = folderAssignment ? folderAssignment.folder_id : null;
     const template = templateUsed || template_used || null;
     const uId = req.authenticated ? req.user.id : (parseInt(userId || user_id) || 1);
     const docStatus = status || 'Draft';
@@ -266,6 +276,10 @@ router.post('/upload', guardDocument({ permission: 'documents.create' }), upload
         if (!isNew) {
             let updateSql = 'UPDATE documents SET document_name = ?, folder_name = ?, status = ?';
             const updateParams = [docName, folder, docStatus];
+            if (folderAssignment) {
+                updateSql += ', folder_id = ?';
+                updateParams.push(folderIdValue);
+            }
             if (recipEmail) {
                 updateSql += ', recipient_email = ?';
                 updateParams.push(recipEmail);
@@ -279,9 +293,9 @@ router.post('/upload', guardDocument({ permission: 'documents.create' }), upload
             await db.query(updateSql, updateParams);
         } else {
             const [result] = await db.query(
-                `INSERT INTO documents (user_id, document_name, file_path, folder_name, status, recipient_email, template_used)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-                [uId, docName, filePath, folder, docStatus, recipEmail, template]
+                `INSERT INTO documents (user_id, document_name, file_path, folder_name, folder_id, status, recipient_email, template_used)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                [uId, docName, filePath, folder, folderIdValue, docStatus, recipEmail, template]
             );
             targetId = result.insertId;
         }
@@ -656,6 +670,27 @@ router.get('/:id', guardDocument({ public: true, recipientLink: true }), async (
             doc.recipients = [];
         }
 
+        // Public signing link: a recipient with "Email OTP" / "SMS OTP" / "Offline Passcode" set must pass that
+        // gate before the document (fields, other recipients' progress) is sent down. The sender's own authenticated
+        // view is never gated, regardless of query params. The whole feature is off by default (Settings > General
+        // > "Recipient access codes") so a per-recipient choice never blocks anyone until an admin turns it on.
+        if (!req.authenticated && viewerEmail && (await otpService.isAccessGateEnabled())) {
+            const gatedRecipient = recRows.find((r) => String(r.email || '').trim().toLowerCase() === viewerEmail);
+            if (gatedRecipient && gatedRecipient.auth_type && gatedRecipient.auth_type !== 'None' && !gatedRecipient.otp_verified_at) {
+                return res.json({
+                    success: true,
+                    accessGate: {
+                        recipientId: gatedRecipient.id,
+                        type: gatedRecipient.auth_type === 'Offline Passcode' ? 'passcode' : 'otp',
+                        channel: gatedRecipient.auth_type === 'SMS OTP' ? 'sms' : 'email',
+                        maskedDestination: gatedRecipient.auth_type === 'SMS OTP'
+                            ? otpService.maskPhone(gatedRecipient.phone)
+                            : otpService.maskEmail(gatedRecipient.email)
+                    }
+                });
+            }
+        }
+
         try {
             const [fieldRows] = await db.query('SELECT * FROM document_fields WHERE document_id = ? ORDER BY id ASC', [id]);
             const allFields = fieldRows.map(requestHelpers.parseFieldRow);
@@ -742,6 +777,10 @@ router.post('/:id/save', guardDocument({ permission: 'documents.create' }), asyn
         if (titleToSave) {
             await db.query('UPDATE documents SET document_name = ? WHERE id = ?', [titleToSave, id]);
         }
+        if (req.body.folderId !== undefined) {
+            const resolved = await folderStore.resolveFolderAssignment(req.body.folderId);
+            await db.query('UPDATE documents SET folder_id = ?, folder_name = ? WHERE id = ?', [resolved.folder_id, resolved.folder_name, id]);
+        }
         // A sent/completed request is never downgraded back to Draft by an editor autosave
         const currentStatus = String(found[0].status || '').toLowerCase();
         const keepsStatus = status === 'Draft' && ['in progress', 'completed'].includes(currentStatus);
@@ -786,6 +825,10 @@ router.post('/send/:id', guardDocument({ permission: 'documents.send' }), async 
 
         if (documentName) {
             await db.query('UPDATE documents SET document_name = ? WHERE id = ?', [documentName, id]);
+        }
+        if (req.body.folderId !== undefined) {
+            const resolved = await folderStore.resolveFolderAssignment(req.body.folderId);
+            await db.query('UPDATE documents SET folder_id = ?, folder_name = ? WHERE id = ?', [resolved.folder_id, resolved.folder_name, id]);
         }
         await applyRequestSettings(id, buildRequestSettings(req.body));
         await applySigningFlow(id, req.body, req);
@@ -1924,6 +1967,25 @@ router.get('/:id/certificate-data', guardDocument({ public: true, recipientLink:
     } catch (err) {
         console.error('Certificate data error:', err);
         res.status(500).json({ error: err.message });
+    }
+});
+
+// @route   POST /api/documents/bulk-move-folder { ids: [documentId...], folderId: number|null }
+// @desc    Moves several documents into a folder at once (or clears their folder when folderId is empty)
+router.post('/bulk-move-folder', guardDocument({ permission: 'documents.create' }), async (req, res) => {
+    const ids = [...new Set((Array.isArray(req.body?.ids) ? req.body.ids : []).map((v) => parseInt(v, 10)).filter(Boolean))];
+    if (!ids.length) return res.status(400).json({ success: false, error: 'Select the documents to move.' });
+    try {
+        const access = await accessFor(req);
+        const allowed = [];
+        for (const docId of ids) if (await canSeeDocument(access, docId)) allowed.push(docId);
+        if (!allowed.length) return res.status(403).json({ success: false, error: 'You do not have access to these documents.' });
+        const resolved = await folderStore.resolveFolderAssignment(req.body?.folderId);
+        await db.query('UPDATE documents SET folder_id = ?, folder_name = ? WHERE id IN (?)', [resolved.folder_id, resolved.folder_name, allowed]);
+        res.json({ success: true, moved: allowed, folder: resolved });
+    } catch (err) {
+        console.error('[Documents] bulk folder move failed:', err);
+        res.status(500).json({ success: false, error: 'The documents could not be moved.' });
     }
 });
 

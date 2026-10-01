@@ -25,6 +25,7 @@ const { logFailedAccess } = require('../utils/platformEvents');
 const signingFlow = require('../utils/signingFlow');
 const documentVerification = require('../utils/documentVerification');
 const signatureStore = require('../utils/signatureStore');
+const otpService = require('../utils/otpService');
 
 /**
  * Everything that happens once a recipient has completed their part: their field values are stored, they are
@@ -695,6 +696,52 @@ router.get('/token/:token', async (req, res) => {
     } catch (err) {
         console.error('Error fetching signing token session:', err);
         res.status(500).json({ error: 'Database error fetching public signing session' });
+    }
+});
+
+/** The recipient row a public signing link's access-gate endpoints act on, matched by document + email. */
+async function findGatedRecipient(documentId, email) {
+    const clean = String(email || '').trim().toLowerCase();
+    if (!clean) return null;
+    const [rows] = await db.query(
+        'SELECT id, auth_type FROM document_recipients WHERE document_id = ? AND LOWER(email) = ?',
+        [documentId, clean]
+    );
+    return rows[0] || null;
+}
+
+// @route   POST /api/signatures/:documentId/access/request-code { email }
+// @desc    (Re)sends a one-time access code to a recipient gated behind "Email OTP" / "SMS OTP"
+router.post('/:documentId/access/request-code', async (req, res) => {
+    try {
+        const recipient = await findGatedRecipient(req.params.documentId, req.body?.email);
+        if (!recipient) return res.status(404).json({ success: false, error: 'Recipient not found.' });
+        if (!['Email OTP', 'SMS OTP'].includes(recipient.auth_type)) {
+            return res.status(400).json({ success: false, error: 'This recipient does not use a one-time code.' });
+        }
+        const result = await otpService.issueAccessCode(recipient.id, req);
+        if (!result.success) return res.status(400).json({ success: false, error: result.error || 'The code could not be sent.' });
+        res.json({ success: true, channel: result.channel, maskedDestination: result.maskedDestination });
+    } catch (err) {
+        console.error('Access code request error:', err);
+        res.status(500).json({ success: false, error: 'The code could not be sent.' });
+    }
+});
+
+// @route   POST /api/signatures/:documentId/access/verify { email, code }
+// @desc    Verifies a submitted one-time code or offline passcode and unlocks the document for this recipient
+router.post('/:documentId/access/verify', async (req, res) => {
+    try {
+        const recipient = await findGatedRecipient(req.params.documentId, req.body?.email);
+        if (!recipient) return res.status(404).json({ success: false, error: 'Recipient not found.' });
+        const result = recipient.auth_type === 'Offline Passcode'
+            ? await otpService.verifyPasscode(recipient.id, req.body?.code)
+            : await otpService.verifyAccessCode(recipient.id, req.body?.code);
+        if (!result.success) return res.status(400).json({ success: false, error: result.error || 'That code is not correct.' });
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Access code verify error:', err);
+        res.status(500).json({ success: false, error: 'The code could not be verified.' });
     }
 });
 

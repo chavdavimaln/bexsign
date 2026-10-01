@@ -36,6 +36,7 @@ import { apiFetch } from '../utils/api';
 import { templatesToDocuments, countTemplateUse, countPlaceholders } from '../components/templates/templateUi';
 import { API_BASE } from '../utils/api';
 import PasswordInput from '../components/ui/PasswordInput';
+import FolderSelect from '../components/folders/FolderSelect';
 
 // Zoho Sign limits
 const MAX_RECIPIENTS = 25;
@@ -122,7 +123,10 @@ function cleanRecipientList(list, { validOnly = false } = {}) {
       role: r.role || 'Needs to sign',
       deliveryMode: r.deliveryMode || 'Email',
       privateNote: r.privateNote || '',
-      signingOrder: step
+      signingOrder: step,
+      phone: r.phone ? r.phone.trim() : '',
+      authType: r.auth || 'None',
+      accessPasscode: r.passcode || ''
     }));
 }
 
@@ -261,6 +265,7 @@ export default function SendForSignatures() {
   const [agreementValidUntil, setAgreementValidUntil] = useState('Forever');
   const [documentType, setDocumentType] = useState('Others');
   const [folder, setFolder] = useState('None');
+  const [folderId, setFolderId] = useState(null);
   const [description, setDescription] = useState('');
   const [allowComments, setAllowComments] = useState(false);
   const [autoReminders, setAutoReminders] = useState(true);
@@ -286,7 +291,7 @@ export default function SendForSignatures() {
 
   const isDraftRequest = requestStatus === 'Draft';
   latestRef.current = {
-    documentsList, recipients, sendInOrder, showPreviousFields, daysToComplete, agreementValidUntil, documentType, folder,
+    documentsList, recipients, sendInOrder, showPreviousFields, daysToComplete, agreementValidUntil, documentType, folder, folderId,
     description, allowComments, autoReminders, reminderEveryDays, noteToAll, requireVerification, requestStatus
   };
   const draftSnapshotKey = buildSnapshotKey(latestRef.current);
@@ -429,6 +434,7 @@ export default function SendForSignatures() {
         if (doc.description) setDescription(doc.description);
         if (doc.validity) setAgreementValidUntil(doc.validity);
         if (doc.folder_name) setFolder(doc.folder_name);
+        if (doc.folder_id) setFolderId(doc.folder_id);
         if (doc.auto_reminders !== undefined && doc.auto_reminders !== null) setAutoReminders(Boolean(doc.auto_reminders));
         if (doc.allow_comments !== undefined && doc.allow_comments !== null) setAllowComments(Boolean(doc.allow_comments));
         if (savedVerification?.verification && savedVerification.verification.isDefault === false) {
@@ -444,8 +450,9 @@ export default function SendForSignatures() {
             name: r.name || (r.email ? r.email.split('@')[0] : `Signer ${idx + 1}`),
             role: r.role_label || toRoleLabel(r.role),
             deliveryMode: r.delivery_mode || 'Email',
-            auth: 'Email OTP',
+            auth: r.auth_type || 'Email OTP',
             passcode: '',
+            phone: r.phone || '',
             privateNote: r.private_note || '',
             signingOrder: r.signing_order_index || idx + 1,
             status: r.status
@@ -502,6 +509,7 @@ export default function SendForSignatures() {
     formData.append('documentName', docsMeta[0]?.name || 'Untitled document');
     formData.append('status', status);
     formData.append('folderName', snapshot.folder || 'None');
+    if (snapshot.folderId) formData.append('folderId', snapshot.folderId);
     formData.append('signingOrder', snapshot.sendInOrder ? 'sequential' : 'parallel');
     formData.append('signingMode', signingModeOf(snapshot));
     formData.append('daysToComplete', snapshot.daysToComplete);
@@ -1755,19 +1763,19 @@ export default function SendForSignatures() {
                   setDragRecipientIndex(null);
                   setArmedDragIndex(null);
                 }}
-                className={`bg-white border border-slate-200 border-l-4 border-l-blue-500 rounded p-2 sm:p-2.5 flex flex-col md:flex-row items-stretch md:items-center gap-2 shadow-2xs transition ${dragRecipientIndex === index ? 'opacity-50' : ''}`}
+                className={`bg-white border border-slate-200 border-l-4 border-l-blue-500 rounded p-2 sm:p-2.5 flex flex-col lg:flex-row lg:flex-wrap items-stretch lg:items-center gap-2 shadow-2xs transition ${dragRecipientIndex === index ? 'opacity-50' : ''}`}
               >
                 {/* Grip Handle & Order Index */}
                 <div className="flex items-center gap-1.5 shrink-0">
                   <span
                     onMouseDown={() => setArmedDragIndex(index)}
                     onMouseUp={() => setArmedDragIndex(null)}
-                    className="hidden md:inline-flex cursor-grab active:cursor-grabbing p-0.5 rounded hover:bg-slate-100"
+                    className="hidden lg:inline-flex cursor-grab active:cursor-grabbing p-0.5 rounded hover:bg-slate-100"
                     title="Drag to change the signing order"
                   >
                     <GripVertical size={16} className="text-slate-400" />
                   </span>
-                  <span className="flex md:hidden flex-col">
+                  <span className="flex lg:hidden flex-col">
                     <button
                       type="button"
                       disabled={index === 0}
@@ -1830,7 +1838,7 @@ export default function SendForSignatures() {
                   <select
                     value={rec.role}
                     onChange={(e) => updateRecipientField(index, 'role', e.target.value)}
-                    className="w-full md:w-auto p-2 text-xs border border-slate-300 rounded bg-white text-slate-700 outline-none focus:border-[#007355] font-medium"
+                    className="w-full lg:w-auto p-2 text-xs border border-slate-300 rounded bg-white text-slate-700 outline-none focus:border-[#007355] font-medium"
                   >
                     <option value="Needs to sign">Needs to sign</option>
                     <option value="Receives a copy">Receives a copy</option>
@@ -1844,7 +1852,7 @@ export default function SendForSignatures() {
                   <select
                     value={rec.deliveryMode}
                     onChange={(e) => updateRecipientField(index, 'deliveryMode', e.target.value)}
-                    className="w-full md:w-auto p-2 text-xs border border-slate-300 rounded bg-white text-slate-700 outline-none focus:border-[#007355] font-medium"
+                    className="w-full lg:w-auto p-2 text-xs border border-slate-300 rounded bg-white text-slate-700 outline-none focus:border-[#007355] font-medium"
                   >
                     <option value="Email">Email</option>
                     <option value="Email + SMS">Email + SMS</option>
@@ -1992,17 +2000,11 @@ export default function SendForSignatures() {
               {/* Folder */}
               <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-6">
                 <label className="w-44 font-medium text-slate-600">Folder</label>
-                <select
-                  value={folder}
-                  onChange={(e) => setFolder(e.target.value)}
+                <FolderSelect
+                  value={folderId}
+                  onChange={(newFolderId, newFolderName) => { setFolderId(newFolderId); setFolder(newFolderName); }}
                   className="w-full sm:w-72 p-2 border border-slate-300 rounded bg-white outline-none focus:border-[#007355] text-xs font-medium"
-                >
-                  <option value="None">None</option>
-                  <option value="General">General</option>
-                  <option value="HR Agreements">HR Agreements</option>
-                  <option value="Financial">Financial</option>
-                  <option value="Legal">Legal</option>
-                </select>
+                />
               </div>
 
               {/* Description */}
@@ -2212,6 +2214,20 @@ export default function SendForSignatures() {
                     onChange={(e) => updateRecipientField(activeCustomizeIndex, 'passcode', e.target.value)}
                     className="w-full p-2 border border-slate-300 rounded text-xs"
                   />
+                </div>
+              )}
+
+              {(recipients[activeCustomizeIndex].auth === 'SMS OTP' || String(recipients[activeCustomizeIndex].deliveryMode || '').includes('SMS')) && (
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">Phone number</label>
+                  <input
+                    type="tel"
+                    placeholder="+91 98765 43210"
+                    value={recipients[activeCustomizeIndex].phone || ''}
+                    onChange={(e) => updateRecipientField(activeCustomizeIndex, 'phone', e.target.value)}
+                    className="w-full p-2 border border-slate-300 rounded text-xs outline-none focus:border-[#007355]"
+                  />
+                  <p className="text-[10px] text-slate-400 mt-1">Include the country code. Needed to text the signing link and/or a one-time code.</p>
                 </div>
               )}
 

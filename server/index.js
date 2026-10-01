@@ -27,6 +27,7 @@ const selfSignRoutes = require('./routes/selfSign');
 const publicApiRoutes = require('./routes/publicApi');
 const integrationRoutes = require('./routes/integrations');
 const oauthApps = require('./routes/oauthApps');
+const folderRoutes = require('./routes/folders');
 const { ensurePlatformSchema } = require('./utils/platformSchema');
 const { startReportScheduler } = require('./utils/reportScheduler');
 
@@ -78,6 +79,7 @@ app.use('/api/auth/oauth', oauthRoutes);
 app.use('/api', authRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/documents', documentRoutes);
+app.use('/api/folders', folderRoutes);
 app.use('/api/signatures', signingRoutes);
 app.use('/api/templates', templateRoutes);
 app.use('/api/reports', reportRoutes);

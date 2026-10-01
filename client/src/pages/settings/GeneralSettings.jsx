@@ -364,7 +364,7 @@ export default function GeneralSettings() {
           <Toggle label="Allow recipients to decline" description="Recipients can decline with a reason." checked={Boolean(form.allow_decline)} onChange={(v) => set('allow_decline', v)} disabled={!canEdit} />
           <Toggle label="Allow reassigning" description="Recipients can forward the request to someone else." checked={Boolean(form.allow_reassign)} onChange={(v) => set('allow_reassign', v)} disabled={!canEdit} />
           <Toggle label="Allow print & sign" description="Recipients can sign on paper and upload a scan." checked={Boolean(form.allow_print_sign)} onChange={(v) => set('allow_print_sign', v)} disabled={!canEdit} />
-          <Toggle label="Require email OTP from signers" description="Signers confirm a one-time code before signing." checked={Boolean(form.require_signer_otp)} onChange={(v) => set('require_signer_otp', v)} disabled={!canEdit} />
+          <Toggle label="Recipient access codes" description="Turns on the Email OTP, SMS OTP and Offline Passcode gates chosen per recipient in Customize. Off by default — recipients open their signing link right away." checked={Boolean(form.require_signer_otp)} onChange={(v) => set('require_signer_otp', v)} disabled={!canEdit} />
         </div>
       </Card>
 

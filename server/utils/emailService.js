@@ -554,8 +554,29 @@ async function sendReportEmail({ to, reportName, periodLabel = '', rowCount = 0,
   return deliverMail({ to, subject: `BexSign report: ${reportName}${periodLabel ? ` (${periodLabel})` : ''}`, html: mailHtml, attachments }, 'Report email');
 }
 
+/** A one-time access code (Customize > Authentication Type "Email OTP") the recipient must enter before a document opens. */
+async function sendOtpEmail({ to, name = '', code, documentName = 'Document', expiresInMinutes = 10 }) {
+  const mailHtml = getBexSignHtmlTemplate({
+    headerTitle: 'Your document access code',
+    headerColor: '#00a884',
+    mainMessage: `Hello ${escapeHtml(name || to)},<br/><br/>Enter this code to open <strong>${escapeHtml(documentName)}</strong> for signing.`,
+    details: [
+      { label: 'Access code', value: `<span style="font-size: 20px; font-weight: 700; letter-spacing: 4px;">${escapeHtml(code)}</span>` },
+      { label: 'Valid for', value: `${expiresInMinutes} minutes` }
+    ],
+    footerNote: 'If you did not request this document, you can ignore this email.'
+  });
+  return deliverMail({
+    to,
+    subject: `Your access code: ${code}`,
+    html: mailHtml,
+    text: `Your access code for "${documentName}" is ${code}. It is valid for ${expiresInMinutes} minutes.`
+  }, 'Access code email');
+}
+
 module.exports = {
   sendNotificationEmail,
+  sendOtpEmail,
   sendReportEmail,
   sendPasswordResetEmail,
   sendPasswordChangedEmail,

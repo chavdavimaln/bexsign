@@ -5,6 +5,7 @@ import { generateBexsignId } from '../utils/documentId';
 import { getDefaultDocContent } from '../utils/documentDefaults';
 import { getStampImage, DEFAULT_COMPANY_NAME } from '../utils/documentFields';
 import { fieldBelongsTo } from '../utils/recipientColors';
+import { isAutoResizeField, autoResizeWidth } from '../utils/fieldSizing';
 
 /**
  * Canonical BexDocumentSheet Component
@@ -85,6 +86,11 @@ export default function BexDocumentSheet({
 
   const inputClass = (paddingLeft = 'pl-3') => `w-full py-2.5 ${paddingLeft} pr-7 text-xs border border-dashed border-emerald-500 rounded-lg bg-emerald-50/40 hover:bg-emerald-50 focus:bg-white focus:border-solid focus:border-[#007355] focus:ring-2 focus:ring-emerald-100 outline-none font-semibold text-slate-800 placeholder:text-slate-400 placeholder:font-medium transition shadow-2xs`;
   const valueClass = 'text-xs font-semibold text-slate-800 px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg min-h-[38px] break-words';
+
+  // Auto-resize fields get an explicit pixel width (grown to fit their text, never below the configured width)
+  // instead of the fixed "w-full sm:w-64" column so the box can actually widen past that column.
+  const fieldBoxClass = (field) => (isAutoResizeField(field) ? 'relative' : 'w-full sm:w-64 relative');
+  const fieldBoxStyle = (field) => (isAutoResizeField(field) ? { width: `${autoResizeWidth(field, { paddingPx: 52 })}px`, maxWidth: '100%' } : undefined);
 
   // Outlines the highlighted recipient's fields (their colour, soft tint) and fades everyone else's
   const withHighlight = (field, element) => {
@@ -324,7 +330,7 @@ export default function BexDocumentSheet({
                 if (field.type === 'Email') {
                   const emailValue = field.value !== undefined && field.value !== 'Email' ? field.value : signerEmail;
                   return (
-                    <div key={key} id={id} className="w-full sm:w-64 relative" title={hint}>
+                    <div key={key} id={id} className={fieldBoxClass(field)} style={fieldBoxStyle(field)} title={hint}>
                       {!isLocked(field) ? (
                         <>
                           <input
@@ -348,7 +354,7 @@ export default function BexDocumentSheet({
                 if (field.type === 'Sign date') {
                   const dateVal = field.value || new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
                   return (
-                    <div key={key} id={id} className="w-full sm:w-64 relative" title={hint}>
+                    <div key={key} id={id} className={fieldBoxClass(field)} style={fieldBoxStyle(field)} title={hint}>
                       {!isLocked(field) ? (
                         <>
                           <input
@@ -481,7 +487,7 @@ export default function BexDocumentSheet({
 
                 // Default Text / Full name / Job title / Company
                 return (
-                  <div key={key} id={id} className="w-full sm:w-64 relative" title={hint}>
+                  <div key={key} id={id} className={fieldBoxClass(field)} style={fieldBoxStyle(field)} title={hint}>
                     {!isLocked(field) ? (
                       <>
                         <input

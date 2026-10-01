@@ -15,7 +15,8 @@ import { getDocumentOwner } from '../utils/currentUser';
 import { usePermissions } from '../utils/permissions';
 import EditCopyModal from '../components/EditCopyModal';
 import { downloadAllSignedDocuments, printAllLockedDocuments } from '../utils/signedPdf';
-import { API_BASE, API_ORIGIN, authHeaders } from '../utils/api';
+import { API_BASE, API_ORIGIN, authHeaders, apiFetch } from '../utils/api';
+import FolderSelect from '../components/folders/FolderSelect';
 import {
   FileText,
   Plus,
@@ -74,6 +75,7 @@ export default function DocumentsList() {
   const location = useLocation();
 
   const isTrashView = location.pathname.includes('/trash') || statusFilter === 'trashed';
+  const folderIdParam = new URLSearchParams(location.search).get('folderId');
 
   const [documents, setDocuments] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -81,6 +83,10 @@ export default function DocumentsList() {
   const [activeMenuId, setActiveMenuId] = useState(null);
   const [actionMessage, setActionMessage] = useState('');
   const [selectedDoc, setSelectedDoc] = useState(null);
+  const [folders, setFolders] = useState([]);
+  const [showMoveFolderModal, setShowMoveFolderModal] = useState(false);
+  const [moveFolderSelection, setMoveFolderSelection] = useState({ id: null, name: 'None' });
+  const [moveFolderBusy, setMoveFolderBusy] = useState(false);
 
   // BexSign Table Column Visibility State with LocalStorage Persistence
   const [tableColumns, setTableColumns] = useState(() => {
@@ -193,6 +199,10 @@ export default function DocumentsList() {
   useEffect(() => {
     fetchDocuments();
   }, [statusFilter, location.pathname]);
+
+  useEffect(() => {
+    apiFetch('/folders').then((data) => setFolders(Array.isArray(data.folders) ? data.folders : [])).catch(() => setFolders([]));
+  }, []);
 
   const fetchDocuments = async () => {
     setLoading(true);
@@ -616,6 +626,9 @@ export default function DocumentsList() {
       if (docStatus === 'trashed') return false;
     }
 
+    // Folder clicked from the Folders page (/documents?folderId=X)
+    const matchFolderParam = !folderIdParam || String(doc.folder_id || '') === String(folderIdParam);
+
     // Global search query
     const matchSearch =
       !searchQuery ||
@@ -642,6 +655,7 @@ export default function DocumentsList() {
     const matchColStatus = !columnFilters.status || docStatus.includes(columnFilters.status.toLowerCase()) || (((columnFilters.status || '').toLowerCase().includes('process') || (columnFilters.status || '').toLowerCase().includes('progress')) && (docStatus.includes('progress') || docStatus.includes('process')));
 
     return (
+      matchFolderParam &&
       matchSearch &&
       matchStatusParam &&
       matchColName &&
@@ -723,13 +737,24 @@ export default function DocumentsList() {
 
   const handleBulkMoveFolder = () => {
     if (selectedDocIds.length === 0) return;
-    const folderName = prompt('Enter folder name to move selected documents to:');
-    if (folderName) {
-      setDocuments(
-        documents.map((d) => (selectedDocIds.includes(d.id) ? { ...d, folder: folderName } : d))
-      );
+    setMoveFolderSelection({ id: null, name: 'None' });
+    setShowMoveFolderModal(true);
+  };
+
+  const confirmBulkMoveFolder = async () => {
+    setMoveFolderBusy(true);
+    try {
+      await apiFetch('/documents/bulk-move-folder', { method: 'POST', body: { ids: selectedDocIds, folderId: moveFolderSelection.id } });
+      setDocuments((prev) => prev.map((d) => (selectedDocIds.includes(d.id)
+        ? { ...d, folder_id: moveFolderSelection.id, folder_name: moveFolderSelection.name }
+        : d)));
+      handleActionToast(`Moved ${selectedDocIds.length} document(s) to "${moveFolderSelection.name}".`);
       setSelectedDocIds([]);
-      handleActionToast(`Moved selected documents to folder "${folderName}".`);
+      setShowMoveFolderModal(false);
+    } catch (e) {
+      handleActionToast(e.message || 'The documents could not be moved.');
+    } finally {
+      setMoveFolderBusy(false);
     }
   };
 
@@ -1069,15 +1094,17 @@ export default function DocumentsList() {
 
                 {isColVisible('folder') && (
                   <th className="p-2 text-center">
-                    <input
-                      type="text"
+                    <select
                       value={columnFilters.folder}
                       onChange={(e) => {
                         setColumnFilters({ ...columnFilters, folder: e.target.value });
                         setCurrentPage(1);
                       }}
-                      className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 font-normal focus:outline-none focus:border-[#007355] shadow-2xs text-center"
-                    />
+                      className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 font-normal focus:outline-none focus:border-[#007355] shadow-2xs text-center cursor-pointer"
+                    >
+                      <option value="">All folders</option>
+                      {folders.map((f) => <option key={f.id} value={f.name}>{f.name}</option>)}
+                    </select>
                   </th>
                 )}
 
@@ -1834,6 +1861,34 @@ export default function DocumentsList() {
             <p className="text-slate-600 leading-relaxed">Please read this Electronic Record and Signature Disclosure carefully. By executing this document, you agree to receive disclosures, notices, and communications electronically.</p>
             <div className="flex justify-end pt-3 border-t">
               <button onClick={() => setActiveModal(null)} className="px-4 py-1.5 bg-[#00a884] text-white rounded font-bold">I Agree</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 13. Move selected documents to a folder */}
+      {showMoveFolderModal && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-white text-slate-900 rounded-xl max-w-sm w-full p-6 shadow-2xl border border-slate-200 space-y-4 text-xs my-auto">
+            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+              <h3 className="text-base font-bold text-slate-900">Move to folder</h3>
+              <button onClick={() => setShowMoveFolderModal(false)} className="text-slate-400 hover:text-slate-700"><X size={18} /></button>
+            </div>
+            <p className="text-slate-600">Move {selectedDocIds.length} selected document(s) to:</p>
+            <FolderSelect
+              value={moveFolderSelection.id}
+              onChange={(folderId, folderName) => setMoveFolderSelection({ id: folderId, name: folderName })}
+              className="w-full p-2 border border-slate-300 rounded bg-white outline-none focus:border-[#007355] text-xs font-medium"
+            />
+            <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+              <button onClick={() => setShowMoveFolderModal(false)} className="px-4 py-1.5 border border-slate-300 rounded text-xs font-semibold hover:bg-slate-50">Cancel</button>
+              <button
+                onClick={confirmBulkMoveFolder}
+                disabled={moveFolderBusy}
+                className="bg-[#007355] hover:bg-[#005c44] disabled:opacity-60 text-white px-5 py-1.5 rounded text-xs font-extrabold shadow"
+              >
+                {moveFolderBusy ? 'Moving...' : 'Move'}
+              </button>
             </div>
           </div>
         </div>
