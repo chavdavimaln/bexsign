@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "axios": "^1.7.2",
+    "flag-icons": "^7.5.0",
+    "libphonenumber-js": "^1.13.14",
     "lucide-react": "^0.395.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

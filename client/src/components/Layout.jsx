@@ -37,7 +37,7 @@ import {
 } from 'lucide-react';
 import NotificationBell from './notifications/NotificationBell';
 import { PermissionsProvider, usePermissions } from '../utils/permissions';
-import { API_BASE, sessionToken, clearSession } from '../utils/api';
+import { API_BASE, apiUrl, sessionToken, clearSession } from '../utils/api';
 
 /**
  * Sidebar menu. Groups open one at a time (opening a group closes the one that was open, at every level), and the
@@ -246,7 +246,7 @@ function AppLayout() {
   const [searchQuery, setSearchQuery] = useState('');
 
   const { role: permissionRole } = usePermissions();
-  const currentUser = useMemo(() => {
+  const readCurrentUser = () => {
     try {
       const saved = JSON.parse(localStorage.getItem('user') || '{}');
       const name = (saved.name || `${saved.first_name || saved.firstName || ''} ${saved.last_name || saved.lastName || ''}`).trim();
@@ -254,7 +254,36 @@ function AppLayout() {
     } catch (e) {
       return { name: 'User', email: '' };
     }
+  };
+  const [currentUser, setCurrentUser] = useState(readCurrentUser);
+  // My Profile saves the name and the profile picture: the header follows without a page reload
+  useEffect(() => {
+    const refreshUser = () => setCurrentUser(readCurrentUser());
+    window.addEventListener('bexsign-user-changed', refreshUser);
+    return () => window.removeEventListener('bexsign-user-changed', refreshUser);
   }, []);
+  // The profile picture is not part of the sign-in answer, so it is read once from the profile
+  useEffect(() => {
+    const userId = currentUser.id;
+    if (!userId) return undefined;
+    let cancelled = false;
+    fetch(`${API_BASE}/settings/profile/${userId}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled || !data || Number(data.id) !== Number(userId)) return;
+        const avatarUrl = data.avatar_url || null;
+        try {
+          const saved = JSON.parse(localStorage.getItem('user') || '{}');
+          if ((saved.avatar_url || null) === avatarUrl) return;
+          localStorage.setItem('user', JSON.stringify({ ...saved, avatar_url: avatarUrl }));
+        } catch (e) {}
+        setCurrentUser((prev) => ({ ...prev, avatar_url: avatarUrl }));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser.id]);
   const displayRole = String(permissionRole || currentUser.role || 'team_member').replace(/_/g, ' ');
 
   // Modal triggers
@@ -300,25 +329,31 @@ function AppLayout() {
     return () => clearTimeout(timer);
   }, [pathname]);
 
-  // Number of documents per status for the Sent Documents list (refreshed when the page changes)
+  // Number of documents per status for the Sent Documents list (refreshed when the page changes
+  // and when a list is refreshed in place)
   const [statusCounts, setStatusCounts] = useState({});
   useEffect(() => {
     let cancelled = false;
-    fetch(`${API_BASE}/documents`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (cancelled || !Array.isArray(data?.documents)) return;
-        const counts = { all: data.documents.length };
-        data.documents.forEach((doc) => {
-          let status = String(doc.status || 'Draft').toLowerCase();
-          if (status === 'in process') status = 'in progress';
-          counts[status] = (counts[status] || 0) + 1;
-        });
-        setStatusCounts(counts);
-      })
-      .catch(() => {});
+    const loadCounts = () => {
+      fetch(`${API_BASE}/documents`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (cancelled || !Array.isArray(data?.documents)) return;
+          const counts = { all: data.documents.length };
+          data.documents.forEach((doc) => {
+            let status = String(doc.status || 'Draft').toLowerCase();
+            if (status === 'in process') status = 'in progress';
+            counts[status] = (counts[status] || 0) + 1;
+          });
+          setStatusCounts(counts);
+        })
+        .catch(() => {});
+    };
+    loadCounts();
+    window.addEventListener('bexsign-documents-changed', loadCounts);
     return () => {
       cancelled = true;
+      window.removeEventListener('bexsign-documents-changed', loadCounts);
     };
   }, [pathname]);
 
@@ -599,20 +634,36 @@ function AppLayout() {
             <NotificationBell />
 
             <div className="flex items-center gap-2 sm:gap-3 border-l pl-2 sm:pl-4 border-slate-200">
-              <div className="h-9 w-9 rounded-full bg-gradient-to-tr from-purple-700 to-indigo-600 text-white flex items-center justify-center font-bold text-sm shadow-sm">
-                {(currentUser.name || 'U')[0].toUpperCase()}
-              </div>
-              <div className="hidden sm:block text-left text-xs">
-                <div className="flex items-center gap-1.5">
-                  <p className="font-bold text-slate-800">{currentUser.name}</p>
-                  <span className={`px-1.5 py-0.2 rounded text-[9px] font-black uppercase ${
-                    displayRole === 'leader' ? 'bg-blue-100 text-blue-700' : (displayRole === 'team member' ? 'bg-slate-100 text-slate-700' : 'bg-purple-100 text-purple-700')
-                  }`}>
-                    {displayRole}
-                  </span>
+              {/* Picture (or initial) and name: open My Profile */}
+              <Link
+                to="/settings/profile"
+                title="My Profile"
+                className="flex items-center gap-2 sm:gap-3 rounded-lg p-1 -m-1 hover:bg-slate-100 transition cursor-pointer"
+              >
+                {currentUser.avatar_url ? (
+                  <img
+                    src={apiUrl(currentUser.avatar_url)}
+                    alt=""
+                    onError={() => setCurrentUser((prev) => ({ ...prev, avatar_url: null }))}
+                    className="h-9 w-9 rounded-full object-cover shadow-sm border border-slate-200 bg-slate-100"
+                  />
+                ) : (
+                  <div className="h-9 w-9 rounded-full bg-gradient-to-tr from-purple-700 to-indigo-600 text-white flex items-center justify-center font-bold text-sm shadow-sm">
+                    {(currentUser.name || 'U')[0].toUpperCase()}
+                  </div>
+                )}
+                <div className="hidden sm:block text-left text-xs">
+                  <div className="flex items-center gap-1.5">
+                    <p className="font-bold text-slate-800">{currentUser.name}</p>
+                    <span className={`px-1.5 py-0.2 rounded text-[9px] font-black uppercase ${
+                      displayRole === 'leader' ? 'bg-blue-100 text-blue-700' : (displayRole === 'team member' ? 'bg-slate-100 text-slate-700' : 'bg-purple-100 text-purple-700')
+                    }`}>
+                      {displayRole}
+                    </span>
+                  </div>
+                  <p className="text-slate-500 text-[11px]">{currentUser.email}</p>
                 </div>
-                <p className="text-slate-500 text-[11px]">{currentUser.email}</p>
-              </div>
+              </Link>
               <button
                 onClick={handleLogout}
                 className="p-1.5 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition"

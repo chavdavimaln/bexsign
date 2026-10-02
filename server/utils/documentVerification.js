@@ -13,6 +13,11 @@
  * utils/validityLog.js). The result, the confirmer and an optional note are stored, and the record becomes
  * `confirmed` — or `rejected` with a reason.
  *
+ * A rejection can also ask for corrections: the confirmer reviews what every recipient entered, marks the
+ * recipients (and their fields) that are not correct, and the request is reopened for exactly those recipients
+ * (`correction`). Only they are emailed (and texted, when SMS is set up); everyone else keeps their signature.
+ * When they have signed again the request completes and waits for confirmation again.
+ *
  * Two tables of its own:
  *   document_verification         the choice and the state of one request (one row per document)
  *   document_verification_events  every check, confirmation and rejection, so the decision is auditable
@@ -31,6 +36,8 @@ const STATUSES = {
   pending: { label: 'Awaiting confirmation', tone: 'amber' },
   confirmed: { label: 'Verified & confirmed', tone: 'emerald' },
   rejected: { label: 'Rejected', tone: 'rose' },
+  // Rejected with a correction request: the chosen recipients are signing again
+  correction: { label: 'Correction requested', tone: 'sky' },
   not_required: { label: 'Not required', tone: 'slate' }
 };
 
@@ -87,6 +94,12 @@ function ensureVerificationSchema() {
             KEY idx_verification_events_document (document_id, id)
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         `);
+        // Who was asked to correct what (JSON), for the request that is in a correction round
+        try {
+          await db.query('ALTER TABLE document_verification ADD COLUMN correction_details MEDIUMTEXT NULL');
+        } catch (err) {
+          if (err.code !== 'ER_DUP_FIELDNAME') console.warn('[Schema] correction_details column not added:', err.message);
+        }
       } catch (err) {
         schemaPromise = null;
         console.warn('[Schema] Document verification tables not ready:', err.message);
@@ -302,6 +315,16 @@ async function runIntegrityCheck(documentId, { req = null, persist = true } = {}
   return { result: worst, message, files, checked: files.length };
 }
 
+function parseCorrection(value) {
+  if (!value) return null;
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    return parsed && Array.isArray(parsed.recipients) ? parsed : null;
+  } catch (err) {
+    return null;
+  }
+}
+
 /** The saved record shaped for the API and the client. */
 function describeVerification(row, { documentStatus = null } = {}) {
   const required = row ? Boolean(row.required) : DEFAULT_REQUIRED;
@@ -322,6 +345,8 @@ function describeVerification(row, { documentStatus = null } = {}) {
     confirmedAt: row?.confirmed_at || null,
     note: row?.note || null,
     rejectedReason: row?.rejected_reason || null,
+    // Set while the request is in a correction round: who was asked to correct which fields, and how they were told
+    correction: status === 'correction' ? parseCorrection(row?.correction_details) : null,
     createdAt: row?.created_at || null,
     updatedAt: row?.updated_at || null,
     documentStatus: documentStatus || null,
@@ -493,8 +518,180 @@ async function confirmVerification(documentId, { req = null, note = '' } = {}) {
   return { ...(await getVerification(id)), integrity };
 }
 
-/** Marks the request rejected, with the reason the confirmer gave. */
-async function rejectVerification(documentId, { req = null, reason = '' } = {}) {
+/** What a signer entered into a field, in a form the review can show. */
+function reviewValue(field, recipient) {
+  const raw = field.value;
+  const blank = raw === undefined || raw === null || String(raw).trim() === '' || raw === field.type;
+  if (field.type === 'Signature' || field.type === 'Initial') {
+    const image = field.signatureImage || recipient.signature_image || '';
+    return { kind: 'signature', image: typeof image === 'string' ? image : '', text: field.signedOnPaper ? 'Signed on paper' : '' };
+  }
+  if (field.type === 'Checkbox') {
+    const checked = raw === true || raw === 'true' || (raw !== false && raw !== 'false' && field.checked === true);
+    return { kind: 'checkbox', checked, text: String(field.optionValue || '').trim() || (checked ? 'Checked' : 'Not checked') };
+  }
+  if (field.type === 'Split text') {
+    const text = Array.isArray(field.gridValue) && field.gridValue.some(Boolean) ? field.gridValue.join('') : (blank ? '' : String(raw));
+    return { kind: 'text', text };
+  }
+  return { kind: 'text', text: blank ? '' : String(raw) };
+}
+
+/**
+ * Everything the confirmer needs to review a completed request before rejecting it: every signer with the data
+ * they entered, field by field, and how each of them can be reached.
+ */
+async function getReviewData(documentId) {
+  const id = toInt(documentId);
+  const requestHelpers = require('./requestHelpers');
+  const { isSmsLive } = require('./smsService');
+  const recipients = await requestHelpers.getRecipients(id);
+  const signingRecipients = recipients.filter((r) => requestHelpers.isSigningRole(r.role));
+  const files = await requestHelpers.getDocumentFiles(id);
+  const [fieldRows] = await db.query('SELECT * FROM document_fields WHERE document_id = ? ORDER BY id ASC', [id]);
+  const fields = fieldRows.map(requestHelpers.parseFieldRow);
+
+  return {
+    smsReady: isSmsLive(),
+    documents: files.map((file, index) => ({ index, name: file.file_name })),
+    recipients: signingRecipients.map((recipient) => ({
+      id: recipient.id,
+      name: recipient.name || recipient.email,
+      email: recipient.email,
+      phone: recipient.phone || null,
+      role: recipient.role_label || recipient.role,
+      status: recipient.status,
+      signedAt: recipient.signed_at,
+      step: recipient.signing_order_index || 1,
+      fields: fields
+        // A stamp is the sender's own picture: there is nothing of the signer's to review in it
+        .filter((field) => field.type !== 'Stamp' && requestHelpers.fieldBelongsToRecipient(field, recipient, signingRecipients))
+        .map((field) => ({
+          id: field.id,
+          type: field.type,
+          name: field.label || field.type,
+          dataLabel: String(field.dataLabel || '').trim() || null,
+          description: field.description || '',
+          required: Boolean(field.required),
+          readOnly: Boolean(field.isReadOnly),
+          documentIndex: field.docIndex || 0,
+          documentName: files[field.docIndex || 0]?.file_name || null,
+          page: field.page || 1,
+          value: reviewValue(field, recipient)
+        }))
+    }))
+  };
+}
+
+/**
+ * Tells the reopened recipients what to correct: an email, and a text message when SMS is set up and wanted.
+ * "In order" requests reach a recipient when it is their turn, so only the recipients who can sign now are told
+ * now; the others receive the request in signing order.
+ */
+async function sendCorrectionRequests(id, reopened, { reason, channels, req }) {
+  const requestHelpers = require('./requestHelpers');
+  const signingFlow = require('./signingFlow');
+  const { sendCorrectionRequestEmail } = require('./emailService');
+  const { sendSms, isSmsLive } = require('./smsService');
+
+  const [docs] = await db.query('SELECT * FROM documents WHERE id = ?', [id]);
+  const doc = docs[0];
+  const sender = await requestHelpers.getRequestSender(doc);
+  const flow = await signingFlow.getSigningFlow(id, doc);
+  const current = await requestHelpers.getRecipients(id);
+  const active = requestHelpers.getActiveSigningGroup(current, flow.isSequential);
+  const deliveries = [];
+
+  for (const { recipient, fields } of reopened) {
+    const delivery = {
+      id: recipient.id,
+      name: recipient.name || recipient.email,
+      email: recipient.email,
+      fields: fields.map((field) => ({ id: field.id, label: field.label, note: field.note })),
+      emailed: false,
+      emailError: null,
+      sms: null,
+      waitingTurn: false
+    };
+    if (!active.some((r) => r.id === recipient.id)) {
+      // Signs after the recipients before them: the request is sent to them when it is their turn
+      await db.query("UPDATE document_recipients SET status = 'pending', sent_at = NULL WHERE id = ?", [recipient.id]);
+      delivery.waitingTurn = true;
+      deliveries.push(delivery);
+      continue;
+    }
+
+    const signingUrl = requestHelpers.buildSigningUrl(id, recipient.email);
+    if (channels.email) {
+      const result = await sendCorrectionRequestEmail({
+        to: recipient.email,
+        recipientName: recipient.name || String(recipient.email).split('@')[0],
+        documentName: doc.document_name || 'Document',
+        senderName: sender.name,
+        senderEmail: sender.email,
+        orgName: sender.company,
+        reason,
+        fields: fields.map((field) => ({ label: field.name || field.label, note: field.note })),
+        signingUrl
+      });
+      delivery.emailed = Boolean(result.success);
+      delivery.emailError = result.success ? null : (result.error || 'The email could not be sent.');
+      await signingFlow.recordDispatch({
+        documentId: id,
+        recipient,
+        emailType: 'correction',
+        triggerSource: 'verification',
+        status: result.success ? 'sent' : 'failed',
+        error: result.success ? null : result.error
+      });
+    }
+    if (channels.sms) {
+      if (!recipient.phone) delivery.sms = { sent: false, error: 'No phone number was entered for this recipient.' };
+      else if (!isSmsLive()) delivery.sms = { sent: false, error: 'Text messages are not set up on this server.' };
+      else {
+        const result = await sendSms({
+          to: recipient.phone,
+          body: `${sender.name} asks you to correct and sign "${doc.document_name || 'Document'}" again: ${String(reason).slice(0, 120)} ${signingUrl}`
+        });
+        delivery.sms = { sent: Boolean(result.success && !result.dryRun), error: result.success ? null : result.error, phone: recipient.phone };
+      }
+    }
+
+    const told = [delivery.emailed ? 'email' : null, delivery.sms?.sent ? 'SMS' : null].filter(Boolean).join(' and ');
+    await requestHelpers.logRequestEvent(id, {
+      recipientId: recipient.id,
+      eventType: 'correction_requested',
+      description: `Correction requested from ${delivery.name} (${recipient.email})${fields.length ? `: ${fields.map((f) => f.name || f.label).join(', ')}` : ''}${told ? `. Sent by ${told}` : '. No message could be sent'}`,
+      req
+    });
+    try {
+      await notify({
+        emails: [recipient.email],
+        category: 'signing',
+        severity: 'warning',
+        title: `Correction requested for "${doc.document_name || 'Document'}"`,
+        message: `${sender.name} asks you to correct your part and sign again: ${reason}`,
+        link: `/documents/sign/${id}?email=${encodeURIComponent(recipient.email)}`,
+        entityType: 'document',
+        entityId: id,
+        actorName: sender.name
+      });
+    } catch (err) {
+      console.warn('[Verification] correction notification skipped:', err.message);
+    }
+    deliveries.push(delivery);
+  }
+  return deliveries;
+}
+
+/**
+ * Marks the request rejected, with the reason the confirmer gave.
+ *
+ * Without `corrections` the request stays completed and is recorded as not confirmed; nobody is told.
+ * With `corrections` ([{ recipientId, fieldIds, notes }]) the request is reopened for those recipients only
+ * and they are asked, by the chosen `channels` ({ email, sms }), to correct their part and sign again.
+ */
+async function rejectVerification(documentId, { req = null, reason = '', corrections = [], channels = {} } = {}) {
   const id = toInt(documentId);
   const context = await getDocumentContext(id);
   if (!context) throw new Error('Document not found');
@@ -509,12 +706,67 @@ async function rejectVerification(documentId, { req = null, reason = '' } = {}) 
 
   const integrity = await runIntegrityCheck(id, { req });
   const actorId = req?.user?.id ?? null;
+
+  const selections = (Array.isArray(corrections) ? corrections : []).filter((selection) => selection && selection.recipientId);
+  if (selections.length > 0) {
+    const wanted = { email: channels?.email !== false, sms: Boolean(channels?.sms) };
+    if (!wanted.email && !wanted.sms) throw new Error('Choose how the recipients are told: by email, by SMS, or both.');
+    const requestHelpers = require('./requestHelpers');
+    const reopened = await requestHelpers.reopenRecipientsForCorrection(id, selections, { note: cleanReason });
+    if (reopened.length === 0) throw new Error('None of the selected recipients has signed this request, so there is nothing to correct.');
+    const deliveries = await sendCorrectionRequests(id, reopened, { reason: cleanReason, channels: wanted, req });
+    const details = {
+      requestedAt: new Date().toISOString(),
+      requestedBy: actorNameOf(req, 'BexSign'),
+      channels: wanted,
+      recipients: deliveries
+    };
+    await db.query(
+      `INSERT INTO document_verification (document_id, required, status, integrity_result, integrity_message, confirmed_by, confirmed_at, rejected_reason, correction_details)
+       VALUES (?, 1, 'correction', ?, ?, ?, NOW(), ?, ?)
+       ON DUPLICATE KEY UPDATE required = 1, status = 'correction', integrity_result = VALUES(integrity_result),
+         integrity_message = VALUES(integrity_message), confirmed_by = VALUES(confirmed_by),
+         confirmed_at = VALUES(confirmed_at), rejected_reason = VALUES(rejected_reason),
+         correction_details = VALUES(correction_details)`,
+      [id, integrity.result, integrity.message.slice(0, 500), actorId, cleanReason, JSON.stringify(details)]
+    );
+    const names = deliveries.map((d) => d.name).join(', ');
+    await recordVerificationEvent(id, {
+      action: 'correction',
+      req,
+      result: integrity.result,
+      message: `Rejected and sent back for correction to ${names}: ${cleanReason}`
+    });
+    await logActivity({
+      req,
+      category: 'document',
+      action: `Rejected "${context.name || 'Document'}" and asked ${deliveries.length} recipient${deliveries.length === 1 ? '' : 's'} to correct it`,
+      entityType: 'document',
+      entityId: id,
+      details: { reason: cleanReason, recipients: deliveries.map((d) => ({ email: d.email, fields: d.fields.map((f) => f.label), emailed: d.emailed, sms: d.sms?.sent || false })) }
+    });
+    if (context.userId && context.userId !== actorId) {
+      await notify({
+        userIds: [context.userId],
+        category: 'document',
+        severity: 'warning',
+        title: `"${context.name || 'Document'}" was sent back for correction`,
+        message: `${actorNameOf(req, 'A manager')} asked ${names} to correct and sign again: ${cleanReason}`,
+        link: `/documents/${id}/details`,
+        entityType: 'document',
+        entityId: id,
+        actorName: actorNameOf(req)
+      });
+    }
+    return { ...(await getVerification(id)), integrity, deliveries };
+  }
+
   await db.query(
     `INSERT INTO document_verification (document_id, required, status, integrity_result, integrity_message, confirmed_by, confirmed_at, rejected_reason)
      VALUES (?, 1, 'rejected', ?, ?, ?, NOW(), ?)
      ON DUPLICATE KEY UPDATE required = 1, status = 'rejected', integrity_result = VALUES(integrity_result),
        integrity_message = VALUES(integrity_message), confirmed_by = VALUES(confirmed_by),
-       confirmed_at = VALUES(confirmed_at), rejected_reason = VALUES(rejected_reason)`,
+       confirmed_at = VALUES(confirmed_at), rejected_reason = VALUES(rejected_reason), correction_details = NULL`,
     [id, integrity.result, integrity.message.slice(0, 500), actorId, cleanReason]
   );
   await recordVerificationEvent(id, {
@@ -594,6 +846,7 @@ module.exports = {
   isVerificationRequired,
   saveVerificationSetting,
   runIntegrityCheck,
+  getReviewData,
   recordVerificationEvent,
   onRequestCompleted,
   confirmVerification,

@@ -29,7 +29,7 @@ async function buildCompletedRequestFiles(documentId) {
 
   const identifier = await getOrCreateDocumentIdentifier(documentId);
   const bexId = identifier?.bexsign_doc_id || `BEX-DOC-${documentId}`;
-  const files = await helpers.getDocumentFiles(documentId);
+  const files = await helpers.getDocumentFiles(documentId, { withLayout: true });
   const [fieldRows] = await db.query('SELECT * FROM document_fields WHERE document_id = ? ORDER BY id ASC', [documentId]);
   const fields = fieldRows.map(helpers.parseFieldRow);
   const recipients = await helpers.getRecipients(documentId);
@@ -46,7 +46,7 @@ async function buildCompletedRequestFiles(documentId) {
   }
 
   const documents = files.length > 0
-    ? files.map((f) => ({ id: f.id, name: f.file_name, text: f.document_text }))
+    ? files.map((f) => ({ id: f.id, name: f.file_name, text: f.document_text, layout: f.layout_snapshot || null }))
     : [{ id: null, name: doc.document_name, text: doc.custom_message }];
 
   const outDir = path.join(__dirname, '..', 'uploads', 'completed', String(documentId));
@@ -77,6 +77,7 @@ async function buildCompletedRequestFiles(documentId) {
     const buffer = await generateSignedDocumentPdf({
       documentName: d.name,
       documentText: d.text,
+      layout: d.layout,
       bexsignDocId: documents.length > 1 ? `${bexId}-${i + 1}` : bexId,
       sections,
       signerSummary,
@@ -309,9 +310,9 @@ async function buildProgressCopy(documentId, { email = '', fileIndex = 0 } = {})
   const recipient = wanted ? recipients.find((r) => String(r.email || '').toLowerCase() === wanted) : null;
   if (wanted && !recipient) return null;
 
-  const files = await helpers.getDocumentFiles(documentId);
+  const files = await helpers.getDocumentFiles(documentId, { withLayout: true });
   const documents = files.length > 0
-    ? files.map((f) => ({ id: f.id, name: f.file_name, text: f.document_text }))
+    ? files.map((f) => ({ id: f.id, name: f.file_name, text: f.document_text, layout: f.layout_snapshot || null }))
     : [{ id: null, name: doc.document_name, text: doc.custom_message }];
   const index = Math.min(Math.max(parseInt(fileIndex, 10) || 0, 0), documents.length - 1);
   const target = documents[index];
@@ -349,6 +350,7 @@ async function buildProgressCopy(documentId, { email = '', fileIndex = 0 } = {})
   const buffer = await generateSignedDocumentPdf({
     documentName: target.name,
     documentText: target.text,
+    layout: target.layout,
     bexsignDocId: documents.length > 1 ? `${bexId}-${index + 1}` : bexId,
     sections,
     statusLine,

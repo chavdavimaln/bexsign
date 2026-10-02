@@ -809,6 +809,41 @@ router.post('/:id/save', guardDocument({ permission: 'documents.create' }), asyn
     }
 });
 
+// @route   POST /api/documents/:id/layouts
+// @desc    Layout snapshots for documents that have none: requests sent before layouts existed (or while an older
+//          server was running) get them when the sender next opens or downloads the request, so their PDF shows
+//          the fields at their positions too. Body: { layouts: [{ fileId, layout }] }.
+//          A snapshot is stored only when it writes the document's own text; one already stored is never replaced.
+router.post('/:id/layouts', guardDocument({ permission: 'documents.send' }), async (req, res) => {
+    const { id } = req.params;
+    try {
+        const { usableLayout } = require('../utils/completedPdfGenerator');
+        const submitted = Array.isArray(req.body?.layouts) ? req.body.layouts : [];
+        const files = await requestHelpers.getDocumentFiles(id, { withLayout: true });
+        let stored = 0;
+        for (const entry of submitted) {
+            const file = files.find((f) => String(f.id) === String(entry?.fileId));
+            if (!file || usableLayout(file.layout_snapshot, file.document_text)) continue;
+            const text = requestHelpers.serializeLayout(entry.layout);
+            if (!text || !usableLayout(text, file.document_text)) continue;
+            await db.query('UPDATE document_files SET layout_snapshot = ? WHERE id = ?', [text, file.id]);
+            stored += 1;
+        }
+        if (stored > 0) {
+            // The signed PDFs issued so far were drawn without the layout: they are rebuilt at the next download
+            await db.query('UPDATE document_files SET signed_file_path = NULL WHERE document_id = ?', [id]);
+            await requestHelpers.logRequestEvent(id, {
+                description: `Page layout recorded for ${stored} document${stored === 1 ? '' : 's'}: the signed PDF shows every field at its place`,
+                req
+            });
+        }
+        res.json({ success: true, stored });
+    } catch (err) {
+        console.error('Layout backfill error:', err);
+        res.status(500).json({ success: false, error: 'The page layout could not be saved.' });
+    }
+});
+
 // @route   POST /api/documents/send/:id
 // @desc    Save the request and send it. "In order": only the recipients in the first signing step are emailed now,
 //          the next step follows once this one has signed. "All at once": every signer is emailed immediately.
@@ -852,6 +887,17 @@ router.post('/send/:id', guardDocument({ permission: 'documents.send' }), async 
         const signingRecipients = recipients.filter((r) => requestHelpers.isSigningRole(r.role));
         if (signingRecipients.length === 0) {
             return res.status(400).json({ success: false, error: 'Add at least one recipient who needs to sign or approve before sending.' });
+        }
+
+        // "SMS" and "Email + SMS" need a phone number with its country code to text the signing link to
+        const { isValidPhone } = require('../utils/smsService');
+        const missingPhone = signingRecipients.filter((r) => ['SMS', 'Email + SMS'].includes(r.delivery_mode) && !isValidPhone(r.phone));
+        if (missingPhone.length > 0) {
+            return res.status(400).json({
+                success: false,
+                error: `Enter a phone number with its country code for ${missingPhone.map((r) => r.name || r.email).join(', ')}: their delivery mode includes SMS. Open the request's recipients step to add it.`,
+                missingPhoneRecipients: missingPhone.map((r) => r.email)
+            });
         }
 
         // Zoho Sign rule: every signer must have at least one field (checked when fields are used)
@@ -924,8 +970,10 @@ router.post('/send/:id', guardDocument({ permission: 'documents.send' }), async 
                 ? `Document sent. Email could not be delivered to: ${failedEmails.map((f) => f.email).join(', ')}`
                 : `Document dispatched to: ${dispatchedEmails.join(', ')}`,
             dispatchedEmails,
-            dispatched: results.filter((r) => r.success).map((r) => ({ name: r.name, email: r.email })),
+            dispatched: results.filter((r) => r.success).map((r) => ({ name: r.name, email: r.email, emailed: r.emailed !== false })),
             failedEmails,
+            // Recipients whose delivery mode includes SMS: whether the text really went out
+            sms: results.filter((r) => r.sms).map((r) => ({ name: r.name, email: r.email, ...r.sms })),
             // Signers who receive the request later, in signing order
             waiting: signingRecipientsNow
                 .filter((r) => !group.some((g) => g.id === r.id))
@@ -935,6 +983,137 @@ router.post('/send/:id', guardDocument({ permission: 'documents.send' }), async 
     } catch (err) {
         console.error('Send Error:', err);
         res.status(500).json({ success: false, error: 'Database error while sending document' });
+    }
+});
+
+/* ---------------------------------------------------------------- mail merge */
+
+// Rows handled by one call: the client sends a long list in small chunks and shows the progress
+const MAIL_MERGE_CHUNK = 25;
+const MERGE_FIELD = /\[([^\]\n]{1,80})\]/g;
+const mergeKey = (name) => String(name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+
+/** The template text with every [Merge field] that has a value replaced by it; fields without a value stay. */
+function mergeTemplateText(content, values) {
+    const lookup = new Map(Object.entries(values || {}).map(([k, v]) => [mergeKey(k), String(v ?? '').trim()]));
+    return String(content || '').replace(MERGE_FIELD, (token, name) => lookup.get(mergeKey(name)) || token);
+}
+
+// @route   POST /api/documents/mail-merge
+// @desc    Mail merge: one signature request per recipient row, each with its own copy of the template in which
+//          the [Merge fields] are replaced by that row's values.
+//          body { templateName, content, rows: [{ name, email, values: { field: value } }], mode: 'send' | 'draft',
+//                 batchId?, addSignDate?, noteToAll?, daysToComplete?, requireVerification?, folderId? }
+//          'send'  the request gets a signature block for its recipient under the text and is emailed at once
+//          'draft' the request is saved as a draft; the sender places the fields and sends it
+router.post('/mail-merge', guardDocument({ permission: 'documents.create' }), async (req, res) => {
+    const body = req.body || {};
+    const mode = body.mode === 'draft' ? 'draft' : 'send';
+    const content = String(body.content || '').replace(/\r\n?/g, '\n');
+    const baseName = String(body.templateName || 'Document').trim().replace(/\.pdf$/i, '').slice(0, 150) || 'Document';
+    const rows = Array.isArray(body.rows) ? body.rows : [];
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+    if (!content.trim()) return res.status(400).json({ success: false, error: 'The template has no text to merge.' });
+    if (rows.length === 0) return res.status(400).json({ success: false, error: 'Add at least one recipient row.' });
+    if (rows.length > MAIL_MERGE_CHUNK) {
+        return res.status(400).json({ success: false, error: `Send at most ${MAIL_MERGE_CHUNK} rows per call.` });
+    }
+
+    try {
+        const access = await accessFor(req);
+        if (mode === 'send' && !access.can('documents.send')) {
+            return res.status(403).json({ success: false, error: 'You do not have permission to send documents for signature. The requests can be saved as drafts instead.' });
+        }
+        await requestHelpers.ensureRequestSchema();
+        const ownerId = req.authenticated ? req.user.id : 1;
+        const batchId = /^MM-[A-Z0-9]{6,12}$/.test(String(body.batchId || '')) ? body.batchId : `MM-${Date.now().toString(36).toUpperCase()}`;
+        const folderAssignment = body.folderId ? await folderStore.resolveFolderAssignment(body.folderId) : null;
+        const settings = buildRequestSettings({
+            noteToAll: body.noteToAll,
+            daysToComplete: body.daysToComplete,
+            reminderDays: body.reminderDays,
+            autoReminders: body.autoReminders,
+            description: `Mail merge ${batchId} from "${baseName}"`
+        });
+        const results = [];
+
+        for (const [index, row] of rows.entries()) {
+            const email = String(row?.email || '').trim();
+            const name = String(row?.name || '').trim() || email.split('@')[0];
+            const result = { index: Number.isInteger(row?.index) ? row.index : index, email, name, status: 'failed', documentId: null, error: null };
+            results.push(result);
+            if (!emailPattern.test(email)) {
+                result.error = email ? `"${email}" is not a valid email address.` : 'The email address is missing.';
+                continue;
+            }
+            try {
+                const documentName = `${baseName} - ${name}`.slice(0, 240) + '.pdf';
+                const text = mergeTemplateText(content, row.values);
+                const [inserted] = await db.query(
+                    `INSERT INTO documents (user_id, document_name, file_path, folder_name, folder_id, status, recipient_email, template_used)
+                     VALUES (?, ?, '/uploads/sample.pdf', ?, ?, 'Draft', ?, ?)`,
+                    [ownerId, documentName, folderAssignment ? folderAssignment.folder_name : 'General', folderAssignment ? folderAssignment.folder_id : null, email, baseName]
+                );
+                const documentId = inserted.insertId;
+                result.documentId = documentId;
+
+                await applyRequestSettings(documentId, settings);
+                await applyVerificationSetting(documentId, { requireVerification: body.requireVerification }, req);
+                const recipients = await requestHelpers.saveRecipients(documentId, [{ email, name, role: 'Needs to sign', deliveryMode: 'Email' }]);
+                await requestHelpers.syncDocumentFiles(documentId, [{ name: documentName, documentText: text }]);
+                const idRecord = await getOrCreateDocumentIdentifier(documentId, { signerEmail: email, signerName: name, status: 'Draft' });
+                await requestHelpers.logRequestEvent(documentId, {
+                    description: `Document "${documentName}" created by mail merge ${batchId} from the template "${baseName}" with ID: ${idRecord.bexsign_doc_id}`,
+                    req
+                });
+
+                if (mode === 'draft') {
+                    result.status = 'draft';
+                    continue;
+                }
+
+                // No position: the signature block is listed under the text, on the signing page and in the PDF
+                const assignee = { assignee: name, assigneeEmail: email };
+                const fields = [{ type: 'Signature', label: 'Signature', required: true, x: null, y: null, page: 1, width: 200, height: 70, value: 'Signature', ...assignee }];
+                if (TRUE_VALUES.includes(body.addSignDate)) {
+                    fields.push({ type: 'Sign date', label: 'Sign date', required: true, x: null, y: null, page: 1, width: 150, height: 36, ...assignee });
+                }
+                await requestHelpers.saveDocumentFields(documentId, { fieldsByDoc: { 0: fields } }, recipients);
+
+                await db.query("UPDATE documents SET status = 'In Progress', sent_at = NOW() WHERE id = ?", [documentId]);
+                const [docs] = await db.query('SELECT * FROM documents WHERE id = ?', [documentId]);
+                const doc = docs[0];
+                await getOrCreateDocumentIdentifier(documentId, { status: 'In Progress' });
+                const flow = await signingFlow.getSigningFlow(documentId, doc);
+                const group = requestHelpers.getActiveSigningGroup(recipients, flow.isSequential);
+                const sent = await requestHelpers.sendSigningInvitations(doc, group, { req });
+                await requestHelpers.logRequestEvent(documentId, {
+                    description: `Document "${doc.document_name}" sent for signature (mail merge ${batchId}) to: ${group.map((r) => r.email).join(', ')}`,
+                    req
+                });
+                emitDocumentWebhook('document.sent', doc, { recipients: group });
+                const failed = sent.find((r) => !r.success);
+                result.status = 'sent';
+                // The request exists and can be reminded from its page; the sender is told the email bounced
+                if (failed) result.error = `The request was created but the email could not be delivered: ${failed.error || 'unknown error'}`;
+            } catch (rowError) {
+                console.error('Mail merge row error:', rowError);
+                result.error = 'This request could not be created.';
+            }
+        }
+
+        res.json({
+            success: true,
+            batchId,
+            mode,
+            results,
+            created: results.filter((r) => r.documentId).length,
+            failed: results.filter((r) => r.status === 'failed').length
+        });
+    } catch (err) {
+        console.error('Mail Merge Error:', err);
+        res.status(500).json({ success: false, error: 'The mail merge could not be completed.' });
     }
 });
 
@@ -1762,7 +1941,7 @@ router.get('/:id/form-data', guardDocument({ public: true, recipientLink: true }
 
         // Fetch field values if any
         const [fieldValues] = await db.query(
-            `SELECT df.label, df.field_type, dfv.field_value, dfv.recipient_id, df.description
+            `SELECT df.label, df.field_type, dfv.field_value, dfv.recipient_id, df.description, df.options
              FROM document_fields df
              LEFT JOIN document_field_values dfv ON df.id = dfv.field_id
              WHERE df.document_id = ?`,
@@ -1779,7 +1958,8 @@ router.get('/:id/form-data', guardDocument({ public: true, recipientLink: true }
                     name: r.name,
                     email: r.email,
                     fields: rFields.length > 0 ? rFields.map(f => ({
-                        name: f.label || f.field_type || 'Field',
+                        // The data label the sender gave the field names it here; the field name otherwise
+                        name: String(requestHelpers.parseJsonInput(f.options, {})?.dataLabel || '').trim() || f.label || f.field_type || 'Field',
                         value: f.field_value || '-'
                     })) : [
                         { name: 'Full Name', value: r.name || 'Vimal Chavda' },

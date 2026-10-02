@@ -227,6 +227,8 @@ router.get('/general', async (req, res) => {
       settings: serializeGeneral(row),
       updatedAt: row.updated_at,
       updatedBy: await updaterName(row.updated_by),
+      // Whether text messages really leave the server (an SMS provider is set up in server/.env)
+      smsReady: require('../utils/smsService').isSmsLive(),
       options: {
         dateFormats: DATE_FORMATS,
         timeFormats: TIME_FORMATS,

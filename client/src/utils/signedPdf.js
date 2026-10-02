@@ -1,4 +1,5 @@
 import { API_BASE } from './api';
+import { ensureDocumentLayoutsQuietly } from './layoutBackfill';
 /**
  * Every PDF of a sent request is produced by the server: signed documents, certificates and in-progress copies.
  * Their pages are flattened into images, the file is encrypted (printing only) and certified, and its SHA-256
@@ -48,7 +49,9 @@ const signedPdfUrl = (documentId, { index = 0, email = '' } = {}) => (
  * sender's copy with the signatures collected so far. A password is sent in the request body, never in the URL,
  * and is then needed to open the file.
  */
-export function downloadSignedDocument(documentId, { index = 0, email = '', password = '' } = {}) {
+export async function downloadSignedDocument(documentId, { index = 0, email = '', password = '' } = {}) {
+  // A request sent without its page layout gets it now, so the PDF shows the fields at their places
+  await ensureDocumentLayoutsQuietly(documentId);
   if (password) {
     return downloadFromServer(`${API_BASE}/documents/${documentId}/signed-pdf`, 'Signed document.pdf', {
       method: 'POST',
@@ -64,6 +67,7 @@ export function downloadSignedDocument(documentId, { index = 0, email = '', pass
  * never produces an editable copy.
  */
 export async function printLockedDocument(documentId, { index = 0, email = '' } = {}) {
+  await ensureDocumentLayoutsQuietly(documentId);
   const res = await fetchLockedPdf(signedPdfUrl(documentId, { index, email }));
   const href = URL.createObjectURL(new Blob([await res.blob()], { type: 'application/pdf' }));
   await new Promise((resolve) => {

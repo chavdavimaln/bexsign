@@ -10,6 +10,10 @@ export default defineConfig(({ mode }) => {
   const apiTarget = env.VITE_API_URL || `http://localhost:${env.PORT || 5000}`;
   return {
     plugins: [react()],
+    build: {
+      // Country flags (PhoneInput) stay separate files loaded when shown, instead of being inlined into the CSS
+      assetsInlineLimit: (filePath) => (filePath.includes('flag-icons') ? false : undefined),
+    },
     server: {
       port: Number(env.VITE_PORT) || 3003,
       proxy: {

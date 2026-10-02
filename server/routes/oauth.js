@@ -20,7 +20,8 @@ const integrationStore = require('../utils/integrationStore');
  * server/.env
  *   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
  *   MICROSOFT_CLIENT_ID, MICROSOFT_CLIENT_SECRET, MICROSOFT_TENANT (default "common": work, school and personal accounts)
- *   OAUTH_CALLBACK_BASE_URL  public origin of this API, e.g. https://sign.example.com (default: the request's own origin)
+ *   OAUTH_CALLBACK_BASE_URL  public origin of this API, e.g. https://sign.example.com
+ *                            (default: PUBLIC_API_URL, then the request's own origin)
  * Register the redirect URI <OAUTH_CALLBACK_BASE_URL>/api/auth/oauth/<google|microsoft>/callback with each provider.
  */
 
@@ -83,7 +84,7 @@ async function resolveProvider(name) {
 }
 
 const callbackUrl = (req, provider) => {
-    const base = (process.env.OAUTH_CALLBACK_BASE_URL
+    const base = (process.env.OAUTH_CALLBACK_BASE_URL || process.env.PUBLIC_API_URL
         || `${req.headers['x-forwarded-proto'] || req.protocol}://${req.headers['x-forwarded-host'] || req.get('host')}`).replace(/\/$/, '');
     return `${base}/api/auth/oauth/${provider}/callback`;
 };

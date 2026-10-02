@@ -36,13 +36,25 @@ import { apiFetch } from '../utils/api';
 import { templatesToDocuments, countTemplateUse, countPlaceholders } from '../components/templates/templateUi';
 import { API_BASE } from '../utils/api';
 import PasswordInput from '../components/ui/PasswordInput';
+import PhoneInput, { isUsablePhone } from '../components/ui/PhoneInput';
 import FolderSelect from '../components/folders/FolderSelect';
+import CloudImportModal from '../components/documents/CloudImportModal';
+import MailMergeModal from '../components/documents/MailMergeModal';
+import { usePermissions } from '../utils/permissions';
 
 // Zoho Sign limits
 const MAX_RECIPIENTS = 25;
 const MAX_DOCUMENTS = 40;
 const MAX_FILE_SIZE = 25 * 1024 * 1024;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Phone numbers are kept in international form without spaces: "+919876543210" (see PhoneInput)
+const normalizePhone = (value) => {
+  const raw = String(value || '').trim();
+  const digits = raw.replace(/\D/g, '');
+  return digits ? `${raw.startsWith('+') ? '+' : ''}${digits}` : '';
+};
+/** "SMS" and "Email + SMS" text the signing link, so they need the recipient's phone number. */
+const usesSms = (r) => String(r?.deliveryMode || '').includes('SMS');
 const SIGNING_ROLE_LABELS = ['Needs to sign', 'In-person signer', 'Approver'];
 const AUTOSAVE_DELAY_MS = 1500;
 
@@ -124,7 +136,7 @@ function cleanRecipientList(list, { validOnly = false } = {}) {
       deliveryMode: r.deliveryMode || 'Email',
       privateNote: r.privateNote || '',
       signingOrder: step,
-      phone: r.phone ? r.phone.trim() : '',
+      phone: normalizePhone(r.phone),
       authType: r.auth || 'None',
       accessPasscode: r.passcode || ''
     }));
@@ -149,7 +161,7 @@ function signingModeOf(state) {
 function buildSnapshotKey(state) {
   return JSON.stringify({
     docs: (state.documentsList || []).map((d) => [d.name, d.documentText, d.fileId || null, d.file ? d.uploadKey : null]),
-    recipients: (state.recipients || []).map((r, idx) => [r.email, r.name, r.role, r.deliveryMode, r.privateNote, stepOf(r, idx)]),
+    recipients: (state.recipients || []).map((r, idx) => [r.email, r.name, r.role, r.deliveryMode, r.privateNote, stepOf(r, idx), r.phone || '', r.auth || '', r.passcode || '']),
     settings: [
       state.sendInOrder, state.showPreviousFields, state.daysToComplete, state.agreementValidUntil, state.documentType, state.folder,
       state.description, state.allowComments, state.autoReminders, state.reminderEveryDays, state.noteToAll,
@@ -231,6 +243,8 @@ export default function SendForSignatures() {
 
   // Modals for dropdown items
   const [showCloudModal, setShowCloudModal] = useState(false);
+  const [showMailMerge, setShowMailMerge] = useState(false);
+  const { can } = usePermissions();
   const [showTemplateModal, setShowTemplateModal] = useState(false);
   // 'add': chosen templates become new documents; 'replace': one template replaces the selected document's text
   const [templatePickerMode, setTemplatePickerMode] = useState('add');
@@ -318,6 +332,20 @@ export default function SendForSignatures() {
       fetchDraftData();
     }
   }, [id]);
+
+  // Whether the server can really send text messages (an SMS provider is set up). null until known.
+  const [smsReady, setSmsReady] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch('/platform-settings/general')
+      .then((data) => {
+        if (!cancelled && typeof data?.smsReady === 'boolean') setSmsReady(data.smsReady);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // New requests start from the organization's defaults (Settings > General). A field the user has already
   // changed keeps their value, and applying the defaults does not auto-save an empty draft.
@@ -647,7 +675,8 @@ export default function SendForSignatures() {
   // ---------------------------------------------------------------------------
   // Documents
   // ---------------------------------------------------------------------------
-  const addFilesToDocuments = async (files) => {
+  // textByFile: Map(File -> text) for files whose text was already read (documents added from cloud storage)
+  const addFilesToDocuments = async (files, textByFile = null) => {
     if (!files || files.length === 0) return;
     const tooLarge = files.filter((f) => f.size > MAX_FILE_SIZE);
     const accepted = files.filter((f) => f.size <= MAX_FILE_SIZE);
@@ -662,7 +691,9 @@ export default function SendForSignatures() {
     const newDocs = await Promise.all(
       accepted.map(async (f, idx) => {
         let text = '';
-        if (f.name.endsWith('.txt') || f.name.endsWith('.md') || f.type.startsWith('text/')) {
+        if (textByFile?.get(f)) {
+          text = textByFile.get(f);
+        } else if (f.name.endsWith('.txt') || f.name.endsWith('.md') || f.type.startsWith('text/')) {
           try {
             text = await f.text();
           } catch (err) {
@@ -722,6 +753,18 @@ export default function SendForSignatures() {
     e.preventDefault();
     setIsDraggingFiles(false);
     addFilesToDocuments(Array.from(e.dataTransfer.files || []));
+  };
+
+  // Files picked in "Add document > Cloud": added like uploaded files, with the text the server read from them
+  const handleCloudImport = async (imported, { provider } = {}) => {
+    const texts = new Map(imported.filter((entry) => entry.text).map((entry) => [entry.file, entry.text]));
+    await addFilesToDocuments(imported.map((entry) => entry.file), texts);
+    const unread = imported.filter((entry) => !entry.text).length;
+    showPopupAlert(
+      `${imported.length === 1 ? `"${imported[0].file.name}" was` : `${imported.length} documents were`} added from ${provider || 'cloud storage'}.`
+        + (unread > 0 ? ` ${unread === 1 ? 'One file has' : `${unread} files have`} no readable text (an image or a scan): check the document text before sending.` : ''),
+      { title: 'Added from cloud storage', type: unread > 0 ? 'info' : 'success' }
+    );
   };
 
   const openTemplatePicker = (mode = 'add') => {
@@ -1080,6 +1123,14 @@ export default function SendForSignatures() {
     if (!valid.some((r) => SIGNING_ROLE_LABELS.includes(r.role || 'Needs to sign'))) {
       return 'Add at least one recipient who needs to sign or approve the document.';
     }
+    // A text needs somewhere to go: delivery by SMS asks for the phone number
+    const noPhone = valid.find((r) => usesSms(r) && !isUsablePhone(normalizePhone(r.phone)));
+    if (noPhone) {
+      const who = (noPhone.name || '').trim() || noPhone.email.trim();
+      return normalizePhone(noPhone.phone)
+        ? `The phone number for ${who} is not valid. Check the country code and the number.`
+        : `Enter the phone number for ${who}: their delivery mode is "${noPhone.deliveryMode}".`;
+    }
     return null;
   };
 
@@ -1253,9 +1304,9 @@ export default function SendForSignatures() {
   // "Add document" menu: the only way documents are added to a request (besides dropping files)
   const addDocumentOptions = [
     { key: 'desktop', icon: HardDrive, title: 'Desktop', description: 'Upload files from this computer', onSelect: () => fileInputRef.current?.click() },
-    { key: 'cloud', icon: Cloud, title: 'Cloud', description: 'Google Drive, Dropbox, OneDrive or Box', onSelect: () => setShowCloudModal(true) },
+    { key: 'cloud', icon: Cloud, title: 'Cloud', description: 'Google Drive, Dropbox, OneDrive or Box', onSelect: () => { setIsDropdownOpen(false); setShowCloudModal(true); } },
     { key: 'templates', icon: FileBox, title: 'Template(s)', description: 'Start from an agreement template', onSelect: () => openTemplatePicker('add') },
-    { key: 'mail-merge', icon: Layers, title: 'Mail merge template', description: 'Personalize one template for many recipients', onSelect: () => handleAddNewDoc('Customer Service Agreement.pdf') },
+    { key: 'mail-merge', icon: Layers, title: 'Mail merge template', description: 'Personalize one template for many recipients', onSelect: () => { setIsDropdownOpen(false); setShowMailMerge(true); } },
     { key: 'create', icon: FileEdit, title: 'Create', description: 'Write a new document in the editor', badge: 'Opens editor', onSelect: () => handleCreateInEditor() }
   ];
 
@@ -1860,6 +1911,19 @@ export default function SendForSignatures() {
                   </select>
                 </div>
 
+                {/* Phone number: asked for as soon as the delivery mode includes SMS */}
+                {usesSms(rec) && (
+                  <div className="shrink-0">
+                    <PhoneInput
+                      value={rec.phone || ''}
+                      onChange={(phone) => updateRecipientField(index, 'phone', phone)}
+                      invalid={Boolean(normalizePhone(rec.phone)) && !isUsablePhone(normalizePhone(rec.phone))}
+                      ariaLabel={`Phone number for ${rec.email || `recipient ${index + 1}`}`}
+                      className="w-full lg:w-60"
+                    />
+                  </div>
+                )}
+
                 {/* Customize Button */}
                 <div className="flex items-center gap-1.5 shrink-0">
                   <button
@@ -1896,6 +1960,17 @@ export default function SendForSignatures() {
             <Plus size={14} />
             <span>Add recipient</span>
           </button>
+
+          {/* SMS delivery is chosen, but this server cannot send texts yet */}
+          {smsReady === false && recipients.some(usesSms) && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2.5 flex items-start gap-2 text-xs text-amber-800" role="status">
+              <AlertCircle size={14} className="mt-0.5 shrink-0" />
+              <p className="leading-relaxed">
+                <span className="font-bold">Text messages are not set up on this server yet.</span> The request is still emailed, but no SMS goes out
+                until an administrator adds an SMS provider (Twilio or MSG91) to the server settings.
+              </p>
+            </div>
+          )}
 
           {/* Email delivery plan: in order (steps) or everyone at once */}
           {signingPlan.steps.length > 0 && (
@@ -2220,14 +2295,14 @@ export default function SendForSignatures() {
               {(recipients[activeCustomizeIndex].auth === 'SMS OTP' || String(recipients[activeCustomizeIndex].deliveryMode || '').includes('SMS')) && (
                 <div>
                   <label className="block font-semibold text-slate-700 mb-1">Phone number</label>
-                  <input
-                    type="tel"
-                    placeholder="+91 98765 43210"
+                  <PhoneInput
                     value={recipients[activeCustomizeIndex].phone || ''}
-                    onChange={(e) => updateRecipientField(activeCustomizeIndex, 'phone', e.target.value)}
-                    className="w-full p-2 border border-slate-300 rounded text-xs outline-none focus:border-[#007355]"
+                    onChange={(phone) => updateRecipientField(activeCustomizeIndex, 'phone', phone)}
+                    invalid={Boolean(normalizePhone(recipients[activeCustomizeIndex].phone)) && !isUsablePhone(normalizePhone(recipients[activeCustomizeIndex].phone))}
+                    ariaLabel="Phone number"
+                    className="w-full"
                   />
-                  <p className="text-[10px] text-slate-400 mt-1">Include the country code. Needed to text the signing link and/or a one-time code.</p>
+                  <p className="text-[10px] text-slate-400 mt-1">Choose the country code. Needed to text the signing link and/or a one-time code.</p>
                 </div>
               )}
 
@@ -2259,43 +2334,22 @@ export default function SendForSignatures() {
       {/* ========================================================
           MODAL: CLOUD STORAGE SELECTOR
       ======================================================== */}
-      {showCloudModal && (
-        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 space-y-4">
-            <div className="flex items-center justify-between border-b pb-3">
-              <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
-                <Cloud size={18} className="text-[#007355]" />
-                Select from Cloud Storage
-              </h3>
-              <button onClick={() => setShowCloudModal(false)} className="text-slate-400 hover:text-slate-600">
-                <X size={18} />
-              </button>
-            </div>
-            <div className="grid grid-cols-2 gap-3 py-2">
-              {[
-                { name: 'Google Drive', color: 'text-amber-600' },
-                { name: 'Dropbox', color: 'text-blue-600' },
-                { name: 'OneDrive', color: 'text-sky-600' },
-                { name: 'Box', color: 'text-indigo-600' }
-              ].map((provider) => (
-                <button
-                  key={provider.name}
-                  type="button"
-                  onClick={() => {
-                    handleAddNewDoc(`${provider.name} Agreement 2026.pdf`);
-                    setShowCloudModal(false);
-                    showPopupAlert(`Document loaded from ${provider.name}.`, { title: 'Cloud Import', type: 'success' });
-                  }}
-                  className="p-3 border border-slate-200 rounded-lg text-center hover:bg-slate-50 transition flex flex-col items-center gap-1.5"
-                >
-                  <Cloud size={24} className={provider.color} />
-                  <span className="text-xs font-bold text-slate-700">{provider.name}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
+      <CloudImportModal
+        open={showCloudModal}
+        onClose={() => setShowCloudModal(false)}
+        room={Math.max(1, MAX_DOCUMENTS - documentsList.length)}
+        onImport={handleCloudImport}
+      />
+
+      {/* ========================================================
+          MODAL: MAIL MERGE TEMPLATE (one request per recipient)
+      ======================================================== */}
+      <MailMergeModal
+        open={showMailMerge}
+        onClose={() => setShowMailMerge(false)}
+        canSend={can('documents.send')}
+        defaults={{ noteToAll, daysToComplete, requireVerification }}
+      />
 
       {/* ========================================================
           MODAL: TEMPLATES PICKER

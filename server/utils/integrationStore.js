@@ -219,10 +219,10 @@ function validateInput(provider, input, existingRow) {
     if (value) secrets[field.key] = value.slice(0, 2000);
   }
   // Provider specific checks
-  if (provider.key === 'google-workspace' && config.client_id && !/\.apps\.googleusercontent\.com$/.test(config.client_id)) {
+  if (['google-workspace', 'google-drive'].includes(provider.key) && config.client_id && !/\.apps\.googleusercontent\.com$/.test(config.client_id)) {
     return { error: 'A Google OAuth client ID ends with ".apps.googleusercontent.com".' };
   }
-  if (provider.key === 'microsoft-365' && config.client_id && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(config.client_id)) {
+  if (['microsoft-365', 'onedrive'].includes(provider.key) && config.client_id && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(config.client_id)) {
     return { error: 'The Application (client) ID is a GUID like 00000000-0000-0000-0000-000000000000.' };
   }
   if (provider.key === 'stripe-identity') {
@@ -477,6 +477,48 @@ function buildPayload(provider, config, event, data) {
   return payload;
 }
 
+/* ---------------------------------------------------------------- OAuth app credentials */
+
+const OAUTH_TOKEN_URLS = {
+  'google-workspace': () => 'https://oauth2.googleapis.com/token',
+  'google-drive': () => 'https://oauth2.googleapis.com/token',
+  'microsoft-365': (config) => `https://login.microsoftonline.com/${encodeURIComponent(config.tenant || 'common')}/oauth2/v2.0/token`,
+  onedrive: (config) => `https://login.microsoftonline.com/${encodeURIComponent(config.tenant || 'common')}/oauth2/v2.0/token`,
+  box: () => 'https://api.box.com/oauth2/token'
+};
+
+/**
+ * Asks the provider's token endpoint to redeem a code that cannot exist. The answer tells the credentials apart:
+ * "invalid_client" = the client ID or secret is wrong, "invalid_grant" = the app was recognised and only the code
+ * was refused. Nothing is created or changed at the provider.
+ * Returns { verdict: 'accepted' | 'rejected' | 'unknown', detail, statusCode, durationMs }.
+ */
+async function probeOAuthClient(key, config, secrets, redirectUri) {
+  const url = OAUTH_TOKEN_URLS[key]?.(config);
+  if (!url) return { verdict: 'unknown' };
+  const res = await httpJson(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      code: 'bexsign-connection-test',
+      client_id: config.client_id || '',
+      client_secret: secrets.client_secret || '',
+      redirect_uri: redirectUri
+    }).toString()
+  });
+  const error = String(res.json?.error || '');
+  const detail = String(res.json?.error_description || '').split(/\r?\n/)[0].slice(0, 200);
+  // Microsoft answers invalid_client for a wrong secret (AADSTS7000215) and unauthorized_client for an unknown app
+  if (/invalid_client|unauthorized_client/.test(error) || /AADSTS(7000215|700016|7000222)/.test(detail)) {
+    return { verdict: 'rejected', detail, statusCode: res.statusCode, durationMs: res.durationMs };
+  }
+  // Microsoft refuses the made-up code before it looks at the application, so its answer proves nothing about the credentials
+  const provesCredentials = !['microsoft-365', 'onedrive'].includes(key);
+  if (provesCredentials && /invalid_grant|invalid_request/.test(error)) return { verdict: 'accepted', detail, statusCode: res.statusCode, durationMs: res.durationMs };
+  return { verdict: 'unknown', detail: res.error || detail, statusCode: res.statusCode, durationMs: res.durationMs };
+}
+
 /* ---------------------------------------------------------------- test connection */
 
 /**
@@ -532,19 +574,52 @@ async function testIntegration(key, input = {}, user = null) {
         : { ok: false, message: res.error || `Stripe refused the key: ${res.json?.error?.message || `HTTP ${res.statusCode}`}`, ...res };
       break;
     }
-    case 'google-workspace': {
+    case 'google-workspace':
+    case 'google-drive': {
+      const what = provider.key === 'google-drive' ? 'Google Drive' : 'Google sign-in';
       const res = await httpJson('https://accounts.google.com/.well-known/openid-configuration');
-      result = res.ok
-        ? { ok: true, message: 'The client ID looks right and Google sign-in is reachable. The secret is confirmed on the first "Continue with Google".', ...res }
-        : { ok: false, message: `Google sign-in could not be reached: ${res.error || `HTTP ${res.statusCode}`}`, ...res };
+      if (!res.ok) {
+        result = { ok: false, message: `Google could not be reached: ${res.error || `HTTP ${res.statusCode}`}`, ...res };
+        break;
+      }
+      const probe = await probeOAuthClient(provider.key, config, secrets, `${apiOrigin()}${provider.redirectPath}`);
+      if (probe.verdict === 'rejected') result = { ok: false, message: `Google does not recognise this client ID and secret${probe.detail ? ` (${probe.detail})` : ''}. Copy both again from Google Cloud Console > Credentials.`, ...probe };
+      else if (probe.verdict === 'accepted') result = { ok: true, message: `Google recognised the client ID and secret. Make sure ${apiOrigin()}${provider.redirectPath} is listed under "Authorized redirect URIs"; ${what} is ready to use.`, ...probe };
+      else result = { ok: true, message: `The client ID looks right and Google is reachable. The secret is confirmed the first time ${what} is used.`, ...res };
       break;
     }
-    case 'microsoft-365': {
+    case 'microsoft-365':
+    case 'onedrive': {
+      const what = provider.key === 'onedrive' ? 'OneDrive' : 'Microsoft sign-in';
       const tenant = encodeURIComponent(config.tenant || 'common');
       const res = await httpJson(`https://login.microsoftonline.com/${tenant}/v2.0/.well-known/openid-configuration`);
-      result = res.ok
-        ? { ok: true, message: `Tenant "${config.tenant || 'common'}" found. The secret is confirmed on the first "Continue with Microsoft".`, ...res }
-        : { ok: false, message: res.statusCode === 400 ? `Microsoft does not know the tenant "${config.tenant}".` : `Microsoft sign-in could not be reached: ${res.error || `HTTP ${res.statusCode}`}`, ...res };
+      if (!res.ok) {
+        result = { ok: false, message: res.statusCode === 400 ? `Microsoft does not know the tenant "${config.tenant}".` : `Microsoft could not be reached: ${res.error || `HTTP ${res.statusCode}`}`, ...res };
+        break;
+      }
+      const probe = await probeOAuthClient(provider.key, config, secrets, `${apiOrigin()}${provider.redirectPath}`);
+      if (probe.verdict === 'rejected') result = { ok: false, message: `Microsoft does not recognise this application ID and secret${probe.detail ? ` (${probe.detail})` : ''}. Use the secret's Value (not its ID) and check that it has not expired.`, ...probe };
+      else if (probe.verdict === 'accepted') result = { ok: true, message: `Tenant "${config.tenant || 'common'}" found and Microsoft recognised the application ID and secret. ${what} is ready to use.`, ...probe };
+      else result = { ok: true, message: `Tenant "${config.tenant || 'common'}" found. The secret is confirmed the first time ${what} is used.`, ...res };
+      break;
+    }
+    case 'dropbox-files': {
+      // /check/app answers only when the App key and App secret belong together
+      const res = await httpJson('https://api.dropboxapi.com/2/check/app', {
+        method: 'POST',
+        headers: { Authorization: `Basic ${Buffer.from(`${config.client_id}:${secrets.client_secret}`).toString('base64')}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: 'bexsign' })
+      });
+      result = res.ok && res.json?.result === 'bexsign'
+        ? { ok: true, message: `Dropbox confirmed the App key and App secret. Make sure ${apiOrigin()}${provider.redirectPath} is listed under "Redirect URIs".`, ...res }
+        : { ok: false, message: res.error ? `Dropbox could not be reached: ${res.error}` : 'Dropbox does not recognise this App key and App secret. Copy both again from the app\'s Settings tab.', ...res };
+      break;
+    }
+    case 'box': {
+      const probe = await probeOAuthClient('box', config, secrets, `${apiOrigin()}${provider.redirectPath}`);
+      if (probe.verdict === 'rejected') result = { ok: false, message: `Box does not recognise this client ID and secret${probe.detail ? ` (${probe.detail})` : ''}.`, ...probe };
+      else if (probe.verdict === 'accepted') result = { ok: true, message: `Box recognised the client ID and secret. Make sure ${apiOrigin()}${provider.redirectPath} is the app's OAuth 2.0 Redirect URI.`, ...probe };
+      else result = { ok: false, message: `Box could not be reached${probe.detail ? `: ${probe.detail}` : '.'}`, ...probe };
       break;
     }
     default:
@@ -636,6 +711,37 @@ async function getSsoSettings(key) {
   return value;
 }
 
+/**
+ * App credentials of a cloud import integration ('google-drive' | 'dropbox-files' | 'onedrive' | 'box'):
+ * { configured, enabled, clientId, clientSecret, tenant } or null when the integration is not set up
+ * (server/.env applies then). Used by utils/cloudStorage.js.
+ */
+async function getOAuthAppSettings(key) {
+  const cacheKey = `app:${key}`;
+  const cached = ssoCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < 30 * 1000) return cached.value;
+  let value = null;
+  try {
+    const row = await getConnection(key);
+    if (row) {
+      const provider = providerOf(row);
+      const config = readConfig(row, provider);
+      const secrets = readSecrets(row);
+      value = {
+        configured: Boolean(config.client_id && secrets.client_secret),
+        enabled: row.status === 'connected' && config.enable_import !== false,
+        clientId: config.client_id,
+        clientSecret: secrets.client_secret,
+        tenant: config.tenant || null
+      };
+    }
+  } catch (err) {
+    console.warn('[Integrations] cloud import settings not read:', err.message);
+  }
+  ssoCache.set(cacheKey, { at: Date.now(), value });
+  return value;
+}
+
 /** The signing secret of a custom integration (Configure page "Reveal"); other secrets are never read back. */
 async function revealSigningSecret(key) {
   const row = await getConnection(key);
@@ -654,6 +760,7 @@ module.exports = {
   testIntegration,
   dispatchIntegrationEvent,
   getSsoSettings,
+  getOAuthAppSettings,
   encrypt,
   decrypt
 };

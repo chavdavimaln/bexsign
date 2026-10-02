@@ -9,7 +9,10 @@
  *   GET    /api/verification/:documentId          the record, its audit trail and what the caller may do
  *   POST   /api/verification/:documentId/check    re-run the integrity check only, nothing is confirmed
  *   POST   /api/verification/:documentId/confirm  { note }    verify and confirm
- *   POST   /api/verification/:documentId/reject   { reason }  verify and reject with a reason
+ *   GET    /api/verification/:documentId/review   what every signer entered, for the review before a rejection
+ *   POST   /api/verification/:documentId/reject   { reason, corrections?, channels? }  reject with a reason;
+ *            with corrections ([{ recipientId, fieldIds, notes }]) the request is reopened for those recipients
+ *            only and they are told by email and/or SMS (channels: { email, sms })
  *   PUT    /api/verification/:documentId/setting  { required } the sender's checkbox (draft requests only)
  */
 const express = require('express');
@@ -115,12 +118,33 @@ router.post('/:documentId/confirm', requireConfirmRights(), async (req, res) => 
   }
 });
 
+// @route GET /api/verification/:documentId/review
+// @desc  The signers of a completed request with the data each of them entered, to review before rejecting
+router.get('/:documentId/review', requireConfirmRights(), async (req, res) => {
+  try {
+    const data = await verification.getReviewData(req.verificationDocument.id);
+    return res.json({ success: true, ...data });
+  } catch (err) {
+    console.error('Verification review error:', err);
+    return res.status(500).json({ success: false, error: 'The signed data could not be loaded.' });
+  }
+});
+
 // @route POST /api/verification/:documentId/reject
-// @desc  Reject the completed request with a reason
+// @desc  Reject the completed request with a reason; optionally send it back to some recipients for correction
 router.post('/:documentId/reject', requireConfirmRights(), async (req, res) => {
   try {
-    const data = await verification.rejectVerification(req.verificationDocument.id, { req, reason: req.body?.reason });
-    return res.json({ success: true, ...data, message: 'The document was rejected.' });
+    const data = await verification.rejectVerification(req.verificationDocument.id, {
+      req,
+      reason: req.body?.reason,
+      corrections: req.body?.corrections,
+      channels: req.body?.channels
+    });
+    const told = (data.deliveries || []).filter((d) => d.emailed || d.sms?.sent).length;
+    const message = data.deliveries
+      ? `The document was rejected and sent back to ${data.deliveries.length} recipient${data.deliveries.length === 1 ? '' : 's'} for correction${told < data.deliveries.filter((d) => !d.waitingTurn).length ? ' (some messages could not be sent)' : ''}.`
+      : 'The document was rejected.';
+    return res.json({ success: true, ...data, message });
   } catch (err) {
     console.error('Verification reject error:', err);
     return res.status(400).json({ success: false, error: err.message || 'The document could not be rejected.' });

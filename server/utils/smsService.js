@@ -60,9 +60,27 @@ async function dispatchMsg91(provider, to, body) {
   return { messageId: data?.request_id || null };
 }
 
+/** "+91 98765-43210" -> "+919876543210" (the form the providers expect). Empty when there are no digits. */
+function normalizePhone(value) {
+  const raw = String(value || '').trim();
+  const digits = raw.replace(/\D/g, '');
+  if (!digits) return '';
+  return `${raw.startsWith('+') ? '+' : ''}${digits}`;
+}
+
+/** A phone number a text can be sent to: country code first, 7 to 15 digits in total (E.164). */
+function isValidPhone(value) {
+  return /^\+[1-9]\d{6,14}$/.test(normalizePhone(value));
+}
+
+/** True when texts really leave the server (a provider with credentials, and not SMS_DRY_RUN). */
+function isSmsLive() {
+  return !DRY_RUN && Boolean(configuredProvider());
+}
+
 /** { to, body } -> { success, messageId?, dryRun?, error? }. `to` should include a country code (e.g. +91...). */
 async function sendSms({ to, body }) {
-  const phone = String(to || '').trim();
+  const phone = normalizePhone(to);
   const text = String(body || '').trim();
   if (!phone) return { success: false, error: 'No phone number on file for this recipient.' };
   if (!text) return { success: false, error: 'Empty SMS body.' };
@@ -100,4 +118,4 @@ async function verifySmsConfig() {
   return { success: true, provider: provider.name };
 }
 
-module.exports = { sendSms, verifySmsConfig };
+module.exports = { sendSms, verifySmsConfig, isSmsLive, normalizePhone, isValidPhone };

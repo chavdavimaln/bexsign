@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { 
   ArrowLeft, Eye, Edit, FileCheck, Clock, MoreVertical, 
   CheckCircle2, AlertCircle, Bell, Sliders, Download, 
   Printer, Cloud, FileText, Info, Trash2, Copy, Send,
-  ShieldCheck, Share2, UserCheck
+  ShieldCheck, Share2, UserCheck, RefreshCw
 } from 'lucide-react';
 import { generateBexsignId } from '../utils/documentId';
 import { getDocumentOwner } from '../utils/currentUser';
@@ -70,6 +70,8 @@ export default function DocumentDetails() {
   const fullBexsignId = serverBexsignId || placeholderBexsignId;
 
   // Filled from the request saved on the server; the owner is the user who created the request
+  // Raised when the request changes from this page (a rejection that sends it back for correction)
+  const [reloadKey, setReloadKey] = useState(0);
   const [document, setDocument] = useState(() => {
     const owner = getDocumentOwner(null);
     return {
@@ -85,13 +87,18 @@ export default function DocumentDetails() {
     };
   });
 
-  useEffect(() => {
-    let cancelled = false;
-    fetch(`${API_BASE}/documents/${docId}`)
+  // Loads the request and its recipients. Only the newest load is applied, so a slow answer never overwrites
+  // a later one. Rejects when the request could not be read.
+  const loadSeq = useRef(0);
+  const [lastLoadedAt, setLastLoadedAt] = useState(null);
+  const loadDocument = useCallback(() => {
+    const seq = ++loadSeq.current;
+    return fetch(`${API_BASE}/documents/${docId}`)
       .then((res) => res.json())
       .then((data) => {
         const doc = data?.document;
-        if (cancelled || !data?.success || !doc) return;
+        if (seq !== loadSeq.current) return;
+        if (!data?.success || !doc) throw new Error(data?.error || 'The request could not be loaded.');
         const owner = getDocumentOwner(doc);
         if (doc.bexsign_doc_id) setServerBexsignId(doc.bexsign_doc_id);
         setRawRecipients((doc.recipients || []).filter((r) => !r.isFallback));
@@ -111,6 +118,9 @@ export default function DocumentDetails() {
             email: r.email,
             step: r.signing_order_index || 1,
             status: toRecipientStatus(r),
+            // Asked to correct and sign again after "Verify & confirm" rejected their data
+            correctionRequestedAt: r.status === 'signed' ? null : (r.correction_requested_at || null),
+            correctionNote: r.correction_note || '',
             ipAddress: r.signed_ip ? String(r.signed_ip).replace(/^::ffff:/, '') : '-',
             actionDevice: describeDevice(r.signed_user_agent),
             signedAt: formatDateTime(r.signed_at),
@@ -120,12 +130,53 @@ export default function DocumentDetails() {
             copySent: Boolean(r.sent_at)
           }))
         });
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
+        setLastLoadedAt(new Date());
+      });
   }, [docId]);
+
+  useEffect(() => {
+    loadDocument().catch(() => {});
+    return () => {
+      // Leaving the page (or opening another request): an answer still on its way is ignored
+      loadSeq.current += 1;
+    };
+  }, [loadDocument, reloadKey]);
+
+  // Refresh button: reloads the request, the recipients and the verification panel in place
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState('');
+  // Raised after every reload so the verification panel reads its own state again
+  const [refreshTick, setRefreshTick] = useState(0);
+  const handleRefresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    setRefreshError('');
+    // The spinner stays for at least this long, so a fast reload is still seen
+    const minimumSpin = new Promise((resolve) => setTimeout(resolve, 800));
+    try {
+      await loadDocument();
+      setRefreshTick((tick) => tick + 1);
+      await minimumSpin;
+      // The sidebar status counts follow the same data
+      window.dispatchEvent(new Event('bexsign-documents-changed'));
+    } catch (e) {
+      await minimumSpin;
+      setRefreshError('Could not refresh. Check your connection and try again.');
+      setTimeout(() => setRefreshError(''), 3500);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  // Coming back to this tab (for example after signing in another one) brings the page up to date quietly
+  useEffect(() => {
+    const onVisible = () => {
+      if (window.document.visibilityState !== 'visible') return;
+      loadDocument().then(() => setRefreshTick((tick) => tick + 1)).catch(() => {});
+    };
+    window.document.addEventListener('visibilitychange', onVisible);
+    return () => window.document.removeEventListener('visibilitychange', onVisible);
+  }, [loadDocument]);
 
   const [activeMenu, setActiveMenu] = useState(false);
   const [showEditCopy, setShowEditCopy] = useState(false);
@@ -387,7 +438,36 @@ export default function DocumentDetails() {
             )}
           </div>
         </div>
+
+        {/* Refresh: statuses, recipients and the verification step, without reloading the page */}
+        <div className="flex items-center gap-2.5 ml-auto">
+          <span className={`text-[11px] font-semibold ${refreshError ? 'text-rose-600' : 'text-slate-400'}`} role="status" aria-live="polite">
+            {refreshError || (refreshing ? 'Refreshing...' : (lastLoadedAt ? `Updated ${lastLoadedAt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` : ''))}
+          </span>
+          <button
+            type="button"
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="group flex items-center gap-1.5 pl-2.5 pr-3 py-1.5 bg-white hover:bg-emerald-50 border border-slate-300 hover:border-[#00a884] rounded-lg shadow-2xs text-xs font-bold text-slate-700 hover:text-[#007355] transition cursor-pointer disabled:cursor-wait"
+            title="Refresh the statuses on this page"
+            aria-label="Refresh the statuses on this page"
+          >
+            <RefreshCw size={14} className={`text-[#007355] transition-transform duration-500 ${refreshing ? 'animate-spin' : 'group-hover:rotate-90'}`} />
+            Refresh
+          </button>
+        </div>
       </div>
+
+      {/* Everything below is reloaded by the Refresh button */}
+      <div className="relative space-y-6" aria-busy={refreshing}>
+      {refreshing && (
+        <div className="absolute -inset-1 z-20 rounded-2xl bg-slate-50/70 backdrop-blur-[1px] flex items-start justify-center pt-24" role="status">
+          <div className="bg-white border border-slate-200 shadow-lg rounded-full pl-3 pr-4 py-2 flex items-center gap-2.5 text-xs font-bold text-slate-700">
+            <span className="w-5 h-5 rounded-full border-2 border-emerald-100 border-t-[#007355] animate-spin" />
+            Refreshing status...
+          </div>
+        </div>
+      )}
 
       {/* Document Overview Section (Matching Image 2) */}
       <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-2xs">
@@ -469,7 +549,13 @@ export default function DocumentDetails() {
       </div>
 
       {/* Verify & confirm the completed document (only for completed requests that asked for it) */}
-      <DocumentVerificationPanel documentId={docId} documentStatus={document.status} onToast={showToast} />
+      <DocumentVerificationPanel
+        documentId={docId}
+        documentStatus={document.status}
+        refreshKey={refreshTick}
+        onToast={showToast}
+        onChanged={() => setReloadKey((key) => key + 1)}
+      />
 
       {/* Recipient Status Section (Matching Image 2 + Task 4 Requirements) */}
       <div className="space-y-4">
@@ -531,6 +617,14 @@ export default function DocumentDetails() {
                         {isCopy && (
                           <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-slate-100 text-slate-600 border border-slate-200">
                             Receives a copy
+                          </span>
+                        )}
+                        {rec.correctionRequestedAt && (
+                          <span
+                            className="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-sky-100 text-sky-800 border border-sky-200"
+                            title={rec.correctionNote ? `Asked to correct and sign again: ${rec.correctionNote}` : 'Asked to correct and sign again'}
+                          >
+                            Correction requested
                           </span>
                         )}
                       </div>
@@ -663,6 +757,7 @@ export default function DocumentDetails() {
             );
           })}
         </div>
+      </div>
       </div>
 
       {showEditCopy && (

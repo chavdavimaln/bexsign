@@ -259,6 +259,64 @@ async function sendReminderEmail({
 }
 
 /**
+ * 2b. Correction request: "Verify & confirm" found something wrong in what this recipient entered or signed.
+ * The email names the reason and the fields to correct and takes the recipient back to the signing page.
+ * fields: [{ label, note }]
+ */
+async function sendCorrectionRequestEmail({
+  to,
+  recipientName = 'Signer',
+  documentName = 'Document',
+  senderName = 'BexSign',
+  senderEmail = '',
+  orgName = 'BexSign',
+  reason = '',
+  fields = [],
+  signingUrl = (process.env.CLIENT_URL || 'http://localhost:3003')
+}) {
+  const fieldRows = fields
+    .map((field) => `
+      <tr>
+        <td style="padding: 7px 10px; font-size: 13px; font-weight: 600; color: #1e293b; border-bottom: 1px solid #f1f5f9; vertical-align: top;">${escapeHtml(field.label || 'Field')}</td>
+        <td style="padding: 7px 10px; font-size: 13px; color: #475569; border-bottom: 1px solid #f1f5f9; vertical-align: top;">${escapeHtml(field.note || 'Please check and correct')}</td>
+      </tr>`)
+    .join('');
+  const extraHtml = `
+    <div style="background: #fffbeb; border: 1px solid #fde68a; border-radius: 6px; padding: 12px 14px; margin-bottom: 18px;">
+      <div style="font-size: 12px; font-weight: 700; color: #92400e; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 4px;">What needs to be corrected</div>
+      <div style="font-size: 14px; line-height: 1.5; color: #78350f;">${escapeHtml(reason || 'Please review your entries and sign again.')}</div>
+    </div>
+    ${fieldRows ? `
+    <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px; border: 1px solid #e2e8f0; border-radius: 6px;">
+      <tr>
+        <th style="padding: 7px 10px; font-size: 11px; text-align: left; color: #64748b; text-transform: uppercase; background: #f8fafc; border-bottom: 1px solid #e2e8f0;">Field</th>
+        <th style="padding: 7px 10px; font-size: 11px; text-align: left; color: #64748b; text-transform: uppercase; background: #f8fafc; border-bottom: 1px solid #e2e8f0;">What to correct</th>
+      </tr>
+      ${fieldRows}
+    </table>` : ''}`;
+
+  const mailHtml = getBexSignHtmlTemplate({
+    headerTitle: 'Correction requested',
+    headerColor: '#d97706',
+    mainMessage: `Hello ${escapeHtml(recipientName)},<br/><br/><strong>${escapeHtml(senderName)}</strong> reviewed <strong>${escapeHtml(documentName)}</strong> after it was signed and asks you to correct your part and sign it again. Everything else you entered is still filled in.`,
+    extraHtml,
+    details: [
+      { label: 'Sender', value: escapeHtml(senderEmail) },
+      { label: 'Organization Name', value: escapeHtml(orgName) }
+    ],
+    ctaText: 'Correct and sign again',
+    ctaLink: signingUrl
+  });
+
+  return deliverMail({
+    replyTo: senderEmail || undefined,
+    to,
+    subject: `${senderName} asks you to correct and sign ${documentName} again`,
+    html: mailHtml
+  }, 'Correction request email');
+}
+
+/**
  * 3. Send Recalled Email (PDF 2 p.6)
  */
 async function sendDocumentRecalledEmail({
@@ -584,6 +642,7 @@ module.exports = {
   sendDocumentDeclinedEmail,
   sendSigningDelegatedEmail,
   sendReminderEmail,
+  sendCorrectionRequestEmail,
   sendDocumentRecalledEmail,
   sendDocumentCompletedEmail,
   sendDocumentCopyEmail,

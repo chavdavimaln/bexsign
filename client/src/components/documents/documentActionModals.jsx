@@ -7,6 +7,7 @@
 import React, { useEffect, useState } from 'react';
 import { X, Download, Mail, History, ShieldCheck, Loader2, FileText, Eye, EyeOff } from 'lucide-react';
 import { API_BASE, apiFetch, authHeaders } from '../../utils/api';
+import { ensureDocumentLayoutsQuietly } from '../../utils/layoutBackfill';
 import { Button, Badge, EmptyState, ErrorBanner, formatDateTime } from '../ui/kit';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
@@ -71,6 +72,8 @@ export function DownloadOptionsModal({ document: doc, onClose, onToast }) {
       const { downloadSignedDocument, downloadAllSignedDocuments, downloadCompletionCertificate } = await import('../../utils/signedPdf');
       if (merge || usePassword) {
         // One file: merged on the server, and locked there when a password is asked for
+        // A request sent without its page layout gets it first, so the PDF shows the fields at their places
+        await ensureDocumentLayoutsQuietly(doc.id);
         const res = await fetch(`${API_BASE}/documents/${doc.id}/bundle-pdf`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -196,6 +199,7 @@ export function EmailDocumentModal({ document: doc, onClose, onToast }) {
     setBusy(true);
     setError('');
     try {
+      await ensureDocumentLayoutsQuietly(doc.id);
       const data = await apiFetch(`/documents/${doc.id}/email-copy`, {
         method: 'POST',
         body: { emails: list, recipients: list, message }

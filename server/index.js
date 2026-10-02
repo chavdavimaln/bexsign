@@ -28,6 +28,7 @@ const publicApiRoutes = require('./routes/publicApi');
 const integrationRoutes = require('./routes/integrations');
 const oauthApps = require('./routes/oauthApps');
 const folderRoutes = require('./routes/folders');
+const cloudRoutes = require('./routes/cloud');
 const { ensurePlatformSchema } = require('./utils/platformSchema');
 const { startReportScheduler } = require('./utils/reportScheduler');
 
@@ -96,6 +97,7 @@ app.use('/api/developer/oauth-apps', oauthApps.manageRouter);
 app.use('/api/developer', developerRoutes);
 app.use('/api/oauth', oauthApps.tokenRouter);
 app.use('/api/integrations', integrationRoutes);
+app.use('/api/cloud', cloudRoutes);
 app.use('/api/verification', verificationRoutes);
 app.use('/api/signature-directory', signatureDirectoryRoutes);
 app.use('/api/self-sign', selfSignRoutes);
@@ -144,6 +146,11 @@ const server = app.listen(PORT, () => {
         if (smtp.dryRun) console.log('[SMTP] EMAIL_DRY_RUN=true: emails are written to server/email_outbox instead of being sent');
         else if (smtp.success) console.log('[SMTP] Mail server connection verified');
         else console.warn('[SMTP Warning] Mail server connection failed:', smtp.error);
+    });
+    require('./utils/smsService').verifySmsConfig().then((sms) => {
+        if (sms.provider) console.log(`[SMS] Text messages are sent through ${sms.provider}`);
+        else if (sms.error) console.warn('[SMS Warning]', sms.error, '- text messages are written to server/sms_outbox instead of being sent');
+        else console.log('[SMS] No SMS provider is set (SMS_PROVIDER in server/.env): text messages are written to server/sms_outbox instead of being sent');
     });
 });
 

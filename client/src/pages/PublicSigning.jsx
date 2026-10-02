@@ -10,6 +10,8 @@ import CompletedDocumentViewer from '../components/CompletedDocumentViewer';
 import BexDocumentSheet from '../components/BexDocumentSheet';
 import { getDefaultDocContent } from '../utils/documentDefaults';
 import { applySignerDefaults } from '../utils/documentFields';
+import { DEFAULT_DATE_FORMAT, parseDate } from '../utils/dateFormat';
+import { optionValues } from '../utils/fieldSizing';
 import { canvasHasInk, isTypedSignatureValid, typedSignatureImage } from '../utils/signatureInk';
 import { downloadSignedDocument, printLockedDocument } from '../utils/signedPdf';
 import { API_BASE, API_ORIGIN } from '../utils/api';
@@ -55,7 +57,22 @@ export default function PublicSigning() {
 
   // Landing & Disclosure Screen State (Page 11 PDF)
   const [showLandingScreen, setShowLandingScreen] = useState(true);
+  // Consent to sign electronically, in two steps: the recipient ticks the box in the top bar (consentChecked),
+  // then presses "Agree & Continue" and agrees in the terms dialog (agreedConsent). Signing starts only then.
   const [agreedConsent, setAgreedConsent] = useState(false);
+  const [consentChecked, setConsentChecked] = useState(false);
+  // Set when "Verify & confirm" sent the request back to this recipient: { note, requestedAt }
+  const [correctionRequest, setCorrectionRequest] = useState(null);
+  // Draws attention to the consent box when the recipient tries to go on without ticking it
+  const [consentNudge, setConsentNudge] = useState(false);
+  const consentNudgeTimer = useRef(null);
+  const nudgeConsent = () => {
+    setConsentNudge(true);
+    clearTimeout(consentNudgeTimer.current);
+    consentNudgeTimer.current = setTimeout(() => setConsentNudge(false), 2600);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+  useEffect(() => () => clearTimeout(consentNudgeTimer.current), []);
 
   // Access gate (Customize > Authentication Type: Email OTP / SMS OTP / Offline Passcode), only present when
   // Settings > General > "Recipient access codes" is turned on and this recipient has a gate chosen
@@ -288,9 +305,13 @@ export default function PublicSigning() {
         if (matched && matched.name) {
           setTypedName(matched.name);
         }
+        setCorrectionRequest(matched && matched.correction_requested_at && matched.status !== 'signed'
+          ? { note: matched.correction_note || '', requestedAt: matched.correction_requested_at }
+          : null);
         // Somebody who already agreed to the disclosure is not asked again
         if (matched && (matched.consent_at || matched.consentAt)) {
           setAgreedConsent(true);
+          setConsentChecked(true);
         }
         if (matched) {
           const signingRoles = ['signer', 'approver'];
@@ -613,8 +634,20 @@ export default function PublicSigning() {
     }
   };
 
+  // "Agree & Continue" in the top bar: opens the terms once the box is ticked
+  const handleAgreeButton = () => {
+    if (!consentChecked) {
+      nudgeConsent();
+      return;
+    }
+    setShowTermsModal(true);
+  };
+
+  // "Agree" in the terms dialog: the consent is given and signing starts
   const handleAgreeAndContinue = () => {
+    setConsentChecked(true);
     setAgreedConsent(true);
+    setConsentNudge(false);
     setValidationError('');
     // Recorded on the server with the time and IP, so the audit trail and the certificate can show the consent
     const consentEmail = documentDetails.recipient || '';
@@ -632,17 +665,24 @@ export default function PublicSigning() {
   };
 
   const isFieldMissing = (f) => {
-    if (f.required === false) return false;
+    // A read-only field carries the value the sender set: nothing is asked of the signer
+    if (f.required === false || f.isReadOnly) return false;
     if (f.type === 'Signature' || f.type === 'Initial') {
       // The editor's placeholder value ("Signature"/"Initial") is not a signature
       const hasOwnValue = f.signatureImage || (f.value && f.value !== f.type && f.value !== f.label);
       return !signaturePlaced && !signatureData && !hasOwnValue;
     }
     if (f.type === 'Sign date') {
-      return !f.value || String(f.value).trim() === '';
+      // Typed text that is not a date does not count as filled in
+      return !f.value || String(f.value).trim() === '' || !parseDate(f.value, f.dateFormat || DEFAULT_DATE_FORMAT);
     }
     if (f.type === 'Checkbox') {
-      return f.required && !f.value;
+      // A required checkbox must be ticked
+      return f.required && !(f.value === true || f.value === 'true');
+    }
+    if (f.type === 'Radio' || f.type === 'Dropdown') {
+      // One of the sender's values must be chosen
+      return !optionValues(f).includes(String(f.value ?? ''));
     }
     if (f.type === 'Stamp') {
       return false;
@@ -657,6 +697,8 @@ export default function PublicSigning() {
     return !f.assigneeEmail || !me || f.assigneeEmail.toLowerCase() === me;
   };
   const requestHasFields = requestFieldCount > 0 || Object.values(fieldsByDoc).some((list) => (list || []).length > 0);
+  // The recipient still has to agree to sign electronically before any field can be filled in
+  const signingLocked = !agreedConsent && !isCompleted && !signerContext?.isCopy && !signerContext?.alreadySigned;
 
   const getDocumentStatus = (docIdx) => {
     const docFields = (fieldsByDoc[docIdx] || []).filter(isMyField);
@@ -824,6 +866,8 @@ export default function PublicSigning() {
     Email: 'Enter your email address.',
     'Sign date': 'Enter the date.',
     Checkbox: 'Select the checkbox.',
+    Radio: 'Choose one of the options.',
+    Dropdown: 'Select an option from the list.',
     'Split text': 'Enter the characters.',
     'Job title': 'Enter your job title.',
     Text: 'Enter the text.'
@@ -831,7 +875,12 @@ export default function PublicSigning() {
   const guideFields = (fieldsByDoc[activeDocIndex] || []).filter(isMyField);
   const guideIndex = guideFields.findIndex((f) => f.id === guideFieldId);
   const guideField = guideIndex === -1 ? null : guideFields[guideIndex];
-  const guideText = guideField ? (GUIDE_TEXT[guideField.type] || `Enter ${String(guideField.label || guideField.type || 'the value').toLowerCase()}.`) : '';
+  // A field sent back for correction says what is wrong; otherwise the description the sender wrote for the
+  // field is what the signer is told, or the standard hint
+  const guideText = guideField
+    ? ((guideField.correction ? `Please correct this${guideField.correction.note ? `: ${guideField.correction.note}` : '.'}` : '')
+      || String(guideField.description || '').trim() || GUIDE_TEXT[guideField.type] || `Enter ${String(guideField.label || guideField.type || 'the value').toLowerCase()}.`)
+    : '';
   const guidePosition = guideField && guideFields.length > 1 ? `Field ${guideIndex + 1} of ${guideFields.length}` : '';
 
   const focusGuideField = (field) => {
@@ -1013,8 +1062,7 @@ export default function PublicSigning() {
           senderEmail={(/<([^>]+)>/.exec(documentDetails.sender || '') || [])[1] || documentDetails.sender}
           orgName={documentDetails.org}
           onAgree={() => {
-            setAgreedConsent(true);
-            setValidationError('');
+            handleAgreeAndContinue();
             setShowTermsModal(false);
           }}
           onClose={() => setShowTermsModal(false)}
@@ -1442,15 +1490,23 @@ export default function PublicSigning() {
             <span className="hidden sm:inline">Back</span>
           </button>
 
-          <label className="flex items-start sm:items-center gap-2.5 cursor-pointer font-medium text-slate-700 min-w-0 flex-1 leading-snug">
+          <label
+            className={`flex items-start sm:items-center gap-2.5 cursor-pointer font-medium text-slate-700 min-w-0 flex-1 leading-snug rounded-md px-1.5 py-1 -mx-1.5 transition ${
+              consentNudge ? 'bg-amber-50 ring-2 ring-amber-400' : ''
+            }`}
+          >
             <input
               type="checkbox"
-              checked={agreedConsent}
+              checked={consentChecked}
               onChange={(e) => {
-                setAgreedConsent(e.target.checked);
+                setConsentChecked(e.target.checked);
+                setConsentNudge(false);
                 if (e.target.checked) setValidationError('');
+                // Taking the tick away takes the agreement back: signing waits until it is given again
+                else setAgreedConsent(false);
               }}
-              className="accent-[#007355] h-4 w-4 shrink-0 mt-0.5 sm:mt-0"
+              aria-describedby="consent-next-step"
+              className="accent-[#007355] h-4 w-4 shrink-0 mt-0.5 sm:mt-0 cursor-pointer"
             />
             <span>
               I confirm that I have read and understood the{' '}
@@ -1469,22 +1525,43 @@ export default function PublicSigning() {
           </label>
 
           {!agreedConsent && (
-            <span className="hidden lg:flex items-center gap-1.5 rounded bg-slate-900 px-2.5 py-1 text-[11px] font-semibold text-white shadow-md">
-              Check this and click <strong className="font-bold">Agree &amp; Continue</strong> to start signing
+            <span
+              id="consent-next-step"
+              role={consentNudge ? 'alert' : undefined}
+              className={`${consentNudge ? 'flex' : 'hidden lg:flex'} items-center gap-1.5 rounded px-2.5 py-1 text-[11px] font-semibold text-white shadow-md shrink-0 transition ${
+                consentNudge ? 'bg-amber-600' : 'bg-slate-900'
+              }`}
+            >
+              {consentChecked
+                ? <>Now click <strong className="font-bold">Agree &amp; Continue</strong> to start signing</>
+                : (consentNudge
+                  ? <>Tick this box first, then click <strong className="font-bold">Agree &amp; Continue</strong></>
+                  : <>Check this and click <strong className="font-bold">Agree &amp; Continue</strong> to start signing</>)}
             </span>
           )}
         </div>
 
         <div className="flex items-center gap-2 sm:gap-3 ml-auto w-full sm:w-auto justify-end">
           {!agreedConsent && moreActionsMenu}
-          <button
-            onClick={handleAgreeAndContinue}
-            className={`flex-1 sm:flex-none px-4 py-2 sm:py-1.5 rounded font-bold text-xs transition shadow-xs ${
-              agreedConsent ? 'bg-[#007355] text-white' : 'bg-[#007355] hover:bg-[#005c44] text-white'
-            }`}
-          >
-            Agree & Continue
-          </button>
+          {agreedConsent ? (
+            <span className="flex-1 sm:flex-none px-3 py-2 sm:py-1.5 rounded font-bold text-xs bg-emerald-50 border border-emerald-200 text-[#007355] flex items-center justify-center gap-1.5">
+              <CheckCircle2 size={14} /> Agreed
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={handleAgreeButton}
+              aria-disabled={!consentChecked}
+              title={consentChecked ? 'Read the terms and agree to start signing' : 'Tick the box to confirm you have read the disclosure first'}
+              className={`flex-1 sm:flex-none px-4 py-2 sm:py-1.5 rounded font-bold text-xs transition ${
+                consentChecked
+                  ? 'bg-[#007355] hover:bg-[#005c44] text-white shadow-md ring-2 ring-emerald-300 ring-offset-1 cursor-pointer'
+                  : 'bg-slate-200 text-slate-500 cursor-not-allowed'
+              }`}
+            >
+              Agree & Continue
+            </button>
+          )}
 
         </div>
       </div>
@@ -1520,8 +1597,8 @@ export default function PublicSigning() {
 
           <div className="flex items-center gap-3 text-xs">
             <div className="flex items-center gap-1 text-slate-500">
-              <button onClick={() => setZoomLevel(Math.max(50, zoomLevel - 10))} className="p-1 hover:text-slate-900"><ZoomOut size={15} /></button>
-              <button onClick={() => setZoomLevel(Math.min(150, zoomLevel + 10))} className="p-1 hover:text-slate-900"><ZoomIn size={15} /></button>
+              <button onClick={() => setZoomLevel(Math.max(50, zoomLevel - 25))} className="p-1 hover:text-slate-900" title="Zoom out" aria-label="Zoom out"><ZoomOut size={15} /></button>
+              <button onClick={() => setZoomLevel(Math.min(300, zoomLevel + 25))} className="p-1 hover:text-slate-900" title="Zoom in" aria-label="Zoom in"><ZoomIn size={15} /></button>
               <button onClick={handleDownloadSignedPdf} className="p-1 hover:text-slate-900" title="Download"><Download size={15} /></button>
               <button onClick={handlePrintSignedPdf} className="p-1 hover:text-slate-900" title="Print"><Printer size={15} /></button>
               <button onClick={() => showPopupAlert(`Document dispatched to ${documentDetails.recipient}`, { title: 'Mail', type: 'info' })} className="p-1 hover:text-slate-900" title="Email"><Mail size={15} /></button>
@@ -1638,6 +1715,31 @@ export default function PublicSigning() {
         </div>
       )}
 
+      {/* Sent back for correction: what the sender asks this recipient to put right */}
+      {correctionRequest && !isCompleted && !signerContext?.alreadySigned && (() => {
+        const toCorrect = Object.values(fieldsByDoc).flat().filter((f) => f && f.correction && isMyField(f));
+        return (
+          <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 sm:px-6 py-2.5 text-xs" role="status">
+            <div className="max-w-[794px] mx-auto flex items-start gap-2.5">
+              <AlertCircle size={16} className="text-amber-600 shrink-0 mt-0.5" />
+              <div className="min-w-0 space-y-1">
+                <p className="font-bold">
+                  {String(documentDetails.sender || 'The sender').split('<')[0].trim() || 'The sender'} asks you to correct this document and sign it again.
+                </p>
+                {correctionRequest.note && <p className="leading-relaxed break-words"><span className="font-bold">Reason:</span> {correctionRequest.note}</p>}
+                {toCorrect.length > 0 && (
+                  <p className="leading-relaxed break-words">
+                    <span className="font-bold">To correct:</span>{' '}
+                    {toCorrect.map((f) => (f.correction.note ? `${f.label || f.type} (${f.correction.note})` : (f.label || f.type))).join(', ')}.
+                    {' '}These fields are marked on the document; everything else you entered is still filled in.
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Validation Error Banner */}
       {validationError && (
         <div className="bg-red-600 text-white p-3 text-center text-xs font-bold flex items-center justify-center gap-2 sticky top-22 z-20 shadow-md">
@@ -1646,8 +1748,14 @@ export default function PublicSigning() {
       )}
 
       {/* Main Document Viewer Container */}
-      <main className="flex-1 p-4 sm:p-8 flex justify-center items-start overflow-y-auto print:p-0 print:m-0">
+      <main
+        className="flex-1 p-4 sm:p-8 flex justify-center items-start overflow-auto print:p-0 print:m-0"
+        // Before the agreement the document can be read but not filled in: a click on it points at the consent bar
+        onClick={signingLocked ? nudgeConsent : undefined}
+      >
+        <div className="w-full max-w-[794px] flex justify-center" {...(signingLocked ? { inert: '' } : {})}>
         <BexDocumentSheet
+          zoom={zoomLevel}
           docId={docId}
           bexsignDocId={documentsList.length > 1 ? `${fullBexsignId}-${activeDocIndex + 1}` : fullBexsignId}
           documentName={documentsList[activeDocIndex]?.name || documentDetails.title}
@@ -1673,6 +1781,7 @@ export default function PublicSigning() {
           placedFields={fieldsByDoc[activeDocIndex] || []}
           onUpdateField={handleUpdateFieldValue}
         />
+        </div>
       </main>
 
       {/* Confirmation Modal to Change Saved Signature */}

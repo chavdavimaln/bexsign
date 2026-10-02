@@ -64,7 +64,9 @@ import {
   Superscript,
   Eraser,
   Trash2,
-  AlertCircle
+  AlertCircle,
+  CircleDot,
+  EyeOff
 } from 'lucide-react';
 import { showPopupAlert } from '../components/GlobalAlertModal';
 import { getLoggedInUser } from '../utils/currentUser';
@@ -74,7 +76,16 @@ import { generateAndDownloadPdf } from '../utils/pdfGenerator';
 import TemplatePickerModal from '../components/templates/TemplatePickerModal';
 import { countTemplateUse } from '../components/templates/templateUi';
 import { API_BASE, API_ORIGIN } from '../utils/api';
-import { isAutoResizeField, autoResizeWidth } from '../utils/fieldSizing';
+import {
+  isAutoResizeField, autoResizeWidth, getFieldBox, fieldFontSize, defaultFieldSize, radioLayout, makeOption,
+  fieldLabelPosition, checkboxValuePosition, labelFontSize, fieldPlaceholder, supportsPlaceholder, isBlankFieldValue,
+  FIELD_MIN_WIDTH, FIELD_MIN_HEIGHT
+} from '../utils/fieldSizing';
+import FieldLabel from '../components/documents/FieldLabel';
+import DocumentPage, { PAGE_WIDTH } from '../components/documents/DocumentPage';
+import { FieldFlags, FieldIdentity, CheckboxSettings, OptionListEditor, PlaceholderSettings } from '../components/documents/FieldSettings';
+import StampImage, { prepareStampImage } from '../components/documents/StampImage';
+import { captureDocumentLayouts } from '../utils/layoutSnapshot';
 import {
   PAGE,
   EDITOR_BASE_FONT,
@@ -1180,48 +1191,8 @@ export default function DocumentEditor() {
     }
   }, [totalPages, activePage]);
 
-  // Consolidate fields to Page 1 if Page 1 has ample free space and user did not request extra pages
-  useEffect(() => {
-    if (!docTextContentRef.current) return;
-    const textHeight = docTextContentRef.current.offsetHeight || 280;
-    const textBottom = (docTextContentRef.current?.offsetTop || 48) + textHeight;
-
-    // Standard A4 is 1123px high: Page 1 is only full if text alone > 850px
-    if (textHeight < 850 && extraPagesCount === 0) {
-      const p2Fields = fieldsOnDoc.filter(f => f.page && f.page > 1);
-      if (p2Fields.length > 0) {
-        setFieldsOnDoc(prev => {
-          let p1Count = prev.filter(f => (f.page || 1) === 1).length;
-          return prev.map(f => {
-            if (f.page && f.page > 1) {
-              const newY = Math.min(920, Math.max(120, Math.round(textBottom + 25 + ((p1Count % 6) * 54))));
-              const newX = 60 + ((Math.floor(p1Count / 6) * 240) % 480);
-              p1Count++;
-              return { ...f, page: 1, x: newX, y: newY };
-            }
-            return f;
-          });
-        });
-      }
-    } else {
-      // Page 1 IS fully occupied (textHeight >= 850) or fields overflow past 940px
-      const hasOverflow = fieldsOnDoc.some(f => (f.page || 1) === 1 && f.y > 940);
-      if (hasOverflow) {
-        setFieldsOnDoc(prev => {
-          let p2Count = prev.filter(f => f.page === 2).length;
-          return prev.map(f => {
-            if ((f.page || 1) === 1 && f.y > 940) {
-              const newY = 190 + ((p2Count % 8) * 60);
-              const newX = 60 + ((Math.floor(p2Count / 8) * 240) % 480);
-              p2Count++;
-              return { ...f, page: 2, x: newX, y: newY };
-            }
-            return f;
-          });
-        });
-      }
-    }
-  }, [currentDocument?.documentText, fieldsOnDoc.length, extraPagesCount]);
+  // A field stays on the page and at the position the sender gave it. Nothing here moves fields on its own:
+  // a page that holds fields is always shown (see totalPages), whatever this browser remembers about added pages.
 
   const setFieldsOnDoc = (updater) => {
     setFieldsByDoc((prev) => {
@@ -1277,20 +1248,35 @@ export default function DocumentEditor() {
     return () => clearTimeout(timer);
   }, [recentlyAddedFieldId]);
 
-  // Selected field: outlined in its recipient's colour over a soft tint; the selected recipient's fields are tinted
+  // A field is one box with a 1px border in its recipient's colour. The selected field gets the full colour and a
+  // soft glow; the selected recipient's other fields are a little stronger than everyone else's.
   const fieldEmphasisStyle = (field, rec, isSelected) => {
-    if (isSelected) {
-      return {
-        boxShadow: `0 0 0 3px #ffffff, 0 0 0 5px ${rec.color}, 0 16px 32px -14px ${rec.color}`,
-        backgroundColor: `color-mix(in srgb, ${rec.color} 10%, #ffffff)`,
-        '--bex-field-color': rec.color
-      };
-    }
-    if (selectedRecipient && fieldBelongsTo(field, selectedRecipient)) {
-      return { backgroundColor: `color-mix(in srgb, ${rec.color} 5%, #ffffff)`, '--bex-field-color': rec.color };
-    }
-    return { '--bex-field-color': rec.color };
+    const ofSelectedRecipient = Boolean(selectedRecipient && fieldBelongsTo(field, selectedRecipient));
+    const tint = isSelected ? 16 : (ofSelectedRecipient ? 9 : 5);
+    return {
+      '--bex-field-color': rec.color,
+      borderColor: isSelected ? rec.color : `color-mix(in srgb, ${rec.color} ${ofSelectedRecipient ? 80 : 50}%, #ffffff)`,
+      // Opaque: a field covers the text it is put on, here and in every copy of the document
+      backgroundColor: `color-mix(in srgb, ${rec.color} ${tint}%, #ffffff)`,
+      boxShadow: isSelected ? `0 0 0 3px color-mix(in srgb, ${rec.color} 24%, transparent)` : undefined
+    };
   };
+
+  // Resize handles of the selected field: corners and edges, fewer on a box too small to hold them all
+  const resizeHandlesFor = (width, height) => [
+    { id: 'nw', style: { left: -4, top: -4, cursor: 'nwse-resize' } },
+    { id: 'n', style: { left: 'calc(50% - 4px)', top: -4, cursor: 'ns-resize' } },
+    { id: 'ne', style: { right: -4, top: -4, cursor: 'nesw-resize' } },
+    { id: 'e', style: { right: -4, top: 'calc(50% - 4px)', cursor: 'ew-resize' } },
+    { id: 'se', style: { right: -4, bottom: -4, cursor: 'nwse-resize' } },
+    { id: 's', style: { left: 'calc(50% - 4px)', bottom: -4, cursor: 'ns-resize' } },
+    { id: 'sw', style: { left: -4, bottom: -4, cursor: 'nesw-resize' } },
+    { id: 'w', style: { left: -4, top: 'calc(50% - 4px)', cursor: 'ew-resize' } }
+  ].filter((handle) => {
+    if ((handle.id === 'n' || handle.id === 's') && width < 44) return false;
+    if (height < 28 && ['nw', 'n', 'ne', 'sw'].includes(handle.id)) return false;
+    return true;
+  });
   const [showCustomDateInput, setShowCustomDateInput] = useState(false);
   const [customDateInput, setCustomDateInput] = useState('');
   const [showCreateCustomFieldModal, setShowCreateCustomFieldModal] = useState(false);
@@ -1402,7 +1388,87 @@ export default function DocumentEditor() {
     }
   };
 
+  // Resizing: dragging one of the handles of the selected field changes its box. Any field can be made small
+  // enough to sit inside a line of text.
+  const resizeRef = useRef(null);
+  const [resizingFieldId, setResizingFieldId] = useState(null);
+
+  const handleResizeStart = (e, field, handle) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const pageElem = document.getElementById(`doc-page-${field.page || 1}`) || canvasRef.current;
+    const box = getFieldBox(field);
+    resizeRef.current = {
+      fieldId: field.id,
+      handle,
+      startX: e.clientX,
+      startY: e.clientY,
+      x: field.x,
+      y: field.y,
+      width: box.width,
+      height: box.height,
+      pageWidth: pageElem ? pageElem.clientWidth : PAGE_WIDTH,
+      pageHeight: pageElem ? pageElem.clientHeight : 1123
+    };
+    setActiveField(field);
+    setResizingFieldId(field.id);
+  };
+
+  const applyResize = (e) => {
+    const start = resizeRef.current;
+    if (!start) return;
+    const dx = (e.clientX - start.startX) / zoomScale;
+    const dy = (e.clientY - start.startY) / zoomScale;
+    setFieldsOnDoc((prev) => prev.map((f) => {
+      if (f.id !== start.fieldId) return f;
+      const isSplit = f.type === 'Split text';
+      const count = Math.max(1, Number(f.charCount) || 10);
+      const gap = Math.max(0, Number(f.charSpace) || 0);
+      const minWidth = isSplit ? count * 8 + (count - 1) * gap + 2 : (f.type === 'Checkbox' ? 12 : FIELD_MIN_WIDTH);
+      const minHeight = f.type === 'Checkbox' ? 12 : FIELD_MIN_HEIGHT;
+      let { x, y, width, height } = start;
+      if (start.handle.includes('e')) width = start.width + dx;
+      if (start.handle.includes('s')) height = start.height + dy;
+      if (start.handle.includes('w')) {
+        width = start.width - dx;
+        x = start.x + dx;
+      }
+      if (start.handle.includes('n')) {
+        height = start.height - dy;
+        y = start.y + dy;
+      }
+      // Never smaller than the minimum, never outside the page
+      if (width < minWidth) {
+        if (start.handle.includes('w')) x = start.x + start.width - minWidth;
+        width = minWidth;
+      }
+      if (height < minHeight) {
+        if (start.handle.includes('n')) y = start.y + start.height - minHeight;
+        height = minHeight;
+      }
+      if (x < 0) {
+        width += x;
+        x = 0;
+      }
+      if (y < 0) {
+        height += y;
+        y = 0;
+      }
+      width = Math.min(width, start.pageWidth - x);
+      height = Math.min(height, start.pageHeight - y);
+      const size = isSplit
+        ? { width: Math.max(8, (width - 2 - (count - 1) * gap) / count), height: Math.max(12, height - 2) }
+        : { width: Math.round(width), height: Math.round(height) };
+      return { ...f, x: Math.round(x), y: Math.round(y), ...size, sized: true };
+    }));
+  };
+
   const handleMouseMoveOnCanvas = (e) => {
+    if (resizeRef.current) {
+      e.preventDefault();
+      applyResize(e);
+      return;
+    }
     if (!draggingFieldId) return;
     e.preventDefault();
 
@@ -1471,19 +1537,14 @@ export default function DocumentEditor() {
   };
 
   const handleMouseUpCanvas = () => {
+    if (resizeRef.current) {
+      resizeRef.current = null;
+      setResizingFieldId(null);
+      lastDragEndRef.current = Date.now();
+    }
+    // A field may be dropped anywhere on the page, also over or inside the text: it stays where it is put
     if (draggingFieldId && hasDraggedRef.current) {
       lastDragEndRef.current = Date.now();
-      const fieldId = draggingFieldId;
-      const field = fieldsOnDoc.find(f => f.id === fieldId);
-      if (field) {
-        const targetPage = field.page || 1;
-        setTimeout(() => {
-          if (checkFieldOverlapsText(fieldId, targetPage)) {
-            setPendingOverlapField(field);
-            setShowOverlapModal(true);
-          }
-        }, 40);
-      }
     }
     setDraggingFieldId(null);
     hasDraggedRef.current = false;
@@ -1532,26 +1593,6 @@ export default function DocumentEditor() {
     setPendingOverlapField(null);
   };
 
-  // Initial check on document load: if any existing field overlaps text without prior user confirmation, prompt modal
-  useEffect(() => {
-    if (initialOverlapCheckedRef.current) return;
-    if (fieldsOnDoc.length === 0 || !docTextContentRef.current) return;
-
-    const timer = setTimeout(() => {
-      const overlapping = fieldsOnDoc.find(f => {
-        if (f.overlapConfirmed) return false;
-        return checkFieldOverlapsText(f.id, f.page || 1);
-      });
-      if (overlapping) {
-        initialOverlapCheckedRef.current = true;
-        setPendingOverlapField(overlapping);
-        setShowOverlapModal(true);
-      }
-    }, 700);
-
-    return () => clearTimeout(timer);
-  }, [fieldsOnDoc.length, currentDocument?.documentText]);
-
   // Direct Inline Text Writing Handler on Canvas (Pages 10, 11, 14, 15, 18 PDF)
   const handleInlineValueChange = (fieldId, val) => {
     setFieldsOnDoc(prev => prev.map(f => {
@@ -1579,14 +1620,14 @@ export default function DocumentEditor() {
   };
 
   // Stamp File Upload Handler (Pages 9 & 10 PDF)
-  const handleStampImageUpload = (e) => {
+  const handleStampImageUpload = async (e) => {
     const file = e.target.files[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (uploadEvent) => {
-        setStampImageSrc(uploadEvent.target.result);
-      };
-      reader.readAsDataURL(file);
+    e.target.value = ''; // the same picture can be chosen again
+    if (!file) return;
+    try {
+      setStampImageSrc(await prepareStampImage(file));
+    } catch (err) {
+      showPopupAlert(err.message, { title: 'Stamp picture', type: 'warning' });
     }
   };
 
@@ -1618,6 +1659,27 @@ export default function DocumentEditor() {
     filePath: d.filePath || d.file_path || null
   }));
 
+  // Documents with their layout snapshot: where the text sits on each page, so the signed PDF keeps every field at
+  // the place it has here (see utils/layoutSnapshot.js). A document whose snapshot fails is sent without one.
+  const buildDocumentsWithLayouts = async () => {
+    const documents = buildDocumentsPayload();
+    try {
+      const layouts = await captureDocumentLayouts(documentsList.map((d, i) => ({
+        title: d.name || '',
+        docIdText: bexsignDocId
+          ? `${bexsignDocId}${documentsList.length > 1 ? `-${i + 1}` : ''}`
+          : `BEX-DOC-2026-${String(id || 1).padStart(4, '0')}-${i + 1}`,
+        documentText: d.documentText,
+        customMessage: d.customMessage,
+        totalPages: pagesForDoc(i)
+      })));
+      return documents.map((d, i) => (layouts[i] ? { ...d, layout: layouts[i] } : d));
+    } catch (err) {
+      console.warn('Layout snapshots skipped:', err);
+      return documents;
+    }
+  };
+
   const buildRecipientsPayload = () => (
     recipientsSourceRef.current === 'default'
       ? {}
@@ -1648,7 +1710,8 @@ export default function DocumentEditor() {
         body: JSON.stringify({
           documentTitle: documentsList[0]?.name || documentTitle,
           fieldsByDoc: fieldsPayload,
-          documents: buildDocumentsPayload(),
+          // Auto-saves skip the layout snapshot; it is taken when the user saves or sends
+          documents: silent ? buildDocumentsPayload() : await buildDocumentsWithLayouts(),
           ...buildRecipientsPayload(),
           status: 'Draft'
         })
@@ -1787,6 +1850,22 @@ export default function DocumentEditor() {
       showPopupAlert('Add at least one document to this request before sending.', { title: 'Document required', type: 'warning' });
       return;
     }
+    // A radio group or dropdown needs values the signer can tell apart
+    const badChoice = documentFieldLists().flat().find((f) => {
+      if (f.type !== 'Radio' && f.type !== 'Dropdown') return false;
+      const values = (f.options || []).map((option) => String(option?.value || '').trim().toLowerCase());
+      return values.length < (f.type === 'Radio' ? 2 : 1) || values.some((value) => !value) || new Set(values).size !== values.length;
+    });
+    if (badChoice) {
+      const docIdx = parseInt(Object.keys(fieldsByDoc).find((key) => (fieldsByDoc[key] || []).some((f) => f.id === badChoice.id)), 10) || 0;
+      if (docIdx !== activeDocIndex) switchToDocument(docIdx, badChoice.page || 1);
+      setTimeout(() => setActiveFieldId(badChoice.id), 80);
+      showPopupAlert(
+        `"${badChoice.label || fieldTypeName(badChoice.type)}" needs ${badChoice.type === 'Radio' ? 'at least two values' : 'at least one option'}, each with its own name. Open the field and complete its ${badChoice.type === 'Radio' ? 'radio button values' : 'options'}.`,
+        { title: 'Check the field options', type: 'warning' }
+      );
+      return;
+    }
     const missing = getSignersWithoutFields();
     if (missing.length > 0) {
       setSelectedRecipient(missing[0]);
@@ -1816,7 +1895,7 @@ export default function DocumentEditor() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           documentName: documentsList[0]?.name || documentTitle,
-          documents: buildDocumentsPayload(),
+          documents: await buildDocumentsWithLayouts(),
           fieldsByDoc: fieldsPayload,
           ...buildRecipientsPayload()
         })
@@ -1843,11 +1922,24 @@ export default function DocumentEditor() {
         ? (waiting.length > 0 ? ` ${waiting.map((r) => r.name || r.email).join(', ')} will receive it next, in signing order.` : '')
         : (dispatched.length < signingCount ? ' The remaining recipients will receive it in signing order.' : '');
       const restartNote = data.restarted ? ' Signing was restarted, so every recipient signs again.' : '';
+      // Recipients with "SMS" / "Email + SMS": say whether the text really went out
+      const smsResults = Array.isArray(data.sms) ? data.sms : [];
+      const smsLabel = (r) => `${r.name || r.email}${r.phone ? ` (${r.phone})` : ''}`;
+      const texted = smsResults.filter((r) => r.sent);
+      const notTexted = smsResults.filter((r) => !r.sent);
+      let smsNote = '';
+      if (texted.length > 0) smsNote += ` Text message sent to: ${texted.map(smsLabel).join(', ')}.`;
+      if (notTexted.length > 0) {
+        smsNote += notTexted.every((r) => r.notConfigured)
+          ? ` No text message was sent to ${notTexted.map(smsLabel).join(', ')}: an SMS provider is not set up on the server yet.`
+          : ` The text message could not be sent to ${notTexted.map((r) => `${smsLabel(r)}${r.error ? `: ${r.error}` : ''}`).join('; ')}.`;
+      }
+      const hasWarning = Boolean(failed) || notTexted.length > 0;
       showPopupAlert(
         failed
-          ? `The document was sent, but the email could not be delivered to: ${failed}.${laterNote}`
-          : `Signature request emailed to: ${sentTo}.${laterNote}${restartNote}`,
-        { title: failed ? 'Sent with email errors' : 'Document sent', type: failed ? 'warning' : 'success' }
+          ? `The document was sent, but the email could not be delivered to: ${failed}.${laterNote}${smsNote}`
+          : `Signature request ${dispatched.some((r) => r.emailed !== false) ? 'emailed' : 'sent'} to: ${sentTo}.${laterNote}${restartNote}${smsNote}`,
+        { title: failed ? 'Sent with email errors' : (notTexted.length > 0 ? 'Sent, but not by SMS' : 'Document sent'), type: hasWarning ? 'warning' : 'success' }
       );
       navigate('/documents');
     } catch (err) {
@@ -1885,8 +1977,12 @@ export default function DocumentEditor() {
     { type: 'Text', icon: <FileText size={16} /> },
     { type: 'Split text', icon: <Grid size={16} /> },
     { type: 'Job title', icon: <Briefcase size={16} /> },
-    { type: 'Checkbox', icon: <CheckSquare size={16} /> }
+    { type: 'Checkbox', icon: <CheckSquare size={16} /> },
+    { type: 'Radio', name: 'Radio group', icon: <CircleDot size={16} /> },
+    { type: 'Dropdown', icon: <ChevronDown size={16} /> }
   ];
+  // Name shown for a field type ("Radio" is stored, "Radio group" is shown)
+  const fieldTypeName = (type) => standardFields.find((f) => f.type === type)?.name || type;
 
   const getSmartFieldPosition = () => {
     let textHeight = 0;
@@ -1895,7 +1991,11 @@ export default function DocumentEditor() {
     }
     const page1Fields = fieldsOnDoc.filter(f => (f.page || 1) === 1);
     const textBottom = (docTextContentRef.current?.offsetTop || 48) + textHeight;
-    const maxFieldBottomOnP1 = page1Fields.reduce((max, f) => Math.max(max, (f.y || 0) + (f.height || 40)), textBottom);
+    const maxFieldBottomOnP1 = page1Fields.reduce((max, f) => Math.max(max, (f.y || 0) + getFieldBox(f).height), textBottom);
+    // A new field goes under the lowest field of its column, so fields of different heights never overlap
+    const nextFreeY = (fields, x, top) => fields
+      .filter((f) => Math.abs((f.x || 0) - x) < 120 && (f.y || 0) >= top - 1)
+      .reduce((max, f) => Math.max(max, (f.y || 0) + getFieldBox(f).height + 14), top);
 
     // Standard A4 is 1123px high with usable height up to ~960px.
     // Page 1 is only full if text alone occupies > 850px, or existing fields extend past 930px, or text + fields exceed 960px.
@@ -1905,17 +2005,19 @@ export default function DocumentEditor() {
       const targetP = activePage > 1 ? activePage : 2;
       const targetFields = fieldsOnDoc.filter(f => f.page === targetP);
       const idxOnP = targetFields.length;
+      const x = 60 + ((Math.floor(idxOnP / 8) * 240) % 480);
       return {
         page: targetP,
-        x: 60 + ((Math.floor(idxOnP / 8) * 240) % 480),
-        y: 190 + ((idxOnP % 8) * 60)
+        x,
+        y: Math.min(980, Math.round(nextFreeY(targetFields, x, 190)))
       };
     } else {
       const idxOnP1 = page1Fields.length;
+      const x = 60 + ((Math.floor(idxOnP1 / 6) * 240) % 480);
       return {
         page: 1,
-        x: 60 + ((Math.floor(idxOnP1 / 6) * 240) % 480),
-        y: Math.min(920, Math.max(120, Math.round(textBottom + 25 + ((idxOnP1 % 6) * 54))))
+        x,
+        y: Math.min(920, Math.max(120, Math.round(nextFreeY(page1Fields, x, textBottom + 25))))
       };
     }
   };
@@ -1943,15 +2045,26 @@ export default function DocumentEditor() {
 
     const { page: targetPage, x: targetX, y: targetY } = getSmartFieldPosition();
 
+    // "Checkbox - 2": the data label tells fields of the same type apart in the form data
+    const sameTypeCount = Object.values(fieldsByDoc).flat().filter((f) => f.type === type).length;
+    const choiceDefaults = {
+      // A checkbox starts unchecked; "Checked" in its properties ticks it for the signer
+      Checkbox: { value: 'false', checked: false, optionValue: `Checkbox ${sameTypeCount + 1}`, showLabel: false },
+      Radio: { value: '', options: [makeOption('Option 1'), makeOption('Option 2')], direction: 'vertical', showLabels: true },
+      Dropdown: { value: '', options: [makeOption('Option 1'), makeOption('Option 2')] }
+    }[type];
+
     const newField = {
       id: Date.now(),
       type,
-      label: type,
-      value: type === 'Split text' ? '' : (type === 'Checkbox' ? 'true' : (type === 'Full name' ? (selectedRecipient.name || type) : type)),
+      label: fieldTypeName(type),
+      dataLabel: `${fieldTypeName(type)} - ${sameTypeCount + 1}`,
+      description: '',
+      value: type === 'Split text' ? '' : (type === 'Full name' ? (selectedRecipient.name || type) : type),
       x: targetX,
       y: targetY,
-      width: type === 'Signature' || type === 'Initial' ? 200 : (type === 'Stamp' ? 180 : 160),
-      height: type === 'Signature' || type === 'Initial' ? 70 : 40,
+      ...defaultFieldSize(type),
+      sized: true,
       docIndex: activeDocIndex,
       page: targetPage,
       required: true,
@@ -1966,7 +2079,7 @@ export default function DocumentEditor() {
       // A sign date is filled with the date the recipient signs
       ...(type === 'Sign date' ? { dateFormat: 'MMM dd yyyy HH:mm z' } : {}),
       ...(type === 'Full name' ? { nameFormat: 'Full Name' } : {}),
-      ...(type === 'Checkbox' ? { checked: true } : {})
+      ...(choiceDefaults || {})
     };
     setFieldsOnDoc((prev) => [...prev, newField]);
     setActiveField(newField);
@@ -1982,6 +2095,13 @@ export default function DocumentEditor() {
     if (!activeField) return;
     const fieldId = activeField.id;
     setFieldsOnDoc((prev) => prev.map((f) => (f.id === fieldId ? { ...f, [propKey]: propVal } : f)));
+  };
+
+  // Several properties at once (used by the property sections in components/documents/FieldSettings.jsx)
+  const updateActiveFieldProps = (changes) => {
+    if (!activeField) return;
+    const fieldId = activeField.id;
+    setFieldsOnDoc((prev) => prev.map((f) => (f.id === fieldId ? { ...f, ...changes } : f)));
   };
 
   const deleteActiveField = () => {
@@ -2004,8 +2124,8 @@ export default function DocumentEditor() {
       value: customFieldName,
       x: targetX,
       y: targetY,
-      width: 160,
-      height: 40,
+      ...defaultFieldSize(customFieldType),
+      sized: true,
       docIndex: activeDocIndex,
       page: targetPage,
       required: customFieldRequired,
@@ -2043,8 +2163,8 @@ export default function DocumentEditor() {
         value: 'STAMP',
         x: targetX,
         y: targetY,
-        width: 180,
-        height: 70,
+        ...defaultFieldSize('Stamp', { stampShape }),
+        sized: true,
         docIndex: activeDocIndex,
         page: targetPage,
         required: true,
@@ -2598,270 +2718,258 @@ export default function DocumentEditor() {
                 )}
 
                 {/* Page Sheet Canvas (Exact A4 Proportion: 210mm x 297mm = 794px x 1123px) */}
-                <div
+                <DocumentPage
                   id={`doc-page-${pageNum}`}
-                  ref={pageNum === 1 ? canvasRef : undefined}
+                  pageRef={pageNum === 1 ? canvasRef : undefined}
+                  textRef={pageNum === 1 ? docTextContentRef : undefined}
+                  pageNum={pageNum}
+                  totalPages={totalPages}
+                  title={documentTitle}
+                  docIdText={displayDocId}
+                  documentText={currentDocument.documentText}
+                  customMessage={currentDocument.customMessage}
                   style={{ zoom: zoomScale }}
-                  className="relative w-[794px] min-h-[1123px] max-w-[794px] bg-white text-slate-900 p-12 sm:p-14 shadow-[0_4px_30px_rgba(0,0,0,0.25)] rounded-xs border border-slate-300 flex flex-col justify-between select-text"
+                  className="shadow-[0_4px_30px_rgba(0,0,0,0.25)] rounded-xs"
+                  headerAction={pageNum === 1 ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDocContentText(currentDocument.documentText || getDefaultDocContent(currentDocument.name, currentDocument.customMessage));
+                        setIsEditingDocRichText(true);
+                        setShowEditDocModal(true);
+                      }}
+                      className="px-2.5 py-1 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded border border-emerald-200 flex items-center gap-1 transition cursor-pointer"
+                      title="Edit document body content"
+                    >
+                      <Edit3 size={13} />
+                      <span>Edit Content</span>
+                    </button>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <span className="px-2.5 py-1 text-[10px] font-bold text-emerald-800 bg-emerald-50 border border-emerald-300 rounded font-mono uppercase">
+                        Signature Page
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFieldsOnDoc((prev) => prev.map((f) => {
+                            const fieldPage = f.page || 1;
+                            if (fieldPage === pageNum) return { ...f, page: Math.max(1, pageNum - 1) };
+                            if (fieldPage > pageNum) return { ...f, page: fieldPage - 1 };
+                            return f;
+                          }));
+                          setExtraPagesForDoc(activeDocIndex, extraPagesCount - 1);
+                          setActivePage(Math.max(1, pageNum - 1));
+                        }}
+                        className="px-2 py-1 text-[10px] font-semibold text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded flex items-center gap-1 transition cursor-pointer"
+                        title="Remove extra page"
+                      >
+                        <Trash2 size={11} /> Remove Page
+                      </button>
+                    </div>
+                  )}
                 >
-                  {/* Page Top Content */}
-                  <div className="flex-1 flex flex-col">
-                    {pageNum === 1 ? (
-                      /* Page 1: Header + Document Clauses */
-                      <div ref={docTextContentRef} data-doc-text="true" className="space-y-4 pb-6 border-b border-slate-200">
-                        <div className="flex justify-between items-start border-b border-slate-200 pb-3">
-                          <div>
-                            <h1 className="text-xl font-black text-slate-900 tracking-tight">
-                              {documentTitle}
-                            </h1>
-                            <p className="text-[11px] text-slate-500 font-mono mt-0.5">
-                              BexSign Document ID: {displayDocId}
-                            </p>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setDocContentText(currentDocument.documentText || getDefaultDocContent(currentDocument.name, currentDocument.customMessage));
-                              setIsEditingDocRichText(true);
-                              setShowEditDocModal(true);
-                            }}
-                            className="px-2.5 py-1 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded border border-emerald-200 flex items-center gap-1 transition cursor-pointer"
-                            title="Edit document body content"
-                          >
-                            <Edit3 size={13} />
-                            <span>Edit Content</span>
-                          </button>
-                        </div>
-
-                        {/* Full Document Clauses & Text */}
-                        <div className="text-xs text-slate-700 leading-relaxed font-sans select-text">
-                          {/<[a-z][\s\S]*>/i.test(currentDocument.documentText || '') ? (
-                            <div dangerouslySetInnerHTML={{ __html: currentDocument.documentText }} className="space-y-2 bex-rich-text" />
-                          ) : (
-                            <div className="whitespace-pre-line">
-                              {currentDocument.documentText || getDefaultDocContent(currentDocument.name, currentDocument.customMessage)}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    ) : (
-                      /* Page 2+: Execution & Signatures Block Header */
-                      <div data-doc-text="true" className="border-b border-slate-200 pb-4 mb-6">
-                        <div className="flex justify-between items-start">
-                          <div>
-                            <h2 className="text-lg font-black text-slate-900 tracking-tight">
-                              {documentTitle}
-                            </h2>
-                            <p className="text-[11px] text-slate-500 font-mono mt-0.5">
-                              Execution & Signatures • Page {pageNum} of {totalPages}
-                            </p>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <span className="px-2.5 py-1 text-[10px] font-bold text-emerald-800 bg-emerald-50 border border-emerald-300 rounded font-mono uppercase">
-                              Signature Page
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setFieldsOnDoc((prev) => prev.map((f) => {
-                                  const fieldPage = f.page || 1;
-                                  if (fieldPage === pageNum) return { ...f, page: Math.max(1, pageNum - 1) };
-                                  if (fieldPage > pageNum) return { ...f, page: fieldPage - 1 };
-                                  return f;
-                                }));
-                                setExtraPagesForDoc(activeDocIndex, extraPagesCount - 1);
-                                setActivePage(Math.max(1, pageNum - 1));
-                              }}
-                              className="px-2 py-1 text-[10px] font-semibold text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded flex items-center gap-1 transition cursor-pointer"
-                              title="Remove extra page"
-                            >
-                              <Trash2 size={11} /> Remove Page
-                            </button>
-                          </div>
-                        </div>
-                        <p className="text-xs text-slate-600 mt-3 leading-relaxed">
-                          IN WITNESS WHEREOF, the parties hereto have executed this Agreement by affixing their digital signatures and requested verification fields below.
-                        </p>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Page Footer */}
-                  <div className="border-t border-slate-200 pt-3 mt-6 flex justify-between items-center text-[10px] text-slate-400 font-mono select-none">
-                    <span>Page {pageNum} of {totalPages} • BexSign Legal Verification</span>
-                    <span>A4 (210 × 297 mm) • SHA-256</span>
-                  </div>
-
-                  {/* Render Movable & Direct Inline Editable Canvas Fields for THIS Page */}
+                  {/* Placed fields of THIS page: one box each, movable, resizable and editable in place */}
                   {fieldsForThisPage.map((field) => {
                     const rec = recipientForField(field);
                     const isSelected = activeField?.id === field.id;
-                    const isDragging = draggingFieldId === field.id;
-                    const fieldZIndex = isDragging ? 50 : (isSelected ? 40 : 25);
-                    const fieldOfSelectedRecipient = Boolean(selectedRecipient && fieldBelongsTo(field, selectedRecipient));
+                    const isBusy = draggingFieldId === field.id || resizingFieldId === field.id;
+                    const fieldZIndex = isBusy ? 50 : (isSelected ? 40 : 25);
                     const addedClass = recentlyAddedFieldId === field.id ? 'bex-field-added ' : '';
+                    const box = getFieldBox(field);
+                    // Auto-resize fields grow to fit their text but never shrink below the configured width
+                    const boxWidth = isAutoResizeField(field) ? autoResizeWidth(field) : box.width;
+                    const fontSize = fieldFontSize(field, box.height);
+                    const isSignatureType = field.type === 'Signature' || field.type === 'Initial';
+                    // What the empty field shows the signer: the placeholder, or nothing when it is turned off.
+                    // With the placeholder off the box still names the field here, struck out with an eye icon.
+                    const placeholderText = fieldPlaceholder(field);
+                    const emptyHint = placeholderText ? (
+                      <span className="truncate font-medium leading-none opacity-70" style={{ color: rec.color, fontSize: `${fontSize}px` }}>{placeholderText}</span>
+                    ) : (
+                      <span
+                        className="flex min-w-0 items-center gap-1 italic leading-none opacity-45"
+                        style={{ color: rec.color, fontSize: `${Math.min(10, fontSize)}px` }}
+                        title="No placeholder: the signer sees an empty field"
+                      >
+                        {box.height >= 16 && <EyeOff size={Math.min(10, box.height - 6)} className="shrink-0" />}
+                        <span className="truncate">{field.label || field.type}</span>
+                      </span>
+                    );
 
-                    // 1. Split Text Character Cells (Pages 15, 17 PDF: Direct Alphanumeric Cell Writing)
+                    let content;
                     if (field.type === 'Split text') {
+                      // Split Text Character Cells: one character per cell
                       const count = field.charCount || 10;
-                      const charArray = field.gridValue || ['s','-','1'];
-
-                      return (
-                        <div
-                          id={`doc-field-${field.id}`}
-                          key={field.id}
-                          onPointerDown={(e) => handleMouseDownOnField(e, field)}
-                          style={{
-                            top: `${field.y}px`,
-                            left: `${field.x}px`,
-                            zIndex: fieldZIndex,
-                            borderColor: rec.color,
-                            touchAction: 'none',
-                            ...fieldEmphasisStyle(field, rec, isSelected)
-                          }}
-                          className={`${addedClass}absolute cursor-move p-1.5 bg-white border-2 rounded-lg shadow-md transition ${
-                            isSelected ? 'border-solid ring-2 ring-offset-1 shadow-xl' : `${fieldOfSelectedRecipient ? 'border-solid' : 'border-dashed'} hover:border-solid hover:shadow-lg`
-                          }`}
-                        >
-                          <div className="flex border bg-white text-xs font-mono font-bold" style={{ gap: `${field.charSpace || 0}px`, borderColor: rec.color, color: rec.color }}>
-                            {Array.from({ length: count }).map((_, cIdx) => (
-                              <input
-                                key={cIdx}
-                                type="text"
-                                maxLength={1}
-                                value={charArray[cIdx] || ''}
-                                onChange={(e) => handleSplitCellChange(field.id, cIdx, e.target.value)}
-                                onFocus={() => setActiveField(field)}
-                                style={{ width: `${field.width || 16}px`, height: `${field.height || 20}px`, borderColor: rec.color, color: rec.color }}
-                                className="border-r last:border-r-0 text-center bg-slate-50/60 text-[11px] font-bold focus:bg-slate-100 focus:outline-none"
-                              />
-                            ))}
-                          </div>
+                      const charArray = field.gridValue || ['s', '-', '1'];
+                      content = (
+                        <div className="flex h-full font-mono font-bold" style={{ gap: `${field.charSpace || 0}px`, color: rec.color }}>
+                          {Array.from({ length: count }).map((_, cIdx) => (
+                            <input
+                              key={cIdx}
+                              type="text"
+                              maxLength={1}
+                              value={charArray[cIdx] || ''}
+                              onChange={(e) => handleSplitCellChange(field.id, cIdx, e.target.value)}
+                              onFocus={() => setActiveField(field)}
+                              style={{ width: `${field.width || 16}px`, borderColor: `color-mix(in srgb, ${rec.color} 45%, #ffffff)`, color: rec.color, fontSize: `${Math.min(11, fontSize)}px` }}
+                              className="h-full min-w-0 border-r last:border-r-0 text-center bg-transparent font-bold p-0 focus:bg-white/70 focus:outline-none"
+                            />
+                          ))}
                         </div>
                       );
-                    }
-
-                    // 2. Checkbox Field (Page 19 PDF)
-                    if (field.type === 'Checkbox') {
-                      return (
-                        <div
-                          id={`doc-field-${field.id}`}
-                          key={field.id}
-                          onPointerDown={(e) => handleMouseDownOnField(e, field)}
-                          style={{
-                            top: `${field.y}px`,
-                            left: `${field.x}px`,
-                            zIndex: fieldZIndex,
-                            borderColor: rec.color,
-                            touchAction: 'none',
-                            ...fieldEmphasisStyle(field, rec, isSelected)
-                          }}
-                          className={`${addedClass}absolute cursor-move p-1.5 bg-white border-2 rounded-lg shadow-md transition ${
-                            isSelected ? 'border-solid ring-2 ring-offset-1 shadow-xl' : `${fieldOfSelectedRecipient ? 'border-solid' : 'border-dashed'} hover:border-solid hover:shadow-lg`
-                          }`}
-                        >
+                    } else if (field.type === 'Checkbox') {
+                      content = (
+                        <>
                           <button
                             type="button"
                             onClick={() => {
                               if (Date.now() - lastDragEndRef.current < 300) return; // the click that ends a drag is not a toggle
-                              setFieldsOnDoc((prev) => prev.map((f) => (f.id === field.id ? { ...f, checked: field.checked === false } : f)));
+                              // "Checked": the box is ticked when the signer opens the document
+                              const nowChecked = field.checked === false;
+                              setFieldsOnDoc((prev) => prev.map((f) => (f.id === field.id ? { ...f, checked: nowChecked, value: nowChecked ? 'true' : 'false' } : f)));
                             }}
-                            style={{ borderColor: rec.color, color: rec.color }}
-                            className="h-6 w-6 border-2 bg-white flex items-center justify-center font-black text-sm"
+                            style={{ color: rec.color, fontSize: `${Math.max(9, Math.min(box.width, box.height) - 6)}px` }}
+                            className="w-full h-full flex items-center justify-center font-black leading-none cursor-move"
+                            aria-label={`${field.label || 'Checkbox'}: ${field.checked !== false ? 'checked' : 'not checked'}`}
                           >
                             {field.checked !== false ? '✓' : ''}
                           </button>
+                          {/* The value the checkbox stands for, on the side chosen in its properties */}
+                          <FieldLabel text={field.optionValue} position={checkboxValuePosition(field)} fontSize={labelFontSize(field)} />
+                        </>
+                      );
+                    } else if (field.type === 'Radio') {
+                      // Radio group: the options share the box; one of them can be chosen by the signer
+                      content = (
+                        <div className="relative w-full h-full" role="group" aria-label={`${field.label || 'Radio group'} options`}>
+                          {radioLayout(field, { width: boxWidth - 2, height: box.height - 2 }).map((item) => (
+                            <React.Fragment key={item.option.id}>
+                              <span
+                                style={{ left: item.x, top: item.y, width: item.size, height: item.size, borderColor: rec.color }}
+                                className="absolute rounded-full border bg-white flex items-center justify-center"
+                              >
+                                {Boolean(item.option.value) && field.value === item.option.value && (
+                                  <span className="rounded-full" style={{ width: '52%', height: '52%', backgroundColor: rec.color }} />
+                                )}
+                              </span>
+                              {item.label && (
+                                <span
+                                  style={{ left: item.label.x, top: item.label.centerY, width: item.label.width, textAlign: item.label.align, fontSize: `${item.label.fontSize}px`, lineHeight: 1.25 }}
+                                  className="absolute -translate-y-1/2 truncate font-semibold text-slate-800"
+                                >
+                                  {item.option.value}
+                                </span>
+                              )}
+                            </React.Fragment>
+                          ))}
                         </div>
                       );
-                    }
-
-                    // 3. Stamp Field with Image & Shape Editing (Pages 9 & 10 PDF)
-                    if (field.type === 'Stamp') {
-                      return (
-                        <div
-                          id={`doc-field-${field.id}`}
-                          key={field.id}
-                          onPointerDown={(e) => handleMouseDownOnField(e, field)}
-                          style={{
-                            top: `${field.y}px`,
-                            left: `${field.x}px`,
-                            zIndex: fieldZIndex,
-                            borderColor: rec.color,
-                            color: rec.color,
-                            touchAction: 'none',
-                            ...fieldEmphasisStyle(field, rec, isSelected)
-                          }}
-                          className={`${addedClass}absolute p-2 border-2 bg-white shadow-md cursor-move transition flex flex-col items-center justify-center font-bold text-xs overflow-hidden ${
-                            field.stampShape === 'oval' ? 'rounded-full h-20 w-20' : 'rounded-lg h-20 w-28'
-                          } ${isSelected ? 'border-solid ring-2 ring-offset-1 shadow-xl' : `${fieldOfSelectedRecipient ? 'border-solid' : 'border-dashed'} hover:border-solid hover:shadow-lg`}`}
-                        >
-                          {field.stampImage ? (
-                            <img
-                              src={field.stampImage}
-                              alt="Stamp"
-                              style={{
-                                transform: `scale(${(field.stampZoom || 100) / 100}) rotate(${field.stampRotation || 0}deg)`
-                              }}
-                              className="max-h-full max-w-full object-contain pointer-events-none"
-                            />
-                          ) : (
-                            <div className="text-center">
-                              <ImageIcon size={20} className="mx-auto mb-0.5" />
-                              <span className="text-[10px] font-bold tracking-wider uppercase">{field.value || 'Stamp'}</span>
-                            </div>
+                    } else if (field.type === 'Dropdown') {
+                      content = (
+                        <div className="w-full h-full flex items-center justify-between gap-1 px-1.5 overflow-hidden" style={{ color: rec.color }}>
+                          {field.value ? (
+                            <span
+                              className="truncate font-bold leading-none"
+                              style={{ fontSize: `${fontSize}px`, fontFamily: field.font ? `${field.font}, Inter, sans-serif` : 'inherit', fontStyle: field.isItalic ? 'italic' : 'normal' }}
+                            >
+                              {field.value}
+                            </span>
+                          ) : emptyHint}
+                          {boxWidth >= 40 && <ChevronDown size={Math.max(9, Math.min(14, box.height - 6))} className="shrink-0 opacity-80" />}
+                        </div>
+                      );
+                    } else if (field.type === 'Stamp') {
+                      content = field.stampImage ? (
+                        // The picture fills the stamp's shape and is cut off at its edge (the border is 1px on each side)
+                        <StampImage
+                          src={field.stampImage}
+                          width={boxWidth - 2}
+                          height={box.height - 2}
+                          shape={field.stampShape}
+                          zoom={field.stampZoom}
+                          rotation={field.stampRotation}
+                        />
+                      ) : (
+                        <div className="w-full h-full flex flex-col items-center justify-center overflow-hidden" style={{ color: rec.color }}>
+                          {box.height >= 44 && <ImageIcon size={18} className="shrink-0" />}
+                          <span className="text-[10px] font-bold tracking-wider uppercase truncate max-w-full px-1">{field.value || 'Stamp'}</span>
+                        </div>
+                      );
+                    } else {
+                      // Text-like fields and signatures: the name written in the box is the hint the signer sees
+                      content = isSignatureType ? (
+                        // A signature box shows its placeholder (the signer signs here; nothing can be typed into it)
+                        <div className="w-full h-full flex items-center justify-center gap-1 px-1.5 overflow-hidden" style={{ color: rec.color }}>
+                          {boxWidth >= 44 && box.height >= 20 && <PenTool size={Math.min(13, box.height - 6)} className="shrink-0 opacity-70" />}
+                          {emptyHint}
+                        </div>
+                      ) : (
+                        <div className="relative w-full h-full flex items-center gap-1 px-1.5 overflow-hidden">
+                          {/* Typing here sets a value the signer starts with; the empty box shows the placeholder */}
+                          <input
+                            type="text"
+                            value={isBlankFieldValue(field) ? '' : field.value}
+                            onChange={(e) => handleInlineValueChange(field.id, e.target.value)}
+                            onFocus={() => setActiveField(field)}
+                            style={{
+                              color: rec.color,
+                              fontFamily: field.font ? `${field.font}, Inter, sans-serif` : 'inherit',
+                              fontSize: `${fontSize}px`,
+                              fontStyle: field.isItalic ? 'italic' : 'normal'
+                            }}
+                            className="flex-1 w-full min-w-0 h-full bg-transparent focus:outline-none font-bold leading-none p-0 m-0 truncate cursor-move focus:cursor-text placeholder:font-medium placeholder:text-[color:var(--bex-field-color)] placeholder:opacity-60"
+                            placeholder={placeholderText}
+                            aria-label={`${field.label || field.type} field`}
+                          />
+                          {isBlankFieldValue(field) && !placeholderText && (
+                            <span className="absolute inset-0 flex items-center px-1.5 pointer-events-none">{emptyHint}</span>
                           )}
                         </div>
                       );
                     }
 
-                    // 4. Standard Text-Based Fields (Company, Full Name, Email, Date, Text, Job Title, Signature)
-                    const autoResize = isAutoResizeField(field);
                     return (
                       <div
                         id={`doc-field-${field.id}`}
                         key={field.id}
+                        data-doc-field="true"
                         onPointerDown={(e) => handleMouseDownOnField(e, field)}
                         style={{
                           top: `${field.y}px`,
                           left: `${field.x}px`,
-                          borderColor: rec.color,
-                          backgroundColor: '#ffffff',
+                          width: `${boxWidth}px`,
+                          height: `${box.height}px`,
                           zIndex: fieldZIndex,
                           touchAction: 'none',
-                          // Auto-resize fields grow to fit their text but never shrink below the configured width
-                          ...(autoResize ? { width: `${autoResizeWidth(field, { paddingPx: 84 })}px`, maxWidth: '90%' } : {}),
+                          borderRadius: field.type === 'Stamp' && field.stampShape === 'oval' ? '50%' : '3px',
                           ...fieldEmphasisStyle(field, rec, isSelected)
                         }}
-                        className={`${addedClass}absolute p-2 border-2 rounded-lg shadow-md cursor-move transition flex items-center gap-2 ${autoResize ? '' : 'min-w-[150px] max-w-[260px]'} bg-white ${
-                          isSelected ? 'ring-2 ring-offset-1 scale-105 border-solid shadow-xl' : `${fieldOfSelectedRecipient ? 'border-solid' : 'border-dashed'} hover:border-solid hover:shadow-lg`
-                        }`}
+                        className={`${addedClass}absolute box-border border cursor-move transition-shadow hover:shadow-sm`}
                       >
-                        <Move size={12} className="opacity-60 shrink-0" style={{ color: rec.color }} />
-                        
-                        <input
-                          type="text"
-                          value={field.value !== undefined ? field.value : field.label}
-                          onChange={(e) => handleInlineValueChange(field.id, e.target.value)}
-                          onFocus={() => setActiveField(field)}
-                          style={{
-                            color: rec.color,
-                            fontFamily: field.font || 'inherit',
-                            fontSize: `${field.fontSize || 11}px`,
-                            fontWeight: field.isBold ? 'bold' : 'bold',
-                            fontStyle: field.isItalic ? 'italic' : 'normal'
-                          }}
-                          className="w-full min-w-0 bg-transparent focus:outline-none font-bold text-xs p-0 m-0 border-b border-transparent focus:border-current truncate"
-                          placeholder={`Write ${field.type}...`}
-                        />
-
-                        {field.required && <span className="text-red-600 font-bold shrink-0">*</span>}
-                        <Settings size={12} style={{ color: rec.color }} className="opacity-80 shrink-0 cursor-pointer" />
+                        {content}
+                        {/* The field's name, written beside the box when the sender asked for it */}
+                        {field.type !== 'Checkbox' && (
+                          <FieldLabel text={field.label} position={fieldLabelPosition(field)} fontSize={labelFontSize(field)} />
+                        )}
+                        {field.required && (
+                          <span className="absolute -top-2 -right-1.5 text-red-600 font-black text-[12px] leading-none pointer-events-none select-none" aria-hidden="true">*</span>
+                        )}
+                        {isSelected && resizeHandlesFor(boxWidth, box.height).map((handle) => (
+                          <span
+                            key={handle.id}
+                            data-resize-handle={handle.id}
+                            onPointerDown={(e) => handleResizeStart(e, field, handle.id)}
+                            style={{ ...handle.style, borderColor: rec.color, touchAction: 'none' }}
+                            className="absolute w-2 h-2 bg-white border rounded-[2px] shadow-sm z-10"
+                          />
+                        ))}
                       </div>
                     );
                   })}
 
                   {/* Selected field tag: field name and its recipient, in the recipient's colour */}
-                  {activeField && draggingFieldId !== activeField.id && fieldsForThisPage.some((f) => f.id === activeField.id) && (() => {
+                  {activeField && draggingFieldId !== activeField.id && resizingFieldId !== activeField.id && fieldsForThisPage.some((f) => f.id === activeField.id) && (() => {
                     const tagRecipient = recipientForField(activeField);
                     return (
                       <div
@@ -2878,7 +2986,7 @@ export default function DocumentEditor() {
                       </div>
                     );
                   })()}
-                </div>
+                </DocumentPage>
               </div>
             );
           })}
@@ -2890,7 +2998,7 @@ export default function DocumentEditor() {
             /* Dedicated Property Panel for Active Field (Pages 9 to 19 PDF) */
             <div className="space-y-5">
               <div className="flex justify-between items-center pb-2 border-b border-slate-800">
-                <h3 className="font-extrabold text-slate-100 text-sm">{activeField.type} Property</h3>
+                <h3 className="font-extrabold text-slate-100 text-sm">{fieldTypeName(activeField.type)} Property</h3>
                 <button onClick={() => setActiveField(null)} className="text-slate-400 hover:text-slate-200">
                   <X size={18} />
                 </button>
@@ -2930,6 +3038,9 @@ export default function DocumentEditor() {
                 </div>
               </div>
 
+              {/* Required / Read only / Checked */}
+              <FieldFlags field={activeField} onChange={updateActiveFieldProps} />
+
               {/* Position Coordinate & Live Value Editor */}
               <div className="space-y-2">
                 <div className="p-2 bg-slate-900 border border-slate-800 rounded flex items-center justify-between text-[11px] text-slate-400 font-mono">
@@ -2937,11 +3048,41 @@ export default function DocumentEditor() {
                   <span>Y: {Math.round(activeField.y)}px</span>
                 </div>
 
+                {/* Size of the field's box: drag the handles on the page, or type the size here */}
+                {activeField.type !== 'Split text' && (
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Size</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {[['width', 'W', FIELD_MIN_WIDTH, PAGE_WIDTH], ['height', 'H', FIELD_MIN_HEIGHT, 1123]].map(([key, short, min, max]) => (
+                        <label key={key} className="flex items-center gap-1.5 bg-slate-900 border border-slate-700 rounded px-2 focus-within:border-[#00a884]">
+                          <span className="text-[10px] font-bold text-slate-500">{short}</span>
+                          <input
+                            type="number"
+                            min={min}
+                            max={max}
+                            value={Math.round(getFieldBox(activeField)[key])}
+                            onChange={(e) => {
+                              const fieldId = activeField.id;
+                              const box = getFieldBox(activeField);
+                              const next = Math.max(min, Math.min(max, parseInt(e.target.value, 10) || min));
+                              setFieldsOnDoc((prev) => prev.map((f) => (f.id === fieldId ? { ...f, width: box.width, height: box.height, [key]: next, sized: true } : f)));
+                            }}
+                            aria-label={`Field ${key} in pixels`}
+                            className="w-full min-w-0 bg-transparent py-1.5 text-slate-100 font-mono text-[11px] outline-none"
+                          />
+                          <span className="text-[10px] text-slate-500">px</span>
+                        </label>
+                      ))}
+                    </div>
+                    <p className="text-[10px] text-slate-500 mt-1 leading-snug">Drag the handles on the field to resize it. It can be made small enough to sit inside a line of text.</p>
+                  </div>
+                )}
+
                 {checkFieldOverlapsText(activeField.id, activeField.page || 1) && (
-                  <div className="p-2.5 bg-amber-950/40 border border-amber-600/70 rounded-lg flex items-center justify-between text-xs text-amber-200 animate-in fade-in">
+                  <div className="p-2.5 bg-slate-900 border border-slate-700 rounded-lg flex items-center justify-between gap-2 text-xs text-slate-300">
                     <div className="flex items-center gap-1.5 min-w-0">
-                      <AlertCircle size={15} className="text-amber-400 shrink-0" />
-                      <span className="font-semibold text-[11px] truncate">Overlaps Text</span>
+                      <AlertCircle size={14} className="text-slate-400 shrink-0" />
+                      <span className="font-semibold text-[11px] truncate">Placed over the text</span>
                     </div>
                     <button
                       type="button"
@@ -2949,9 +3090,9 @@ export default function DocumentEditor() {
                         setPendingOverlapField(activeField);
                         setShowOverlapModal(true);
                       }}
-                      className="px-2 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold rounded text-[10px] cursor-pointer transition shadow-xs shrink-0"
+                      className="px-2 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 font-bold rounded text-[10px] cursor-pointer transition shrink-0"
                     >
-                      Resolve Overlap
+                      Move to blank space
                     </button>
                   </div>
                 )}
@@ -2994,17 +3135,32 @@ export default function DocumentEditor() {
                   </div>
                 )}
 
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Direct Field Content Value</label>
-                  <input
-                    type="text"
-                    value={activeField.value !== undefined ? activeField.value : activeField.label}
-                    onChange={(e) => updateActiveFieldProperty('value', e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-slate-100 font-bold text-xs"
-                    placeholder="Write content..."
-                  />
-                </div>
+                {/* The value the field starts with (a signature has none: the signer signs it) */}
+                {!['Checkbox', 'Radio', 'Dropdown', 'Signature', 'Initial'].includes(activeField.type) && (
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Direct Field Content Value</label>
+                    <input
+                      type="text"
+                      value={isBlankFieldValue(activeField) ? '' : activeField.value}
+                      onChange={(e) => updateActiveFieldProperty('value', e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-slate-100 font-bold text-xs placeholder:font-medium placeholder:text-slate-500"
+                      placeholder="Empty: the signer fills it in"
+                    />
+                  </div>
+                )}
               </div>
+
+              {/* Field name, data label and the description shown to the signer */}
+              <FieldIdentity field={activeField} onChange={updateActiveFieldProps} />
+
+              {/* Placeholder: what the empty field shows at signing, or nothing */}
+              {supportsPlaceholder(activeField) && <PlaceholderSettings field={activeField} onChange={updateActiveFieldProps} />}
+
+              {/* Checkbox value, radio button values, dropdown options */}
+              {activeField.type === 'Checkbox' && <CheckboxSettings field={activeField} onChange={updateActiveFieldProps} />}
+              {(activeField.type === 'Radio' || activeField.type === 'Dropdown') && (
+                <OptionListEditor field={activeField} onChange={updateActiveFieldProps} />
+              )}
 
               {/* Dedicated Stamp Property Panel & Controls (Pages 9 & 10 PDF) */}
               {activeField.type === 'Stamp' && (
@@ -3205,7 +3361,7 @@ export default function DocumentEditor() {
               )}
 
               {/* Formatting Toolbar */}
-              {['Company', 'Full name', 'Sign date', 'Text', 'Split text', 'Job title', 'Email'].includes(activeField.type) && (
+              {['Company', 'Full name', 'Sign date', 'Text', 'Split text', 'Job title', 'Email', 'Dropdown'].includes(activeField.type) && (
                 <div className="space-y-2">
                   <label className="block text-[11px] font-bold text-slate-400 uppercase">Formatting</label>
                   <select
@@ -3356,7 +3512,7 @@ export default function DocumentEditor() {
                         className="p-2.5 bg-slate-900 border border-slate-800 hover:border-slate-600 rounded-lg flex items-center gap-2 text-xs font-medium text-slate-200 transition text-left"
                       >
                         <span style={{ color: selectedRecipient.color }}>{field.icon}</span>
-                        <span className="truncate text-[11px]">{field.type}</span>
+                        <span className="truncate text-[11px]">{field.name || field.type}</span>
                       </button>
                     ))}
                   </div>
@@ -3442,17 +3598,25 @@ export default function DocumentEditor() {
 
             <div className="border-2 border-dashed border-slate-300 p-6 text-center rounded-lg bg-slate-50 space-y-3">
               {/* Image Preview Canvas Box */}
-              <div className="h-32 w-32 mx-auto bg-slate-200 rounded flex items-center justify-center overflow-hidden relative shadow-inner">
-                {stampImageSrc ? (
-                  <img
-                    src={stampImageSrc}
-                    alt="Stamp Preview"
-                    style={{
-                      transform: `scale(${stampZoom / 100}) rotate(${stampRotation}deg)`
-                    }}
-                    className={`max-h-full max-w-full object-contain ${stampShape === 'oval' ? 'rounded-full' : ''}`}
-                  />
-                ) : (
+              <div className="h-36 w-full mx-auto bg-slate-200 rounded flex items-center justify-center overflow-hidden relative shadow-inner">
+                {stampImageSrc ? (() => {
+                  // The same shape and proportions the stamp has (or will get) on the page, enlarged to fit the preview
+                  const size = activeField?.type === 'Stamp' ? getFieldBox({ ...activeField, stampShape }) : defaultFieldSize('Stamp', { stampShape });
+                  const fit = Math.min(200 / size.width, 124 / size.height);
+                  return (
+                    <div className="shadow ring-1 ring-slate-300 bg-white" style={{ borderRadius: stampShape === 'oval' ? '50%' : '3px' }}>
+                      <StampImage
+                        src={stampImageSrc}
+                        width={Math.round(size.width * fit)}
+                        height={Math.round(size.height * fit)}
+                        shape={stampShape}
+                        zoom={stampZoom}
+                        rotation={stampRotation}
+                        alt="Stamp preview"
+                      />
+                    </div>
+                  );
+                })() : (
                   <div className="text-center text-slate-400">
                     <ImageIcon size={36} className="mx-auto mb-1 opacity-60" />
                     <span className="text-xs font-bold">No Image Selected</span>

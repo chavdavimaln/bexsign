@@ -23,12 +23,17 @@ const MicrosoftLogo = () => (
 export default function SocialAuthButtons({ mode = 'login', disabled = false, onBeforeStart }) {
   // A provider an administrator turned off in Settings > Integrations is hidden (both show if the check fails)
   const [hidden, setHidden] = useState({});
+  // false = the server has no credentials for this provider yet; the button then explains it instead of leaving the page
+  const [configured, setConfigured] = useState({});
+  const [notice, setNotice] = useState('');
   useEffect(() => {
     let cancelled = false;
     fetch(`${API_BASE}/auth/oauth/providers`)
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (!cancelled && data?.providers) setHidden(Object.fromEntries(Object.entries(data.providers).map(([k, v]) => [k, v.hidden === true])));
+        if (cancelled || !data?.providers) return;
+        setHidden(Object.fromEntries(Object.entries(data.providers).map(([k, v]) => [k, v.hidden === true])));
+        setConfigured(Object.fromEntries(Object.entries(data.providers).map(([k, v]) => [k, v.configured !== false])));
       })
       .catch(() => {});
     return () => {
@@ -36,6 +41,12 @@ export default function SocialAuthButtons({ mode = 'login', disabled = false, on
     };
   }, []);
   const start = (provider) => {
+    if (configured[provider] === false) {
+      const label = provider === 'google' ? 'Google' : 'Microsoft';
+      setNotice(`${label} sign-in is not set up on this server yet. An administrator turns it on in Settings > Integrations > ${provider === 'google' ? 'Google Workspace' : 'Microsoft 365'} (see doc/27-google-microsoft-sign-in.md). Until then, sign in with your email and password.`);
+      return;
+    }
+    setNotice('');
     if (onBeforeStart && onBeforeStart(provider) === false) return;
     window.location.href = `${API_BASE}/auth/oauth/${provider}?mode=${mode}`;
   };
@@ -64,6 +75,11 @@ export default function SocialAuthButtons({ mode = 'login', disabled = false, on
           </button>
         )}
       </div>
+      {notice && (
+        <p role="status" className="text-[11px] leading-relaxed font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+          {notice}
+        </p>
+      )}
     </div>
   );
 }

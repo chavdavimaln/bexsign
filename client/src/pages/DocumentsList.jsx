@@ -29,6 +29,7 @@ import {
   Trash2,
   Bell,
   RotateCcw,
+  RefreshCw,
   CheckCircle2,
   Clock,
   AlertCircle,
@@ -221,6 +222,33 @@ export default function DocumentsList() {
       setDocuments(isTrashView ? [] : getFallbackDocuments());
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Refresh button: reloads the list in place (statuses, recipients, folders) and keeps filters, page and selection
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState('');
+  const handleRefresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    setRefreshError('');
+    // The spinner stays for at least this long, so a fast reload is still seen
+    const minimumSpin = new Promise((resolve) => setTimeout(resolve, 800));
+    try {
+      const response = await fetch(isTrashView ? `${API_BASE}/trash` : `${API_BASE}/documents`);
+      const data = await response.json();
+      await minimumSpin;
+      if (!data.success || !Array.isArray(data.documents)) throw new Error('Refresh failed');
+      setDocuments(data.documents);
+      setSelectedDocIds((ids) => ids.filter((id) => data.documents.some((doc) => doc.id === id)));
+      // The sidebar status counts follow the same list
+      window.dispatchEvent(new Event('bexsign-documents-changed'));
+    } catch (e) {
+      await minimumSpin;
+      setRefreshError('Could not refresh the list. Check your connection and try again.');
+      setTimeout(() => setRefreshError(''), 3500);
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -793,6 +821,14 @@ export default function DocumentsList() {
           Pending confirmation
         </span>
       )}
+      {doc.verification_status === 'correction' && status !== 'COMPLETED' && (
+        <span
+          className="bg-sky-50 text-sky-800 border border-sky-200 text-[10px] px-2 py-0.5 rounded font-black tracking-wider uppercase inline-block"
+          title="The completed documents were rejected and sent back to one or more recipients, who are signing again."
+        >
+          Correction requested
+        </span>
+      )}
       {status === 'COMPLETED' && doc.verification_status === 'rejected' && (
         <span className="bg-rose-100 text-rose-700 border border-rose-200 text-[10px] px-2 py-0.5 rounded font-black tracking-wider uppercase inline-block whitespace-nowrap">
           Confirmation rejected
@@ -838,6 +874,16 @@ export default function DocumentsList() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+          <button
+            type="button"
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 p-2 rounded-lg shadow-2xs flex items-center justify-center transition cursor-pointer disabled:cursor-wait"
+            title="Refresh the list"
+            aria-label="Refresh the list"
+          >
+            <RefreshCw size={15} className={`text-[#007355] ${refreshing ? 'animate-spin' : ''}`} />
+          </button>
           {!isTrashView && (
             <Link
               to="/verify"
@@ -864,6 +910,12 @@ export default function DocumentsList() {
         </div>
       )}
 
+      {refreshError && (
+        <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs font-bold rounded-lg flex items-center gap-2">
+          <AlertCircle size={16} /> {refreshError}
+        </div>
+      )}
+
       {/* BexSign Standard Table Toolbar (View count, Show count, Pagination, Filter toggle, Column customizer) */}
       <BexTableToolbar
         totalItems={filteredDocs.length}
@@ -885,7 +937,16 @@ export default function DocumentsList() {
       />
 
       {/* Documents: a table from tablet width up (scrolls sideways when the columns do not fit), cards on phones */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-2xs w-full overflow-hidden min-w-0">
+      <div className="relative bg-white rounded-xl border border-slate-200 shadow-2xs w-full overflow-hidden min-w-0" aria-busy={refreshing}>
+        {/* Shown over the list while it is being refreshed */}
+        {refreshing && (
+          <div className="absolute inset-0 z-20 bg-white/70 backdrop-blur-[1px] flex items-start justify-center pt-20" role="status">
+            <div className="bg-white border border-slate-200 shadow-lg rounded-full pl-3 pr-4 py-2 flex items-center gap-2.5 text-xs font-bold text-slate-700">
+              <span className="w-5 h-5 rounded-full border-2 border-emerald-100 border-t-[#007355] animate-spin" />
+              Refreshing documents...
+            </div>
+          </div>
+        )}
         {/* Phones: search, select all, one card per document */}
         <div className="md:hidden">
           <div className="p-3 border-b border-slate-100 flex items-center gap-2.5">
@@ -1487,6 +1548,10 @@ export default function DocumentsList() {
                   {/* COMPLETED ACTIONS (Matching PDF 4 Page 4 Image 2 & Requirements) */}
                   {activeMenuDoc.status === 'Completed' && (
                     <>
+                      {/* Still waiting to be confirmed: opens the Recipient status page at its Verification & confirmation panel */}
+                      {activeMenuDoc.verification_status === 'pending' && (
+                        <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}#verify-confirm`); }} className="w-full px-3.5 py-2 hover:bg-amber-50 flex items-center gap-2.5 font-bold text-amber-700"><ShieldCheck size={15} /> Verify &amp; confirm</button>
+                      )}
                       <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-[#00a884]"><UserCheck size={15} /> Recipient status</button>
                       <button onClick={() => { const id = activeMenuDoc.id; setActiveMenuDoc(null); navigate(`/documents/${id}/view`); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5 font-bold text-slate-900"><Eye size={15} /> View document</button>
                       {can('documents.create') && <button onClick={() => { const d = activeMenuDoc; setActiveMenuDoc(null); setEditCopyDoc(d); }} className="w-full px-3.5 py-2 hover:bg-slate-50 flex items-center gap-2.5"><Edit size={15} /> Edit</button>}

@@ -1,6 +1,8 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  User, 
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  User,
+  Camera,
+  Trash2,
   Calendar, 
   Shield, 
   CheckCircle2, 
@@ -15,8 +17,45 @@ import {
 } from 'lucide-react';
 import { showPopupAlert } from '../components/GlobalAlertModal';
 import { getLoggedInUser } from '../utils/currentUser';
-import { API_BASE, API_ORIGIN } from '../utils/api';
+import { API_BASE, API_ORIGIN, apiUrl } from '../utils/api';
 
+const AVATAR_SIZE = 320; // profile pictures are stored as a square of this many pixels
+const MAX_PICTURE_BYTES = 10 * 1024 * 1024;
+
+/** Crops the picture to a centered square and scales it down, so any photo becomes a small JPEG. */
+function toSquareJpeg(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      const side = Math.min(image.naturalWidth, image.naturalHeight);
+      if (!side) return reject(new Error('This file is not a picture.'));
+      const canvas = document.createElement('canvas');
+      canvas.width = AVATAR_SIZE;
+      canvas.height = AVATAR_SIZE;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, AVATAR_SIZE, AVATAR_SIZE);
+      ctx.drawImage(image, (image.naturalWidth - side) / 2, (image.naturalHeight - side) / 2, side, side, 0, 0, AVATAR_SIZE, AVATAR_SIZE);
+      canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('The picture could not be prepared.'))), 'image/jpeg', 0.9);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('This file is not a picture. Choose a PNG, JPG or WebP file.'));
+    };
+    image.src = url;
+  });
+}
+
+/** Saves fields into the signed-in user kept in localStorage and tells the header to read them again. */
+function updateStoredUser(changes) {
+  try {
+    const stored = localStorage.getItem('user');
+    localStorage.setItem('user', JSON.stringify({ ...(stored ? JSON.parse(stored) : {}), ...changes }));
+  } catch (e) {}
+  window.dispatchEvent(new Event('bexsign-user-changed'));
+}
 
 // POSTs JSON and returns { ok, status, data }; `ok` is false for HTTP errors and { success: false } answers
 async function postJson(url, body) {
@@ -73,6 +112,70 @@ export default function MyProfile() {
   const [successMsg, setSuccessMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
+  // Profile picture (stored on the server, shown here and in the header)
+  const [avatarUrl, setAvatarUrl] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('user') || '{}').avatar_url || null;
+    } catch (e) {
+      return null;
+    }
+  });
+  const [avatarBusy, setAvatarBusy] = useState('');
+  const avatarInputRef = useRef(null);
+
+  const handleAvatarSelected = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // the same file can be chosen again
+    if (!file) return;
+    setErrorMsg('');
+    if (!/^image\/(png|jpeg|webp)$/.test(file.type)) {
+      setErrorMsg('Choose a PNG, JPG or WebP picture.');
+      return;
+    }
+    if (file.size > MAX_PICTURE_BYTES) {
+      setErrorMsg('The picture is larger than 10 MB. Choose a smaller one.');
+      return;
+    }
+    setAvatarBusy('upload');
+    try {
+      const formData = new FormData();
+      formData.append('avatar', await toSquareJpeg(file), 'avatar.jpg');
+      const res = await fetch(`${API_BASE}/settings/profile/${userId}/avatar`, { method: 'POST', body: formData });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) throw new Error(data.error || `The picture could not be uploaded (HTTP ${res.status}).`);
+      setAvatarUrl(data.avatar_url);
+      updateStoredUser({ avatar_url: data.avatar_url });
+      setSuccessMsg('Profile picture updated.');
+      setTimeout(() => setSuccessMsg(''), 4000);
+    } catch (err) {
+      setErrorMsg(err instanceof TypeError
+        ? `Could not reach the BexSign server at ${API_ORIGIN}. Make sure it is running, then try again.`
+        : err.message);
+    } finally {
+      setAvatarBusy('');
+    }
+  };
+
+  const handleAvatarRemove = async () => {
+    setErrorMsg('');
+    setAvatarBusy('remove');
+    try {
+      const res = await fetch(`${API_BASE}/settings/profile/${userId}/avatar`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) throw new Error(data.error || `The picture could not be removed (HTTP ${res.status}).`);
+      setAvatarUrl(null);
+      updateStoredUser({ avatar_url: null });
+      setSuccessMsg('Profile picture removed.');
+      setTimeout(() => setSuccessMsg(''), 4000);
+    } catch (err) {
+      setErrorMsg(err instanceof TypeError
+        ? `Could not reach the BexSign server at ${API_ORIGIN}. Make sure it is running, then try again.`
+        : err.message);
+    } finally {
+      setAvatarBusy('');
+    }
+  };
+
   useEffect(() => {
     fetchProfile();
   }, []);
@@ -81,6 +184,7 @@ export default function MyProfile() {
     try {
       const res = await fetch(`${API_BASE}/settings/profile/${userId}`);
       const data = await res.json();
+      if (data && Number(data.id) === Number(userId)) setAvatarUrl(data.avatar_url || null);
       if (data && data.first_name) {
         setProfile(prev => ({
           ...prev,
@@ -112,17 +216,14 @@ export default function MyProfile() {
         })
       });
 
-      // Update local storage user session
-      try {
-        const stored = localStorage.getItem('user');
-        const userObj = stored ? JSON.parse(stored) : {};
-        userObj.firstName = profile.firstName;
-        userObj.lastName = profile.lastName;
-        userObj.name = `${profile.firstName} ${profile.lastName}`;
-        userObj.email = profile.email;
-        userObj.company = profile.company;
-        localStorage.setItem('user', JSON.stringify(userObj));
-      } catch (err) {}
+      // Update local storage user session (the header shows the new name straight away)
+      updateStoredUser({
+        firstName: profile.firstName,
+        lastName: profile.lastName,
+        name: `${profile.firstName} ${profile.lastName}`,
+        email: profile.email,
+        company: profile.company
+      });
 
       setSuccessMsg('Profile information updated successfully.');
       showPopupAlert('Your profile details have been saved successfully.', { title: 'Profile Updated', type: 'success' });
@@ -242,6 +343,49 @@ export default function MyProfile() {
         <h2 className="text-base font-bold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-3">
           <User className="text-[#E71414]" size={18} /> Personal Details
         </h2>
+
+        {/* Profile picture */}
+        <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+          {avatarUrl ? (
+            <img
+              src={apiUrl(avatarUrl)}
+              alt="Your profile picture"
+              onError={() => setAvatarUrl(null)}
+              className="h-20 w-20 rounded-full object-cover border border-slate-200 bg-slate-100 shadow-sm shrink-0"
+            />
+          ) : (
+            <div className="h-20 w-20 rounded-full bg-gradient-to-tr from-purple-700 to-indigo-600 text-white flex items-center justify-center font-bold text-3xl shadow-sm shrink-0" aria-hidden="true">
+              {(profile.firstName || profile.email || 'U')[0].toUpperCase()}
+            </div>
+          )}
+          <div className="text-xs space-y-2 min-w-0">
+            <p className="font-bold text-slate-700">Profile picture</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <input ref={avatarInputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={handleAvatarSelected} className="hidden" />
+              <button
+                type="button"
+                onClick={() => avatarInputRef.current?.click()}
+                disabled={Boolean(avatarBusy)}
+                className="flex items-center gap-1.5 text-[#007355] hover:text-[#005c44] font-bold border border-[#007355]/30 hover:border-[#007355] px-3 py-1.5 rounded-lg transition bg-[#007355]/5 disabled:opacity-60 cursor-pointer disabled:cursor-wait"
+              >
+                <Camera size={14} />
+                <span>{avatarBusy === 'upload' ? 'Uploading...' : (avatarUrl ? 'Change picture' : 'Upload picture')}</span>
+              </button>
+              {avatarUrl && (
+                <button
+                  type="button"
+                  onClick={handleAvatarRemove}
+                  disabled={Boolean(avatarBusy)}
+                  className="flex items-center gap-1.5 text-rose-600 hover:text-rose-700 font-bold border border-rose-200 hover:border-rose-400 px-3 py-1.5 rounded-lg transition bg-white disabled:opacity-60 cursor-pointer disabled:cursor-wait"
+                >
+                  <Trash2 size={14} />
+                  <span>{avatarBusy === 'remove' ? 'Removing...' : 'Remove'}</span>
+                </button>
+              )}
+            </div>
+            <p className="text-[11px] text-slate-400">PNG, JPG or WebP, up to 10 MB. The picture is cropped to a square and shown next to your name.</p>
+          </div>
+        </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
           <div>

@@ -13,6 +13,10 @@ const INITIALS = {
   'microsoft-365': 'M',
   'stripe-identity': 'S',
   dropbox: 'D',
+  'google-drive': 'GD',
+  'dropbox-files': 'DB',
+  onedrive: 'OD',
+  box: 'B',
   zapier: 'Z',
   slack: 'SL'
 };

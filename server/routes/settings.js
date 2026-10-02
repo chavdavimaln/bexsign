@@ -1,5 +1,9 @@
 const express = require('express');
 const router = express.Router();
+const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
+const multer = require('multer');
 const db = require('../db');
 const { authenticateUser, requireSignedIn } = require('../middleware/authMiddleware');
 const { userCan } = require('../utils/permissions');
@@ -18,7 +22,9 @@ router.get('/profile/:userId', profileGuard, async (req, res) => {
     try {
         // The requested user's own profile (the first account only when that user does not exist)
         const [results] = await db.query(
-            'SELECT id, first_name, last_name, email, company, phone, role FROM users WHERE id = ? OR id = 1 ORDER BY (id = ?) DESC, id ASC LIMIT 1',
+            `SELECT u.id, u.first_name, u.last_name, u.email, u.company, u.phone, u.role, p.avatar_url
+             FROM users u LEFT JOIN user_profiles p ON p.user_id = u.id
+             WHERE u.id = ? OR u.id = 1 ORDER BY (u.id = ?) DESC, u.id ASC LIMIT 1`,
             [userId, userId]
         );
         if (results.length === 0) {
@@ -53,6 +59,79 @@ router.put('/profile/:userId', profileGuard, async (req, res) => {
     } catch (err) {
         console.error('Update Profile Error:', err);
         res.status(500).json({ error: 'Database error while updating profile' });
+    }
+});
+
+// Profile picture: one image per user, kept in server/uploads/avatars and served from /uploads/avatars/...
+const AVATAR_DIR = path.join(__dirname, '..', 'uploads', 'avatars');
+const avatarUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024, files: 1 } });
+
+/** The image type read from the file's first bytes (the name and the browser's type are not trusted). */
+function imageExtension(buffer) {
+    if (!buffer || buffer.length < 12) return null;
+    if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return 'png';
+    if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'jpg';
+    if (buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') return 'webp';
+    return null;
+}
+
+async function currentAvatar(userId) {
+    const [rows] = await db.query('SELECT avatar_url FROM user_profiles WHERE user_id = ?', [userId]);
+    return rows[0]?.avatar_url || null;
+}
+
+function removeAvatarFile(avatarUrl) {
+    if (!avatarUrl || !String(avatarUrl).startsWith('/uploads/avatars/')) return;
+    fs.promises.unlink(path.join(AVATAR_DIR, path.basename(avatarUrl))).catch(() => {});
+}
+
+// @route   POST /api/settings/profile/:userId/avatar
+// @desc    Set the user's profile picture (form field "avatar": PNG, JPG or WebP, up to 2 MB)
+router.post('/profile/:userId/avatar', profileGuard, (req, res) => {
+    avatarUpload.single('avatar')(req, res, async (uploadErr) => {
+        if (uploadErr) {
+            const tooLarge = uploadErr.code === 'LIMIT_FILE_SIZE';
+            return res.status(400).json({ success: false, error: tooLarge ? 'The picture is larger than 2 MB.' : 'The picture could not be uploaded.' });
+        }
+        const userId = parseInt(req.params.userId, 10);
+        try {
+            const extension = imageExtension(req.file?.buffer);
+            if (!extension) {
+                return res.status(400).json({ success: false, error: 'Choose a PNG, JPG or WebP picture.' });
+            }
+            const [users] = await db.query('SELECT id FROM users WHERE id = ?', [userId]);
+            if (users.length === 0) return res.status(404).json({ success: false, error: 'User not found.' });
+
+            const previous = await currentAvatar(userId);
+            await fs.promises.mkdir(AVATAR_DIR, { recursive: true });
+            const fileName = `${userId}-${crypto.randomBytes(8).toString('hex')}.${extension}`;
+            await fs.promises.writeFile(path.join(AVATAR_DIR, fileName), req.file.buffer);
+            const avatarUrl = `/uploads/avatars/${fileName}`;
+            await db.query(
+                'INSERT INTO user_profiles (user_id, avatar_url) VALUES (?, ?) ON DUPLICATE KEY UPDATE avatar_url = VALUES(avatar_url)',
+                [userId, avatarUrl]
+            );
+            removeAvatarFile(previous);
+            res.json({ success: true, avatar_url: avatarUrl, message: 'Profile picture updated.' });
+        } catch (err) {
+            console.error('Profile picture upload error:', err);
+            res.status(500).json({ success: false, error: 'The profile picture could not be saved.' });
+        }
+    });
+});
+
+// @route   DELETE /api/settings/profile/:userId/avatar
+// @desc    Remove the user's profile picture
+router.delete('/profile/:userId/avatar', profileGuard, async (req, res) => {
+    const userId = parseInt(req.params.userId, 10);
+    try {
+        const previous = await currentAvatar(userId);
+        await db.query('UPDATE user_profiles SET avatar_url = NULL WHERE user_id = ?', [userId]);
+        removeAvatarFile(previous);
+        res.json({ success: true, avatar_url: null, message: 'Profile picture removed.' });
+    } catch (err) {
+        console.error('Profile picture remove error:', err);
+        res.status(500).json({ success: false, error: 'The profile picture could not be removed.' });
     }
 });
 

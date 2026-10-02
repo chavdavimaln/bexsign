@@ -33,6 +33,16 @@ the new version.
 `POST /api/signatures/consent` `{ documentId, email }` records it; an email that is not a recipient is refused
 and logged.
 
+The agreement takes two steps in the bar at the top of the signing page:
+
+1. The recipient ticks *"I confirm that I have read and understood the Electronic Record and Signature
+   Disclosure..."*. Until then **Agree & Continue** is greyed out; pressing it only points at the box.
+2. With the box ticked the button is highlighted. Pressing it opens the **Terms and conditions** dialog (the full
+   disclosure) with **Close** and **Agree**. **Agree** records the consent and starts signing.
+
+Until the consent is given the document can be read but not filled in (a click on it points at the consent bar).
+Taking the tick away again takes the agreement back.
+
 ## 2. What the recipient sees
 
 - The documents of the request, page by page, with the fields assigned to them.
@@ -40,6 +50,12 @@ and logged.
   exception is the *"In order, showing completed fields"* flow, where fields an earlier recipient already completed
   are included **read-only**, shown with their signer's name and a "Digitally Certified & Verified" marker.
 - A guided mode walks through the required fields one by one.
+- Every field sits where the sender placed it, at the size the sender gave it. The page keeps its A4 proportions
+  and is scaled to the width of the screen; the zoom buttons enlarge it.
+- A **Sign date** field starts with today's date written in the format the sender chose for the field
+  (`dateFormat`, for example `dd/MM/yyyy` or `MMM dd yyyy HH:mm z`). Clicking it opens a calendar (with a time
+  when the format has one); the date can also be typed, in the field's format or in any common way, and is
+  rewritten in the field's format. Text that is not a date leaves the field unfinished.
 
 ---
 

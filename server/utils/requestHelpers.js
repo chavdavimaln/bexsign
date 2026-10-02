@@ -11,7 +11,7 @@ const SIGNING_ROLES = ['signer', 'approver'];
 const ROLE_LABELS = ['Needs to sign', 'In-person signer', 'Approver', 'Receives a copy'];
 // otp_code, access_passcode and otp_expires_at are deliberately left out of this general projection (they're
 // access-gate secrets) — otpService.js reads/writes them directly with its own narrow queries.
-const RECIPIENT_COLUMNS = 'id, document_id, name, email, role, role_label, delivery_mode, private_note, signing_order_index, status, sent_at, viewed_at, signed_at, signed_ip, signature_image, declined_at, decline_reason, physical_copy_path, delegated_from, delegated_reason, consent_at, consent_ip, phone, auth_type, otp_verified_at';
+const RECIPIENT_COLUMNS = 'id, document_id, name, email, role, role_label, delivery_mode, private_note, signing_order_index, status, sent_at, viewed_at, signed_at, signed_ip, signature_image, declined_at, decline_reason, physical_copy_path, delegated_from, delegated_reason, consent_at, consent_ip, phone, auth_type, otp_verified_at, correction_note, correction_requested_at';
 
 function mapRecipientRole(label) {
   const low = String(label || '').toLowerCase();
@@ -92,7 +92,12 @@ function ensureRequestSchema() {
         ['document_recipients', 'otp_verified_at', 'DATETIME NULL'],
         ['document_files', 'document_text', 'LONGTEXT NULL'],
         ['document_files', 'signed_file_path', 'VARCHAR(255) NULL'],
-        ['document_files', 'sort_order', 'INT DEFAULT 0']
+        ['document_files', 'sort_order', 'INT DEFAULT 0'],
+        // Where the text sits on each page (taken in the editor), so the signed PDF keeps fields at their place
+        ['document_files', 'layout_snapshot', 'LONGTEXT NULL'],
+        // "Verify & confirm" rejected the completed request and asked this recipient to correct and sign again
+        ['document_recipients', 'correction_note', 'VARCHAR(1000) NULL'],
+        ['document_recipients', 'correction_requested_at', 'DATETIME NULL']
       ];
       let failed = false;
       for (const [table, column, definition] of columns) {
@@ -168,7 +173,8 @@ async function saveRecipients(documentId, list) {
     const name = String(r.name || '').trim() || email.split('@')[0];
     const deliveryMode = r.deliveryMode ?? r.delivery_mode ?? existing?.delivery_mode ?? 'Email';
     const privateNote = r.privateNote ?? r.private_note ?? existing?.private_note ?? null;
-    const phone = (r.phone ?? existing?.phone ?? null) || null;
+    // Stored without spaces or dashes ("+919876543210"), the form the SMS providers expect
+    const phone = require('./smsService').normalizePhone(r.phone ?? existing?.phone).slice(0, 20) || null;
     const authType = r.authType ?? r.auth_type ?? r.auth ?? existing?.auth_type ?? 'None';
     // access_passcode is a secret and never sent back to the client (see RECIPIENT_COLUMNS), so the Customize
     // modal always shows this field blank — an empty value here means "unchanged", not "clear it", or every
@@ -221,6 +227,103 @@ const FIELD_SIGNING_KEYS = ['signatureImage', 'signatureStyle', 'signerName', 's
  * signer-entered field values, signed copies and the completion date of the previous round are cleared.
  * Field values the sender prefilled are kept.
  */
+/**
+ * Puts a field's options back to the state they had before its recipient filled the field in: the signature and
+ * the signer's details go, and the value returns to what the sender gave it (`startValue`, kept since the field
+ * was first signed) or to the starting value of its type. Fields the signer never filled in keep their value.
+ */
+function resetSignedField(opts, fieldType) {
+  const filledBySigner = opts.signedAt !== undefined;
+  FIELD_SIGNING_KEYS.forEach((key) => delete opts[key]);
+  delete opts.signedOnPaper;
+  if (!filledBySigner) return opts;
+  delete opts.gridValue;
+  if (opts.startValue !== undefined) opts.value = opts.startValue;
+  else if (fieldType === 'Sign date') delete opts.value; // the signing page shows the signing day
+  else if (fieldType === 'Split text') opts.value = '';
+  // "Checked" in the editor is the state the box starts in (boxes placed before that option started ticked)
+  else if (fieldType === 'Checkbox') opts.value = opts.checked === false ? 'false' : 'true';
+  else if (fieldType === 'Radio' || fieldType === 'Dropdown') opts.value = '';
+  else if (fieldType === 'Full name') opts.value = opts.assignee || fieldType;
+  else opts.value = fieldType;
+  return opts;
+}
+
+/**
+ * Reopens a completed request for some of its recipients, after "Verify & confirm" rejected their data.
+ *
+ * selections: [{ recipientId, fieldIds: [], notes: { [fieldId]: text } }]. Each chosen recipient goes back to
+ * "sent" and signs again: the fields marked as not correct are emptied and flagged (`correction` in the field's
+ * options, shown to the recipient), their signature and initial fields are cleared (corrected data is signed
+ * again), and everything else they entered stays filled in. Recipients that were not chosen keep their
+ * signature. The request returns to "In Progress" and its signed PDFs are rebuilt when it completes again.
+ *
+ * Returns [{ recipient, fields: [{ id, label, type, note }] }] for the recipients that were reopened.
+ */
+async function reopenRecipientsForCorrection(documentId, selections = [], { note = '' } = {}) {
+  await ensureRequestSchema();
+  const recipients = await getRecipients(documentId);
+  const signingRecipients = recipients.filter((r) => isSigningRole(r.role));
+  const chosen = (Array.isArray(selections) ? selections : [])
+    .map((selection) => ({
+      recipient: signingRecipients.find((r) => String(r.id) === String(selection?.recipientId)),
+      fieldIds: new Set((Array.isArray(selection?.fieldIds) ? selection.fieldIds : []).map(String)),
+      notes: selection?.notes && typeof selection.notes === 'object' ? selection.notes : {}
+    }))
+    .filter((selection, index, all) => selection.recipient
+      && selection.recipient.status === 'signed'
+      && all.findIndex((other) => other.recipient && other.recipient.id === selection.recipient.id) === index);
+  if (chosen.length === 0) return [];
+
+  const requestedAt = new Date().toISOString();
+  const [fieldRows] = await db.query('SELECT * FROM document_fields WHERE document_id = ? ORDER BY id ASC', [documentId]);
+  const reopened = [];
+
+  for (const selection of chosen) {
+    const { recipient } = selection;
+    const flagged = [];
+    for (const row of fieldRows) {
+      const field = parseFieldRow(row);
+      if (!fieldBelongsToRecipient(field, recipient, signingRecipients)) continue;
+      const opts = parseJsonInput(row.options, {}) || {};
+      const isSignature = row.field_type === 'Signature' || row.field_type === 'Initial';
+      const isFlagged = selection.fieldIds.has(String(row.id));
+      if (isFlagged || isSignature) {
+        resetSignedField(opts, row.field_type);
+      } else {
+        // Stays filled in for the recipient, who may still change it
+        ['signerName', 'signerEmail', 'signedAt'].forEach((key) => delete opts[key]);
+      }
+      if (isFlagged) {
+        const fieldNote = String(selection.notes[row.id] ?? selection.notes[String(row.id)] ?? '').trim().slice(0, 300);
+        opts.correction = { note: fieldNote, requestedAt };
+        flagged.push({ id: row.id, label: row.label || row.field_type, name: row.label || row.field_type, type: row.field_type, note: fieldNote });
+      } else {
+        delete opts.correction;
+      }
+      await db.query('UPDATE document_fields SET options = ? WHERE id = ?', [JSON.stringify(opts), row.id]);
+    }
+
+    try {
+      await db.query('DELETE FROM document_field_values WHERE recipient_id = ?', [recipient.id]);
+    } catch (err) {
+      console.warn('[Correction] field value cleanup warning:', err.message);
+    }
+    await db.query(
+      `UPDATE document_recipients
+       SET status = 'sent', viewed_at = NULL, signed_at = NULL, signed_ip = NULL, signed_user_agent = NULL,
+           signature_image = NULL, correction_note = ?, correction_requested_at = NOW()
+       WHERE id = ?`,
+      [String(note || '').trim().slice(0, 1000) || null, recipient.id]
+    );
+    reopened.push({ recipient, fields: flagged });
+  }
+
+  await db.query('UPDATE document_files SET signed_file_path = NULL WHERE document_id = ?', [documentId]);
+  await db.query("UPDATE documents SET status = 'In Progress', completed_at = NULL WHERE id = ?", [documentId]);
+  return reopened;
+}
+
 async function restartSigningRound(documentId) {
   await ensureRequestSchema();
   await db.query(
@@ -229,7 +332,8 @@ async function restartSigningRound(documentId) {
      SET status = 'pending', sent_at = NULL, viewed_at = NULL, signed_at = NULL,
          signed_ip = NULL, signed_user_agent = NULL, signature_image = NULL,
          consent_at = NULL, consent_ip = NULL,
-         otp_code = NULL, otp_expires_at = NULL, otp_verified_at = NULL
+         otp_code = NULL, otp_expires_at = NULL, otp_verified_at = NULL,
+         correction_note = NULL, correction_requested_at = NULL
      WHERE document_id = ?`,
     [documentId]
   );
@@ -237,19 +341,10 @@ async function restartSigningRound(documentId) {
   const [fieldRows] = await db.query('SELECT id, field_type, options FROM document_fields WHERE document_id = ?', [documentId]);
   for (const row of fieldRows) {
     const opts = parseJsonInput(row.options, {}) || {};
-    if (!FIELD_SIGNING_KEYS.some((key) => opts[key] !== undefined)) continue;
-    const filledBySigner = opts.signedAt !== undefined;
-    FIELD_SIGNING_KEYS.forEach((key) => delete opts[key]);
-    if (filledBySigner) {
-      // Same starting value as a newly placed field in the editor
-      delete opts.gridValue;
-      delete opts.checked;
-      if (row.field_type === 'Sign date') delete opts.value; // the signing page shows the signing day
-      else if (row.field_type === 'Split text') opts.value = '';
-      else if (row.field_type === 'Checkbox') opts.value = 'true';
-      else if (row.field_type === 'Full name') opts.value = opts.assignee || row.field_type;
-      else opts.value = row.field_type;
-    }
+    if (!FIELD_SIGNING_KEYS.some((key) => opts[key] !== undefined) && opts.correction === undefined) continue;
+    // Same starting value as when the request was first sent
+    resetSignedField(opts, row.field_type);
+    delete opts.correction;
     await db.query('UPDATE document_fields SET options = ? WHERE id = ?', [JSON.stringify(opts), row.id]);
   }
 
@@ -267,13 +362,32 @@ async function restartSigningRound(documentId) {
   await db.query('UPDATE documents SET completed_at = NULL WHERE id = ?', [documentId]);
 }
 
-async function getDocumentFiles(documentId) {
+/**
+ * The documents of a request. The layout snapshot is large and only the PDF generator needs it, so it is left out
+ * unless `withLayout` is set (it never travels to a browser).
+ */
+async function getDocumentFiles(documentId, { withLayout = false } = {}) {
   await ensureRequestSchema();
   const [rows] = await db.query(
     'SELECT * FROM document_files WHERE document_id = ? ORDER BY sort_order ASC, id ASC',
     [documentId]
   );
-  return rows;
+  if (withLayout) return rows;
+  // has_layout tells the client whether the document still needs its layout (requests sent before layouts existed)
+  return rows.map(({ layout_snapshot: layout, ...row }) => ({ ...row, has_layout: Boolean(layout) }));
+}
+
+const MAX_LAYOUT_CHARS = 8 * 1024 * 1024;
+
+/** A layout snapshot sent by the editor, as the text stored with the document (null when it is not usable). */
+function serializeLayout(layout) {
+  if (!layout || typeof layout !== 'object' || !Array.isArray(layout.pages) || layout.pages.length === 0) return null;
+  try {
+    const text = JSON.stringify(layout);
+    return text.length <= MAX_LAYOUT_CHARS ? text : null;
+  } catch (e) {
+    return null;
+  }
 }
 
 async function remapFieldDocIndexes(documentId, indexMap) {
@@ -318,22 +432,24 @@ async function syncDocumentFiles(documentId, metaDocs, uploadedFiles = [], { all
       ? (path.extname(upload.originalname).replace('.', '').toLowerCase() || 'pdf')
       : (previous?.row.file_type || 'pdf');
     const text = d.documentText ?? previous?.row.document_text ?? null;
+    // The editor sends the layout when the user saves or sends; other saves keep the one already stored
+    const layout = d.layout !== undefined ? serializeLayout(d.layout) : undefined;
 
     if (previous) {
       await db.query(
         `UPDATE document_files
-         SET file_name = ?, file_path = ?, file_size = ?, file_type = ?, document_text = ?, sort_order = ?${upload ? ', signed_file_path = NULL' : ''}
+         SET file_name = ?, file_path = ?, file_size = ?, file_type = ?, document_text = ?, sort_order = ?${upload ? ', signed_file_path = NULL' : ''}${layout !== undefined ? ', layout_snapshot = ?' : ''}
          WHERE id = ?`,
-        [name, filePath, fileSize, fileType, text, i, previous.row.id]
+        [name, filePath, fileSize, fileType, text, i, ...(layout !== undefined ? [layout] : []), previous.row.id]
       );
       keptIds.add(String(previous.row.id));
       indexMap.set(previous.index, i);
       if (d.uploadKey) uploadKeyByRow.set(String(previous.row.id), d.uploadKey);
     } else {
       const [res] = await db.query(
-        `INSERT INTO document_files (document_id, file_name, file_path, file_size, file_type, document_text, sort_order)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [documentId, name, filePath, fileSize, fileType, text, i]
+        `INSERT INTO document_files (document_id, file_name, file_path, file_size, file_type, document_text, sort_order, layout_snapshot)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [documentId, name, filePath, fileSize, fileType, text, i, layout || null]
       );
       if (d.uploadKey) uploadKeyByRow.set(String(res.insertId), d.uploadKey);
     }
@@ -413,7 +529,15 @@ async function saveDocumentFields(documentId, { fieldsByDoc, fields } = {}, reci
     const { id, type, label, required, x, y, page, width, height, description, recipientId, isAssignedToOther, ...rest } = f;
     const assigned = recipientByEmail.get(String(rest.assigneeEmail || '').toLowerCase());
     // assigneeId always refers to the saved recipient row, so every client matches the field to the same recipient
-    const options = { ...rest, ...(assigned ? { assigneeId: assigned.id } : {}), clientId: rest.clientId ?? id, docIndex: f.docIndex };
+    // A field saved without a position (not placed in the editor) is listed under the text instead of drawn on the page
+    const isPlaced = [x, y].every((v) => v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v)));
+    const options = {
+      ...rest,
+      ...(assigned ? { assigneeId: assigned.id } : {}),
+      clientId: rest.clientId ?? id,
+      docIndex: f.docIndex,
+      unplaced: isPlaced ? undefined : true
+    };
     await db.query(
       `INSERT INTO document_fields (document_id, recipient_id, page_number, field_type, label, description, is_required, pos_x, pos_y, width, height, options)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -552,8 +676,18 @@ async function logRequestEvent(documentId, { recipientId = null, eventType = nul
  * Email the signing invitation (or a reminder) to a group of recipients.
  * Invitations move the recipient from pending to sent; every attempt is logged in the audit trail.
  */
+/** The fields a recipient was asked to correct after "Verify & confirm" rejected their data: [{ label, note }] */
+async function getCorrectionFields(documentId, recipient) {
+  const signingRecipients = (await getRecipients(documentId)).filter((r) => isSigningRole(r.role));
+  const [rows] = await db.query('SELECT * FROM document_fields WHERE document_id = ? ORDER BY id ASC', [documentId]);
+  return rows
+    .map(parseFieldRow)
+    .filter((field) => field.correction && fieldBelongsToRecipient(field, recipient, signingRecipients))
+    .map((field) => ({ label: field.label, note: String(field.correction.note || '') }));
+}
+
 async function sendSigningInvitations(doc, group, { req = null, isReminder = false, triggerSource = null } = {}) {
-  const { sendSignatureRequestEmail, sendReminderEmail } = require('./emailService');
+  const { sendSignatureRequestEmail, sendReminderEmail, sendCorrectionRequestEmail } = require('./emailService');
   const { recordDispatch, setCurrentStep } = require('./signingFlow');
   const sender = await getRequestSender(doc);
   const files = await getDocumentFiles(doc.id);
@@ -563,32 +697,57 @@ async function sendSigningInvitations(doc, group, { req = null, isReminder = fal
   const results = [];
 
   for (const r of group) {
-    const result = await send({
-      to: r.email,
-      recipientName: r.name || String(r.email).split('@')[0],
-      documentName: doc.document_name || 'Document',
-      documentNames,
-      senderName: sender.name,
-      senderEmail: sender.email,
-      orgName: sender.company,
-      expiresOn,
-      message: doc.custom_message || '-',
-      privateMessage: r.private_note || '-',
-      signingUrl: buildSigningUrl(doc.id, r.email)
-    });
-
-    // Also text the signing link when this recipient's delivery mode includes SMS
-    if (['SMS', 'Email + SMS'].includes(r.delivery_mode) && r.phone) {
+    // Text the signing link when this recipient's delivery mode includes SMS ("SMS" or "Email + SMS")
+    let sms = null;
+    if (['SMS', 'Email + SMS'].includes(r.delivery_mode)) {
       const { sendSms } = require('./smsService');
-      const smsText = isReminder
-        ? `Reminder: "${doc.document_name || 'Document'}" is waiting for your signature. Sign here: ${buildSigningUrl(doc.id, r.email)}`
-        : `${sender.name} asked you to sign "${doc.document_name || 'Document'}". Sign here: ${buildSigningUrl(doc.id, r.email)}`;
-      const smsResult = await sendSms({ to: r.phone, body: smsText });
-      await logRequestEvent(doc.id, {
-        recipientId: r.id || null,
-        description: smsResult.success
-          ? `${isReminder ? 'Reminder' : 'Signature request'} texted to ${r.name || r.email} (${r.phone})`
-          : `SMS to ${r.phone} failed: ${smsResult.error}`
+      const what = isReminder ? 'Reminder' : 'Signature request';
+      if (!r.phone) {
+        sms = { success: false, error: 'No phone number was entered for this recipient.' };
+      } else {
+        const smsText = isReminder
+          ? `Reminder: "${doc.document_name || 'Document'}" is waiting for your signature. Sign here: ${buildSigningUrl(doc.id, r.email)}`
+          : `${sender.name} asked you to sign "${doc.document_name || 'Document'}". Sign here: ${buildSigningUrl(doc.id, r.email)}`;
+        sms = await sendSms({ to: r.phone, body: smsText });
+      }
+      let smsDescription = `${what} texted to ${r.name || r.email} (${r.phone})`;
+      if (!sms.success) smsDescription = `${what} could not be texted to ${r.name || r.email}${r.phone ? ` (${r.phone})` : ''}: ${sms.error}`;
+      else if (sms.dryRun) smsDescription = `${what} was not texted to ${r.name || r.email} (${r.phone}): no SMS provider is set up on the server, the message was saved to server/sms_outbox`;
+      await logRequestEvent(doc.id, { recipientId: r.id || null, description: smsDescription });
+    }
+
+    // "SMS" alone: the text replaces the email. The email still goes out when the text did not really leave the
+    // server (no phone, provider error, or no provider set up), so the request always reaches the recipient.
+    const textDelivered = Boolean(sms && sms.success && !sms.dryRun);
+    // Sent back for correction and waiting for their turn until now: the email says what has to be corrected
+    const isCorrection = !isReminder && Boolean(r.correction_requested_at);
+    let result;
+    if (r.delivery_mode === 'SMS' && textDelivered) result = { success: true, viaSmsOnly: true };
+    else if (isCorrection) {
+      result = await sendCorrectionRequestEmail({
+        to: r.email,
+        recipientName: r.name || String(r.email).split('@')[0],
+        documentName: doc.document_name || 'Document',
+        senderName: sender.name,
+        senderEmail: sender.email,
+        orgName: sender.company,
+        reason: r.correction_note || 'Please review your part and sign again.',
+        fields: await getCorrectionFields(doc.id, r),
+        signingUrl: buildSigningUrl(doc.id, r.email)
+      });
+    } else {
+      result = await send({
+        to: r.email,
+        recipientName: r.name || String(r.email).split('@')[0],
+        documentName: doc.document_name || 'Document',
+        documentNames,
+        senderName: sender.name,
+        senderEmail: sender.email,
+        orgName: sender.company,
+        expiresOn,
+        message: doc.custom_message || '-',
+        privateMessage: r.private_note || '-',
+        signingUrl: buildSigningUrl(doc.id, r.email)
       });
     }
 
@@ -603,7 +762,7 @@ async function sendSigningInvitations(doc, group, { req = null, isReminder = fal
       documentId: doc.id,
       recipient: r,
       stepIndex: r.signing_order_index || 1,
-      emailType: isReminder ? 'reminder' : 'invitation',
+      emailType: isReminder ? 'reminder' : (isCorrection ? 'correction' : 'invitation'),
       triggerSource: triggerSource || (isReminder ? 'reminder' : 'send'),
       status: result.success ? 'sent' : 'failed',
       error: result.success ? null : result.error
@@ -648,11 +807,21 @@ async function sendSigningInvitations(doc, group, { req = null, isReminder = fal
     await logRequestEvent(doc.id, {
       recipientId: r.id || null,
       eventType: result.success ? (isReminder ? 'reminded' : 'sent') : 'email_failed',
-      description: result.success
-        ? `${isReminder ? 'Reminder' : 'Signature request'} emailed to ${r.name || r.email} (${r.email})`
-        : `Email to ${r.email} failed: ${result.error}`
+      // A request that went out by text only was already logged above
+      description: result.viaSmsOnly ? null : (result.success
+        ? `${isReminder ? 'Reminder' : (isCorrection ? 'Correction request' : 'Signature request')} emailed to ${r.name || r.email} (${r.email})`
+        : `Email to ${r.email} failed: ${result.error}`)
     });
-    results.push({ id: r.id || null, email: r.email, name: r.name, success: result.success, error: result.error || null });
+    results.push({
+      id: r.id || null,
+      email: r.email,
+      name: r.name,
+      success: result.success,
+      error: result.error || null,
+      emailed: !result.viaSmsOnly,
+      // Set when the delivery mode includes SMS: whether the text really went out
+      sms: sms ? { phone: r.phone || null, sent: textDelivered, notConfigured: Boolean(sms.dryRun), error: sms.success ? null : sms.error } : null
+    });
   }
   return results;
 }
@@ -669,7 +838,10 @@ module.exports = {
   saveRecipients,
   normalizeSigningSteps,
   restartSigningRound,
+  resetSignedField,
+  reopenRecipientsForCorrection,
   getDocumentFiles,
+  serializeLayout,
   syncDocumentFiles,
   parseFieldRow,
   groupFieldsByDoc,

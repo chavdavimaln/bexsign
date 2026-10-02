@@ -4,6 +4,8 @@
  * and every Signature/Initial field shows its own signer's signature.
  */
 
+import { DEFAULT_DATE_FORMAT, formatDate } from './dateFormat';
+
 export const SIGNATURE_FIELD_TYPES = ['Signature', 'Initial'];
 
 // Company suggested to a signer when the sender left the Company field empty
@@ -30,7 +32,8 @@ export function applySignerDefaults(fields, { signerName = '', signerEmail = '',
       case 'Company':
         return isPlaceholderValue(field) ? { ...field, value: DEFAULT_COMPANY_NAME } : field;
       case 'Sign date':
-        return signDate ? { ...field, value: signDate } : field;
+        // Today, written in the format the sender chose for this field
+        return signDate ? { ...field, value: formatDate(new Date(), field.dateFormat || DEFAULT_DATE_FORMAT) } : field;
       default:
         return field;
     }
@@ -55,8 +58,12 @@ export function getStampImage(field) {
   return typeof src === 'string' && src.startsWith('data:image') ? src : '';
 }
 
+/** A checkbox is ticked when its value says so; a box nobody touched keeps the state the sender gave it. */
 export function isFieldChecked(field) {
-  return field?.value === true || field?.value === 'true' || field?.checked === true;
+  const raw = field?.value;
+  if (raw === true || raw === 'true') return true;
+  if (raw === false || raw === 'false') return false;
+  return field?.checked === true;
 }
 
 /** True when the field is assigned to the given signer (unassigned fields belong to whoever signs). */

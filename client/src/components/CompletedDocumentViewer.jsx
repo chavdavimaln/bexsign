@@ -31,6 +31,7 @@ import { downloadSignedDocument, printLockedDocument } from '../utils/signedPdf'
 import { showPopupAlert } from './GlobalAlertModal';
 import { recipientColorAt, fieldBelongsTo } from '../utils/recipientColors';
 import { API_BASE, API_ORIGIN } from '../utils/api';
+import { ensureDocumentLayoutsQuietly } from '../utils/layoutBackfill';
 
 const SIGNING_ROLES = ['signer', 'approver'];
 
@@ -136,6 +137,11 @@ export default function CompletedDocumentViewer({ doc, onClose, onBack, mode = '
   const [serverRecipients, setServerRecipients] = useState([]);
   const [serverStatus, setServerStatus] = useState(isSenderView ? '' : 'Completed');
   const [loadError, setLoadError] = useState('');
+  // A request sent without its page layout gets it when it is opened: its PDF then shows the fields at their places
+  useEffect(() => {
+    if (doc?.id) ensureDocumentLayoutsQuietly(doc.id);
+  }, [doc?.id]);
+
   useEffect(() => {
     if (!doc?.id) return undefined;
     let cancelled = false;

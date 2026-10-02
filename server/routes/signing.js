@@ -63,10 +63,24 @@ async function completeRecipientSigning({
 
         const opts = requestHelpers.parseJsonInput(row.options, {}) || {};
         const incoming = submittedById.get(String(row.id));
-        if (incoming) {
-            if (incoming.value !== undefined) opts.value = incoming.value;
-            if (incoming.gridValue !== undefined) opts.gridValue = incoming.gridValue;
-            if (incoming.checked !== undefined) opts.checked = incoming.checked;
+        // The value the sender gave the field is kept, so a later correction round can start from it again
+        if (opts.startValue === undefined && opts.signedAt === undefined) opts.startValue = opts.value === undefined ? '' : opts.value;
+        // Signing again answers a correction request
+        delete opts.correction;
+        // A read-only field keeps the value the sender set, whatever the browser sends
+        if (incoming && !opts.isReadOnly) {
+            if (field.type === 'Radio' || field.type === 'Dropdown') {
+                // Only one of the sender's values can be chosen (or none, when the field is not required)
+                const allowed = (Array.isArray(opts.options) ? opts.options : [])
+                    .map((option) => String(typeof option === 'string' ? option : option?.value ?? '').trim())
+                    .filter(Boolean);
+                const chosen = String(incoming.value ?? '');
+                if (incoming.value !== undefined && (chosen === '' || allowed.includes(chosen))) opts.value = chosen;
+            } else {
+                if (incoming.value !== undefined) opts.value = incoming.value;
+                if (incoming.gridValue !== undefined) opts.gridValue = incoming.gridValue;
+                if (incoming.checked !== undefined) opts.checked = incoming.checked;
+            }
         }
         if (field.type === 'Signature' || field.type === 'Initial') {
             if (signatureData) opts.signatureImage = signatureData;
@@ -80,9 +94,14 @@ async function completeRecipientSigning({
 
         await db.query('UPDATE document_fields SET options = ?, recipient_id = ? WHERE id = ?', [JSON.stringify(opts), recipient.id, row.id]);
 
-        const storedValue = (field.type === 'Signature' || field.type === 'Initial')
-            ? `Signed by ${name}${signedOnPaper ? ' (on paper)' : ''}`
-            : (field.type === 'Split text' && Array.isArray(opts.gridValue) ? opts.gridValue.join('') : String(opts.value ?? ''));
+        let storedValue = String(opts.value ?? '');
+        if (field.type === 'Signature' || field.type === 'Initial') storedValue = `Signed by ${name}${signedOnPaper ? ' (on paper)' : ''}`;
+        else if (field.type === 'Split text' && Array.isArray(opts.gridValue)) storedValue = opts.gridValue.join('');
+        else if (field.type === 'Checkbox') {
+            // A ticked checkbox is recorded with the value the sender gave it
+            const ticked = opts.value === true || opts.value === 'true';
+            storedValue = ticked ? (String(opts.optionValue || '').trim() || 'Checked') : 'Not checked';
+        }
         try {
             await db.query(
                 'INSERT INTO document_field_values (field_id, recipient_id, field_value, submitted_at) VALUES (?, ?, ?, NOW())',
@@ -97,7 +116,8 @@ async function completeRecipientSigning({
     await db.query(
         `UPDATE document_recipients
          SET status = 'signed', signed_at = NOW(), signed_ip = ?, signed_user_agent = ?,
-             signature_image = COALESCE(?, signature_image), viewed_at = COALESCE(viewed_at, NOW())
+             signature_image = COALESCE(?, signature_image), viewed_at = COALESCE(viewed_at, NOW()),
+             correction_note = NULL, correction_requested_at = NULL
          WHERE id = ?`,
         [ip, String(req?.headers?.['user-agent'] || '').slice(0, 255) || null, signatureData || null, recipient.id]
     );
@@ -565,6 +585,7 @@ router.get('/token/:token', async (req, res) => {
                     id: r.id,
                     type: r.field_type,
                     label: r.label || r.field_type,
+                    description: r.description || '',
                     x: r.pos_x,
                     y: r.pos_y,
                     width: r.width || 150,
@@ -654,6 +675,7 @@ router.get('/token/:token', async (req, res) => {
                 id: r.id,
                 type: r.field_type,
                 label: r.label || r.field_type,
+                description: r.description || '',
                 x: r.pos_x,
                 y: r.pos_y,
                 width: r.width || 150,

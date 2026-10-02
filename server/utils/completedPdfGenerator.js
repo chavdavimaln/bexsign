@@ -348,7 +348,7 @@ function renderPdf(meta, draw) {
   }));
 }
 
-function renderPdfBuffer({ info, footer }, draw, { locked = false } = {}) {
+function renderPdfBuffer({ info, footer, footerNote = '' }, draw, { locked = false } = {}) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({
       ...(locked ? lockedPdfOptions() : {}),
@@ -378,6 +378,9 @@ function renderPdfBuffer({ info, footer }, draw, { locked = false } = {}) {
             align: 'center',
             lineBreak: false
           });
+        if (footerNote) {
+          doc.text(footerNote, doc.page.margins.left, doc.page.height - 30, { width: contentWidth(doc), align: 'center', lineBreak: false });
+        }
         doc.page.margins.bottom = bottomMargin;
       }
       if (locked) {
@@ -415,12 +418,29 @@ function keyValueRow(doc, label, value, labelWidth = 150) {
   doc.y = Math.max(doc.y, labelBottom) + 4;
 }
 
+/** A checkbox is ticked when its value says so; a box nobody touched keeps the state the sender gave it. */
+function isChecked(field) {
+  const raw = field.value;
+  if (raw === true || raw === 'true') return true;
+  if (raw === false || raw === 'false') return false;
+  return field.checked === true;
+}
+
+/** The values of a radio group or dropdown: [{ id, value }], without empty ones. */
+function fieldOptions(field) {
+  return (Array.isArray(field.options) ? field.options : [])
+    .map((option, index) => (typeof option === 'string' ? { id: String(index), value: option } : { id: option?.id ?? String(index), value: String(option?.value ?? '') }))
+    .filter((option) => option.value.trim());
+}
+
 function fieldDisplayValue(field, recipient) {
   const raw = field.value;
   const isEmpty = raw === undefined || raw === null || String(raw).trim() === '' || raw === field.type;
   switch (field.type) {
-    case 'Checkbox':
-      return (raw === true || raw === 'true' || field.checked === true) ? '[X] Checked' : '[ ] Not checked';
+    case 'Checkbox': {
+      const meaning = String(field.optionValue || '').trim();
+      return isChecked(field) ? `[X] ${meaning || 'Checked'}` : `[ ] ${meaning || 'Not checked'}`;
+    }
     case 'Split text':
       return Array.isArray(field.gridValue) && field.gridValue.some(Boolean) ? field.gridValue.join('') : (isEmpty ? '-' : String(raw));
     case 'Email':
@@ -480,7 +500,7 @@ function buildFieldBlock(doc, field, recipient, columnWidth, context = {}) {
   }
 
   if (field.type === 'Checkbox') {
-    const checked = field.value === true || field.value === 'true' || field.checked === true;
+    const checked = isChecked(field);
     return {
       full: false,
       height: 12,
@@ -550,9 +570,450 @@ function drawFieldsGrid(doc, entries, context = {}) {
   doc.x = left;
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Positioned layout: the document as the sender saw it in the editor
+//
+// The editor stores, with each document, a layout snapshot: where every line of text, border and image sits on the
+// page (client/src/utils/layoutSnapshot.js). With it the PDF is drawn piece by piece at those positions and every
+// field at the position and size the sender gave it, so a field stays beside the words it was put next to.
+// A document without a snapshot (or whose text changed after the snapshot was taken) is drawn the older way:
+// the text, then the fields listed under it.
+// ---------------------------------------------------------------------------------------------------------------
+
+// Page pixels (96 per inch) to PDF points (72 per inch): the editor's 794 x 1123 px page is exactly A4
+const PX = 0.75;
+const PAGE_HEIGHT_PX = 1123;
+const SLICE_TOP_PX = 56; // top margin of the 2nd, 3rd... PDF page of a page that is longer than A4
+const SLICE_BOTTOM_PX = 70; // kept free at the bottom of every PDF page (footer line)
+const MIN_STAMP_SCALE = 0.45;
+
+/** Key of a text's letters and digits. Must match textKey() in client/src/utils/layoutSnapshot.js. */
+function textKey(text) {
+  const plain = String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < plain.length; i += 1) {
+    hash ^= plain.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `${plain.length}:${hash.toString(16)}`;
+}
+
+/** The words of a document text without its markup (rich text keeps only what is written between the tags). */
+function documentWords(documentText) {
+  const text = String(documentText || '');
+  if (!/<[a-z][\s\S]*>/i.test(text)) return text;
+  return text.replace(/<[^>]+>/g, ' ').replace(/&(#\d+|#x[0-9a-f]+|[a-z0-9]+);/gi, ' ');
+}
+
+const documentTextKey = (documentText) => textKey(documentWords(documentText));
+const lettersAndDigits = (text) => String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+/** The stored layout snapshot when it can be used for this document text, else null. */
+function usableLayout(layout, documentText) {
+  let parsed = layout;
+  if (typeof layout === 'string') {
+    try {
+      parsed = JSON.parse(layout);
+    } catch (e) {
+      return null;
+    }
+  }
+  if (!parsed || parsed.v !== 1 || !Array.isArray(parsed.pages) || parsed.pages.length === 0) return null;
+  if (!parsed.pages.every((page) => page && Array.isArray(page.texts) && Number(page.height) > 0)) return null;
+  // The snapshot belongs to the text it was taken from: a later change of the text makes it unusable
+  if (parsed.bodyKey !== documentTextKey(documentText)) return null;
+  // What the snapshot would write must be the document's own text, word for word and in the same order
+  const written = lettersAndDigits(parsed.pages[0].texts.map((piece) => String(piece?.t ?? '')).join(' '));
+  if (!written.includes(lettersAndDigits(documentWords(documentText)))) return null;
+  return parsed;
+}
+
+/** The box of a placed field in page pixels. Same rules as getFieldBox() in client/src/utils/fieldSizing.js. */
+function fieldBox(field) {
+  const type = field.type;
+  const width = Number(field.width);
+  const height = Number(field.height);
+  if (type === 'Split text') {
+    const count = Math.max(1, Number(field.charCount) || 10);
+    const cellWidth = width > 0 ? width : 16;
+    const cellHeight = height > 0 ? height : 20;
+    const gap = Math.max(0, Number(field.charSpace) || 0);
+    return { width: count * cellWidth + (count - 1) * gap + 2, height: cellHeight + 2, cellWidth, gap, count };
+  }
+  let fallback = { width: 160, height: 30 };
+  if (type === 'Signature') fallback = { width: 200, height: 70 };
+  else if (type === 'Initial') fallback = { width: 110, height: 60 };
+  else if (type === 'Stamp') fallback = field.stampShape === 'oval' ? { width: 80, height: 80 } : { width: 112, height: 80 };
+  else if (type === 'Checkbox') fallback = { width: 22, height: 22 };
+  else if (type === 'Radio') fallback = { width: 130, height: 46 };
+  if (field.sized) {
+    const isCheckbox = type === 'Checkbox';
+    return { width: Math.max(isCheckbox ? 12 : 24, width || fallback.width), height: Math.max(isCheckbox ? 12 : 14, height || fallback.height) };
+  }
+  if (type === 'Signature' || type === 'Initial') return { width: width > 0 ? width : fallback.width, height: height > 0 ? height : fallback.height };
+  if (type === 'Stamp' || type === 'Checkbox') return fallback;
+  return { width: width > 0 ? width : fallback.width, height: 36 };
+}
+
+const hasPosition = (field) => !field.unplaced && field.x !== null && field.x !== undefined && field.y !== null && field.y !== undefined
+  && Number.isFinite(Number(field.x)) && Number.isFinite(Number(field.y));
+
+// Characters the PDF's standard fonts cannot write, replaced by the nearest one they can
+const PDF_CHARS = { ' ': ' ', '▪': '•', '■': '•', '●': '•', '○': 'o', '→': '->', '✓': 'v', '✔': 'v', '‑': '-' };
+const pdfSafe = (text) => String(text ?? '').replace(/[ ▪■●○→✓✔‑]/g, (ch) => PDF_CHARS[ch] || ch);
+
+function layoutFont(piece) {
+  if (piece.m) return piece.b ? 'Courier-Bold' : 'Courier';
+  if (piece.b && piece.i) return 'Helvetica-BoldOblique';
+  if (piece.b) return 'Helvetica-Bold';
+  if (piece.i) return 'Helvetica-Oblique';
+  return 'Helvetica';
+}
+
+/** Writes one line of text with its baseline at `baseline` (points), fitted to `width` when one is given. */
+function drawTextAt(doc, text, x, baseline, { font, size, color, width = 0, alignRight = false, underline = false, strike = false }) {
+  const value = pdfSafe(text);
+  if (!value) return;
+  doc.font(font).fontSize(size).fillColor(color);
+  const natural = doc.widthOfString(value);
+  // The browser's font is a little wider or narrower than the PDF's: the line is stretched or condensed sideways
+  // to the width it has on the page, so every line starts and ends where it does in the editor
+  const stretch = width > 0 && natural > 0 && value.length > 1 ? Math.max(0.78, Math.min(1.25, width / natural)) : 1;
+  const drawnWidth = natural * stretch;
+  const left = alignRight ? x - drawnWidth : x;
+  const ascent = (doc._font && doc._font.ascender ? doc._font.ascender : 718) / 1000 * size;
+  doc.save();
+  doc.translate(left, baseline - ascent);
+  doc.scale(stretch, 1);
+  doc.text(value, 0, 0, { lineBreak: false });
+  doc.restore();
+  if (underline || strike) {
+    const lineY = underline ? baseline + size * 0.12 : baseline - size * 0.28;
+    doc.save();
+    doc.moveTo(left, lineY).lineTo(left + drawnWidth, lineY).lineWidth(Math.max(0.4, size / 16)).strokeColor(color).stroke();
+    doc.restore();
+  }
+}
+
+/**
+ * Where a page that is longer than A4 is cut into PDF pages: the source positions (page pixels) each PDF page
+ * starts at. A cut never goes through a line of text, a field or an image.
+ */
+function sliceStarts(contentBottom, blocks) {
+  const starts = [0];
+  for (let guard = 0; guard < 200; guard += 1) {
+    const start = starts[starts.length - 1];
+    const capacity = PAGE_HEIGHT_PX - SLICE_BOTTOM_PX - (starts.length === 1 ? 0 : SLICE_TOP_PX);
+    if (contentBottom - start <= capacity) break;
+    let cut = start + capacity;
+    for (let moved = true; moved;) {
+      moved = false;
+      for (const block of blocks) {
+        if (block.top > start + 1 && block.top < cut && block.bottom > cut) {
+          cut = block.top;
+          moved = true;
+        }
+      }
+    }
+    // Something taller than a page starts here: it is cut where the page ends
+    if (cut < start + 120) cut = start + capacity;
+    starts.push(cut);
+  }
+  return starts;
+}
+
+// Labels written beside a field. Same rules as fieldLabelPosition(), checkboxValuePosition(), radioValuesPosition()
+// and labelFontSize() in client/src/utils/fieldSizing.js, and the same gaps as FieldLabel.jsx.
+const LABEL_SIDES = ['none', 'left', 'right', 'top', 'bottom'];
+const sidePosition = (value) => (LABEL_SIDES.includes(value) ? value : null);
+const fieldLabelPosition = (field) => sidePosition(field.labelPosition) || 'none';
+const checkboxValuePosition = (field) => sidePosition(field.valuePosition) || (field.showLabel ? 'right' : 'none');
+const radioValuesPosition = (field) => sidePosition(field.valuesPosition) || (field.showLabels === false ? 'none' : 'right');
+const labelFontPx = (field) => Math.max(8, Math.min(16, Number(field.fontSize) || 11));
+const LABEL_GAP_SIDE = 6;
+const LABEL_GAP_STACK = 3;
+
+/** Writes a label beside a field's box (x, y, width, height in points) on the given side. */
+function drawSideLabel(doc, text, position, x, y, width, height, fontPx) {
+  const label = String(text ?? '').trim();
+  if (!label || position === 'none') return;
+  const size = fontPx * PX;
+  const style = { font: 'Helvetica-Bold', size, color: '#1e293b' };
+  if (position === 'left') drawTextAt(doc, label, x - LABEL_GAP_SIDE * PX, y + height / 2 + size * 0.34, { ...style, alignRight: true });
+  else if (position === 'right') drawTextAt(doc, label, x + width + LABEL_GAP_SIDE * PX, y + height / 2 + size * 0.34, style);
+  else if (position === 'top') drawTextAt(doc, label, x, y - LABEL_GAP_STACK * PX - size * 0.33, style);
+  else if (position === 'bottom') drawTextAt(doc, label, x, y + height + LABEL_GAP_STACK * PX + size * 0.92, style);
+}
+
+/** Draws one placed field into its box (points) and, when the sender asked for it, its name beside the box. */
+function drawPositionedField(doc, entry, box, x, y, context) {
+  const drawn = drawFieldBody(doc, entry, box, x, y, context);
+  const { field } = entry;
+  // A checkbox shows its value instead of its name (drawn with the box)
+  if (drawn !== false && field.type !== 'Checkbox') {
+    drawSideLabel(doc, field.label, fieldLabelPosition(field), x, y, box.width * PX, box.height * PX, labelFontPx(field));
+  }
+}
+
+/** The field itself. Returns false when nothing was drawn (a stamp without a picture). `entry` is { field, recipient }. */
+function drawFieldBody(doc, entry, box, x, y, context) {
+  const { field, recipient } = entry;
+  const width = box.width * PX;
+  const height = box.height * PX;
+  const signerName = field.signerName || recipient.name || recipient.email;
+
+  if (field.type === 'Signature' || field.type === 'Initial') {
+    const isInitial = field.type === 'Initial';
+    const image = imageBufferFromDataUrl(field.signatureImage) || imageBufferFromDataUrl(field.value) || imageBufferFromDataUrl(recipient.signature_image);
+    const typedText = typedSignatureText(field.signatureImage, field) || typedSignatureText(recipient.signature_image, field);
+    // The stamp (about 230 x 104 points at full size) is scaled to fit the field's box
+    const scale = Math.max(MIN_STAMP_SCALE, Math.min(width / 230, height / SIGNATURE_STAMP_HEIGHT, 1.3));
+    doc.save();
+    doc.translate(x, y);
+    doc.scale(scale);
+    drawSignatureStamp(doc, 9, 0, { signerName, image, typedText, bexsignDocId: context.bexsignDocId, isInitial });
+    doc.restore();
+    return;
+  }
+
+  if (field.type === 'Stamp') {
+    const stampImage = imageBufferFromDataUrl(field.stampImage) || imageBufferFromDataUrl(field.value);
+    if (!stampImage) return false;
+    // The picture fills the stamp's shape (rectangle or oval) and is cut off at its edge; zoom and quarter turns
+    // work as in client/src/components/documents/StampImage.jsx
+    const turn = ((Number(field.stampRotation) || 0) % 360 + 360) % 360;
+    const sideways = turn === 90 || turn === 270;
+    const zoom = Math.max(0.1, (Number(field.stampZoom) || 100) / 100);
+    const drawWidth = sideways ? height : width;
+    const drawHeight = sideways ? width : height;
+    doc.save();
+    try {
+      if (field.stampShape === 'oval') doc.ellipse(x + width / 2, y + height / 2, width / 2, height / 2).clip();
+      else doc.roundedRect(x, y, width, height, 2).clip();
+      doc.translate(x + width / 2, y + height / 2);
+      if (turn) doc.rotate(turn);
+      if (zoom !== 1) doc.scale(zoom);
+      doc.image(stampImage, -drawWidth / 2, -drawHeight / 2, { cover: [drawWidth, drawHeight], align: 'center', valign: 'center' });
+    } catch (e) {}
+    doc.restore();
+    return;
+  }
+
+  // A value field covers what is printed under it (a placeholder or a dotted line in the text), as on the page
+  const coverBox = () => {
+    doc.save();
+    doc.rect(x, y, width, height).fill('#ffffff');
+    doc.restore();
+  };
+
+  if (field.type === 'Checkbox') {
+    const checked = isChecked(field);
+    const side = Math.min(width, height);
+    const left = x + (width - side) / 2;
+    const top = y + (height - side) / 2;
+    doc.save();
+    doc.roundedRect(left, top, side, side, Math.min(2, side / 6)).fillAndStroke('#ffffff', '#334155');
+    doc.roundedRect(left, top, side, side, Math.min(2, side / 6)).lineWidth(0.8).strokeColor('#334155').stroke();
+    if (checked) {
+      doc.moveTo(left + side * 0.22, top + side * 0.53).lineTo(left + side * 0.43, top + side * 0.74).lineTo(left + side * 0.8, top + side * 0.27)
+        .lineWidth(Math.max(1, side / 9)).lineCap('round').lineJoin('round').strokeColor('#0f172a').stroke();
+    }
+    doc.restore();
+    // The value the checkbox stands for, on the side the sender chose
+    drawSideLabel(doc, field.optionValue, checkboxValuePosition(field), x, y, width, height, labelFontPx(field));
+    return;
+  }
+
+  if (field.type === 'Radio') {
+    // The buttons share the box evenly and each value sits beside its button: the same arithmetic as
+    // radioLayout() in client/src/utils/fieldSizing.js
+    const options = fieldOptions(field);
+    const count = Math.max(1, options.length);
+    const horizontal = field.direction === 'horizontal';
+    const position = radioValuesPosition(field);
+    const cellWidth = horizontal ? box.width / count : box.width;
+    const cellHeight = horizontal ? box.height : box.height / count;
+    const fontPx = labelFontPx(field);
+    const lineHeight = fontPx * 1.25;
+    const stacked = position === 'top' || position === 'bottom';
+    const size = Math.max(8, Math.min(16, (stacked ? cellHeight - lineHeight - 2 : cellHeight) - 4, cellWidth - 2));
+    const chosen = String(field.value ?? '');
+    if (position !== 'none') coverBox();
+    options.forEach((option, index) => {
+      const cellLeft = horizontal ? index * cellWidth : 0;
+      const cellTop = horizontal ? 0 : index * cellHeight;
+      const middle = cellTop + cellHeight / 2;
+      let buttonLeft = cellLeft + 1;
+      let buttonTop = middle - size / 2;
+      let label = null; // { x, centerY, alignRight } in page pixels from the box
+      if (position === 'left') {
+        buttonLeft = cellLeft + cellWidth - size - 1;
+        label = { x: cellLeft + Math.max(0, cellWidth - size - 7), centerY: middle, alignRight: true };
+      } else if (stacked) {
+        const blockTop = cellTop + Math.max(0, (cellHeight - size - lineHeight - 2) / 2);
+        buttonTop = position === 'top' ? blockTop + lineHeight + 2 : blockTop;
+        const labelTop = position === 'top' ? blockTop : blockTop + size + 2;
+        label = { x: cellLeft + 1, centerY: labelTop + lineHeight / 2, alignRight: false };
+      } else if (position === 'right') {
+        label = { x: cellLeft + size + 6, centerY: middle, alignRight: false };
+      }
+      const centerX = x + (buttonLeft + size / 2) * PX;
+      const centerY = y + (buttonTop + size / 2) * PX;
+      const selected = chosen !== '' && option.value === chosen;
+      doc.save();
+      doc.circle(centerX, centerY, (size / 2) * PX).fill('#ffffff');
+      doc.circle(centerX, centerY, (size / 2) * PX).lineWidth(0.8).strokeColor(selected ? '#0f172a' : '#64748b').stroke();
+      if (selected) doc.circle(centerX, centerY, (size / 2) * PX * 0.52).fill('#0f172a');
+      doc.restore();
+      if (label) {
+        const labelSize = fontPx * PX;
+        drawTextAt(doc, option.value, x + label.x * PX, y + label.centerY * PX + labelSize * 0.34, {
+          font: selected ? 'Helvetica-Bold' : 'Helvetica', size: labelSize, color: '#1e293b', alignRight: label.alignRight
+        });
+      }
+    });
+    return;
+  }
+
+  const configured = Number(field.fontSize) || 11;
+  const fontPx = Math.max(7, Math.min(configured, Math.floor(box.height - 4)));
+  const font = field.isItalic ? 'Helvetica-BoldOblique' : 'Helvetica-Bold';
+
+  if (field.type === 'Split text') {
+    const chars = Array.isArray(field.gridValue) && field.gridValue.some(Boolean)
+      ? field.gridValue
+      : (field.value && field.value !== field.type ? String(field.value).split('') : []);
+    const cell = box.cellWidth * PX;
+    const gap = box.gap * PX;
+    const size = Math.min(12, fontPx) * PX;
+    coverBox();
+    doc.save();
+    doc.lineWidth(0.5).strokeColor('#94a3b8');
+    for (let i = 0; i < box.count; i += 1) {
+      const cellX = x + 0.75 + i * (cell + gap);
+      doc.rect(cellX, y + 0.75, cell, height - 1.5).stroke();
+    }
+    doc.restore();
+    doc.font('Courier-Bold').fontSize(size).fillColor('#0f172a');
+    for (let i = 0; i < box.count; i += 1) {
+      const ch = pdfSafe(chars[i] || '');
+      if (!ch) continue;
+      const cellX = x + 0.75 + i * (cell + gap);
+      drawTextAt(doc, ch, cellX + (cell - doc.widthOfString(ch)) / 2, y + height / 2 + size * 0.34, { font: 'Courier-Bold', size, color: '#0f172a' });
+    }
+    return;
+  }
+
+  // Text, name, email, company, date: the value written into the box, without a frame
+  let value = fieldDisplayValue(field, recipient);
+  if (value === '-') value = '';
+  coverBox();
+  if (!value) return;
+  let size = fontPx * PX;
+  const padding = 6 * PX;
+  doc.font(font).fontSize(size);
+  const room = Math.max(10, width - padding * 2);
+  // A value longer than its box is written a little smaller before it is allowed to run past the box
+  const natural = doc.widthOfString(pdfSafe(value));
+  if (natural > room) size = Math.max(size * 0.72, size * (room / natural));
+  drawTextAt(doc, value, x + padding, y + height / 2 + size * 0.34, { font, size, color: '#0f172a' });
+}
+
+/** Draws the document from its layout snapshot, with the fields at their positions. */
+function drawPositionedDocument(doc, layout, entries, context) {
+  const pageCount = Math.max(layout.pages.length, ...entries.map(({ field }) => (hasPosition(field) ? (parseInt(field.page, 10) || 1) : 1)));
+  let firstPdfPage = true;
+
+  for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+    const page = layout.pages[pageIndex] || { height: PAGE_HEIGHT_PX, texts: [], rects: [], images: [] };
+    const texts = page.texts || [];
+    const rects = page.rects || [];
+    const images = page.images || [];
+
+    // Fields of this page; fields without a position follow the content of the first page
+    const placed = entries
+      .filter(({ field }) => hasPosition(field) && (parseInt(field.page, 10) || 1) === pageIndex + 1)
+      .map((entry) => ({ entry, box: fieldBox(entry.field), x: Number(entry.field.x), y: Number(entry.field.y) }));
+    let contentBottom = Math.max(
+      0,
+      ...texts.map((t) => Number(t.y) + Number(t.h)),
+      ...images.map((img) => Number(img.y) + Number(img.h)),
+      ...placed.map((p) => p.y + p.box.height)
+    );
+    if (pageIndex === 0) {
+      entries.filter(({ field }) => !hasPosition(field)).forEach((entry) => {
+        const box = fieldBox(entry.field);
+        placed.push({ entry, box, x: 56, y: contentBottom + 28 });
+        contentBottom += 28 + box.height;
+      });
+    }
+
+    const blocks = [
+      ...texts.map((t) => ({ top: Number(t.y), bottom: Number(t.y) + Number(t.h) })),
+      ...images.map((img) => ({ top: Number(img.y), bottom: Number(img.y) + Number(img.h) })),
+      ...placed.map((p) => ({ top: p.y, bottom: p.y + p.box.height }))
+    ];
+    // A page as long as the editor's A4 page is drawn as it is; a longer one is cut into A4 pages
+    const starts = Number(page.height) <= PAGE_HEIGHT_PX + 2 && contentBottom <= PAGE_HEIGHT_PX - 40
+      ? [0]
+      : sliceStarts(contentBottom, blocks);
+
+    starts.forEach((start, sliceIndex) => {
+      const end = sliceIndex + 1 < starts.length ? starts[sliceIndex + 1] : Infinity;
+      if (!firstPdfPage) doc.addPage();
+      firstPdfPage = false;
+      doc.page.margins.bottom = 0;
+      const shift = (sliceIndex === 0 ? 0 : SLICE_TOP_PX) - start;
+      const toY = (value) => (Number(value) + shift) * PX;
+      const inSlice = (top) => Number(top) >= start - 0.5 && Number(top) < end - 0.5;
+
+      // Backgrounds and borders may run over a cut: each PDF page shows its own part
+      doc.save();
+      const clipTop = sliceIndex === 0 ? 0 : SLICE_TOP_PX * PX;
+      // On a page that was cut into several, nothing is drawn into the footer area of a PDF page
+      const pageLimit = starts.length > 1 ? (PAGE_HEIGHT_PX - SLICE_BOTTOM_PX + 6) * PX : doc.page.height;
+      const clipBottom = Math.min(pageLimit, end === Infinity ? doc.page.height : toY(end));
+      doc.rect(0, clipTop, doc.page.width, Math.max(0, clipBottom - clipTop)).clip();
+      rects.forEach((r) => {
+        if (Number(r.y) + Number(r.h) <= start || Number(r.y) >= end) return;
+        if (!(Number(r.w) > 0 && Number(r.h) > 0)) return;
+        doc.rect(Number(r.x) * PX, toY(r.y), Math.max(0.4, Number(r.w) * PX), Math.max(0.4, Number(r.h) * PX)).fill(r.c || COLORS.border);
+      });
+      images.forEach((img) => {
+        if (!inSlice(img.y)) return;
+        const buffer = imageBufferFromDataUrl(img.src);
+        if (!buffer) return;
+        try {
+          doc.image(buffer, Number(img.x) * PX, toY(img.y), { width: Number(img.w) * PX, height: Number(img.h) * PX });
+        } catch (e) {}
+      });
+      doc.restore();
+
+      texts.forEach((t) => {
+        if (!inSlice(t.y)) return;
+        drawTextAt(doc, t.t, Number(t.x) * PX, toY(t.bl ?? (Number(t.y) + Number(t.h) * 0.8)), {
+          font: layoutFont(t),
+          size: Math.max(4, Number(t.s) * PX),
+          color: t.c || COLORS.text,
+          width: Number(t.w) * PX,
+          alignRight: t.a === 'r',
+          underline: Boolean(t.u),
+          strike: Boolean(t.k)
+        });
+      });
+
+      placed.forEach((p) => {
+        if (!inSlice(p.y)) return;
+        drawPositionedField(doc, p.entry, p.box, p.x * PX, toY(p.y), context);
+      });
+    });
+  }
+}
+
 /**
  * Signed copy of one document.
  * sections: [{ recipient, fields }] – already filtered to the fields each recipient owns in this document.
+ * layout: the document's layout snapshot (optional): with it the fields are drawn at their own positions.
  */
 function generateSignedDocumentPdf({
   documentName = 'Document',
@@ -562,9 +1023,25 @@ function generateSignedDocumentPdf({
   signerSummary = [],
   completedAt = new Date(),
   statusLine = '',
-  sender = {}
+  sender = {},
+  layout = null
 }) {
   const title = String(documentName || 'Document').replace(/\.pdf$/i, '');
+  const positioned = usableLayout(layout, documentText);
+  if (positioned) {
+    const status = statusLine || `Completed on ${formatDateTime(completedAt)}`;
+    return renderPdf(
+      {
+        info: { Title: title, Author: sender.name || 'BexSign', Subject: 'Signed document', Creator: 'BexSign' },
+        footer: `BexSign Document ID: ${bexsignDocId}`,
+        footerNote: status
+      },
+      (doc) => {
+        const entries = sections.flatMap(({ recipient, fields }) => fields.map((field) => ({ field, recipient })));
+        drawPositionedDocument(doc, positioned, entries, { bexsignDocId });
+      }
+    );
+  }
   return renderPdf(
     {
       info: { Title: title, Author: sender.name || 'BexSign', Subject: 'Signed document', Creator: 'BexSign' },
@@ -754,6 +1231,7 @@ function generateCompletionCertificatePdf({
 
 module.exports = {
   formatDateTime,
+  usableLayout,
   generateSignedDocumentPdf,
   generateCompletionCertificatePdf,
   toPlainText,

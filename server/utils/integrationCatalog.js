@@ -162,6 +162,99 @@ const PROVIDERS = [
     test: 'Reads the Dropbox account the token belongs to.'
   },
   {
+    key: 'google-drive',
+    name: 'Google Drive',
+    category: 'storage',
+    color: '#1FA463',
+    tagline: 'Add documents to a signature request straight from Google Drive.',
+    description: 'Adds Google Drive to "Add document > Cloud" on the Send for signatures page. Each user connects their own Google account once and then picks files from My Drive or Shared with me; Google Docs, Sheets and Slides are added as PDF.',
+    delivery: null,
+    defaultEvents: [],
+    fields: [
+      { key: 'client_id', label: 'OAuth client ID', type: 'text', section: 'connection', required: true, placeholder: '1234567890-abc.apps.googleusercontent.com', help: 'Google Cloud Console > APIs & Services > Credentials > OAuth client ID (Web application).' },
+      { key: 'client_secret', label: 'OAuth client secret', type: 'password', section: 'connection', secret: true, required: true, placeholder: 'GOCSPX-…' },
+      { key: 'enable_import', label: 'Offer Google Drive in "Add document > Cloud"', type: 'toggle', section: 'signing', default: true }
+    ],
+    steps: [
+      'In Google Cloud Console enable the "Google Drive API" for your project (APIs & Services > Library).',
+      'On the OAuth consent screen add the scope ".../auth/drive.readonly" and, while the app is in Testing, the Google accounts that may connect.',
+      'Create an OAuth client ID of type "Web application" (or reuse the one of Google sign-in) and add the redirect URI shown below to "Authorized redirect URIs".',
+      'Paste the client ID and secret here, click "Test connection", then Save. Users now see Google Drive under Add document > Cloud.'
+    ],
+    redirectPath: '/api/cloud/google-drive/callback',
+    test: 'Asks Google whether it recognises the client ID and secret.'
+  },
+  {
+    key: 'dropbox-files',
+    name: 'Dropbox file import',
+    category: 'storage',
+    color: '#0061FF',
+    tagline: 'Add documents to a signature request straight from Dropbox.',
+    description: 'Adds Dropbox to "Add document > Cloud". Each user connects their own Dropbox account and picks the files to send for signature. (Saving completed documents to Dropbox is the separate "Dropbox" integration.)',
+    delivery: null,
+    defaultEvents: [],
+    fields: [
+      { key: 'client_id', label: 'App key', type: 'text', section: 'connection', required: true, placeholder: 'e.g. 1a2b3c4d5e6f7g8', help: 'Dropbox App Console > your app > Settings > App key.' },
+      { key: 'client_secret', label: 'App secret', type: 'password', section: 'connection', secret: true, required: true, help: 'Dropbox App Console > your app > Settings > App secret (Show).' },
+      { key: 'enable_import', label: 'Offer Dropbox in "Add document > Cloud"', type: 'toggle', section: 'signing', default: true }
+    ],
+    steps: [
+      'In the Dropbox App Console create an app: "Scoped access", "Full Dropbox".',
+      'On the Permissions tab tick account_info.read, files.metadata.read and files.content.read, then Submit.',
+      'On the Settings tab add the redirect URI shown below under "OAuth 2 > Redirect URIs".',
+      'Paste the App key and App secret here, click "Test connection", then Save.'
+    ],
+    redirectPath: '/api/cloud/dropbox-files/callback',
+    test: 'Asks Dropbox to confirm the App key and App secret.'
+  },
+  {
+    key: 'onedrive',
+    name: 'OneDrive',
+    category: 'storage',
+    color: '#0078D4',
+    tagline: 'Add documents to a signature request straight from OneDrive.',
+    description: 'Adds OneDrive (personal, work and school accounts) to "Add document > Cloud". Each user connects their own Microsoft account and picks the files to send for signature.',
+    delivery: null,
+    defaultEvents: [],
+    fields: [
+      { key: 'client_id', label: 'Application (client) ID', type: 'text', section: 'connection', required: true, placeholder: '00000000-0000-0000-0000-000000000000', help: 'Microsoft Entra admin center > App registrations > your app > Overview.' },
+      { key: 'client_secret', label: 'Client secret value', type: 'password', section: 'connection', secret: true, required: true, help: 'App registrations > Certificates & secrets > New client secret (copy the Value, not the ID).' },
+      { key: 'tenant', label: 'Directory (tenant) ID', type: 'text', section: 'connection', default: 'common', placeholder: 'common', help: '"common" allows work, school and personal accounts; "consumers" only personal; your tenant ID only your organization.' },
+      { key: 'enable_import', label: 'Offer OneDrive in "Add document > Cloud"', type: 'toggle', section: 'signing', default: true }
+    ],
+    steps: [
+      'In the Microsoft Entra admin center register an application (or reuse the one of Microsoft sign-in).',
+      'Under Authentication > Web add the redirect URI shown below.',
+      'Under API permissions add the delegated Microsoft Graph permissions Files.Read, User.Read and offline_access.',
+      'Create a client secret, paste the client ID, secret and tenant here, click "Test connection", then Save.'
+    ],
+    redirectPath: '/api/cloud/onedrive/callback',
+    test: 'Checks that the tenant exists and asks Microsoft whether it recognises the client ID and secret.'
+  },
+  {
+    key: 'box',
+    name: 'Box',
+    category: 'storage',
+    color: '#0061D5',
+    tagline: 'Add documents to a signature request straight from Box.',
+    description: 'Adds Box to "Add document > Cloud". Each user connects their own Box account and picks the files to send for signature.',
+    delivery: null,
+    defaultEvents: [],
+    fields: [
+      { key: 'client_id', label: 'Client ID', type: 'text', section: 'connection', required: true, help: 'Box Developer Console > your app > Configuration > OAuth 2.0 Credentials.' },
+      { key: 'client_secret', label: 'Client secret', type: 'password', section: 'connection', secret: true, required: true },
+      { key: 'enable_import', label: 'Offer Box in "Add document > Cloud"', type: 'toggle', section: 'signing', default: true }
+    ],
+    steps: [
+      'In the Box Developer Console create a "Custom App" with "User Authentication (OAuth 2.0)".',
+      'On the Configuration tab add the redirect URI shown below under "OAuth 2.0 Redirect URI".',
+      'Under Application Scopes tick "Read all files and folders stored in Box", then Save Changes.',
+      'Paste the Client ID and Client secret here, click "Test connection", then Save.'
+    ],
+    redirectPath: '/api/cloud/box/callback',
+    test: 'Asks Box whether it recognises the client ID and secret.'
+  },
+  {
     key: 'zapier',
     name: 'Zapier',
     category: 'automation',
