@@ -17,6 +17,7 @@ import EditCopyModal from '../components/EditCopyModal';
 import { downloadAllSignedDocuments, printAllLockedDocuments } from '../utils/signedPdf';
 import { API_BASE, API_ORIGIN, authHeaders, apiFetch } from '../utils/api';
 import FolderSelect from '../components/folders/FolderSelect';
+import FolderFilterSelect, { NO_FOLDER } from '../components/folders/FolderFilterSelect';
 import {
   FileText,
   Plus,
@@ -56,7 +57,7 @@ import {
 // BexSign Table Columns Config (matching exact specification)
 const INITIAL_COLUMNS = [
   { id: 'name', label: 'Document name', required: true, visible: true, width: 230 },
-  { id: 'folder', label: 'Folder name', visible: true, width: 110 },
+  { id: 'folder', label: 'Folder name', visible: true, width: 150 },
   { id: 'docType', label: 'Document type', visible: false, width: 120 },
   { id: 'owner', label: 'Owner', visible: true, width: 120 },
   { id: 'recipient', label: 'Recipient email', visible: true, width: 220 },
@@ -76,7 +77,9 @@ export default function DocumentsList() {
   const location = useLocation();
 
   const isTrashView = location.pathname.includes('/trash') || statusFilter === 'trashed';
-  const folderIdParam = new URLSearchParams(location.search).get('folderId');
+  // The folder filter lives in the address (?folderId=<id> or "none"): the Folders page links here with it, and
+  // the folder menu of the list reads and writes the same value
+  const folderIdParam = new URLSearchParams(location.search).get('folderId') || '';
 
   const [documents, setDocuments] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -151,7 +154,7 @@ export default function DocumentsList() {
   // Task 5: Manual Column Width Resizing using mouse in webview
   const [colWidths, setColWidths] = useState({
     name: 240,
-    folder: 100,
+    folder: 150,
     owner: 120,
     recipient: 210,
     signform: 100,
@@ -654,8 +657,9 @@ export default function DocumentsList() {
       if (docStatus === 'trashed') return false;
     }
 
-    // Folder clicked from the Folders page (/documents?folderId=X)
-    const matchFolderParam = !folderIdParam || String(doc.folder_id || '') === String(folderIdParam);
+    // Folder filter: one folder, or the documents that are in no folder
+    const matchFolderParam = !folderIdParam
+      || (folderIdParam === NO_FOLDER ? !doc.folder_id : String(doc.folder_id || '') === String(folderIdParam));
 
     // Global search query
     const matchSearch =
@@ -673,7 +677,6 @@ export default function DocumentsList() {
 
     // Inline column filters (matching BexSign)
     const matchColName = !columnFilters.name || docName.includes(columnFilters.name.toLowerCase());
-    const matchColFolder = !columnFilters.folder || docFolder.includes(columnFilters.folder.toLowerCase());
     const matchColType = !columnFilters.docType || docType.includes(columnFilters.docType.toLowerCase());
     const matchColOwner = !columnFilters.owner || docOwner.includes(columnFilters.owner.toLowerCase());
     const matchColRecipient = !columnFilters.recipient || docRecipient.includes(columnFilters.recipient.toLowerCase());
@@ -687,7 +690,6 @@ export default function DocumentsList() {
       matchSearch &&
       matchStatusParam &&
       matchColName &&
-      matchColFolder &&
       matchColType &&
       matchColOwner &&
       matchColRecipient &&
@@ -786,7 +788,34 @@ export default function DocumentsList() {
     }
   };
 
+  const setFolderFilter = (value) => {
+    const params = new URLSearchParams(location.search);
+    if (value) params.set('folderId', value);
+    else params.delete('folderId');
+    const search = params.toString();
+    navigate({ pathname: location.pathname, search: search ? `?${search}` : '' }, { replace: true });
+    setCurrentPage(1);
+  };
+
+  // Documents per folder in the list being shown (same status view), for the numbers in the folder menu
+  const folderCounts = (() => {
+    const counts = { all: 0, [NO_FOLDER]: 0 };
+    const wanted = String(statusFilter || '').toLowerCase();
+    documents.forEach((doc) => {
+      const status = (doc.status || 'Draft').toLowerCase();
+      if (isTrashView ? status !== 'trashed' : status === 'trashed') return;
+      const inStatusView = isTrashView || !wanted || wanted === 'all' || status === wanted
+        || (['in-progress', 'in-process', 'inprogress'].includes(wanted) && (status === 'in progress' || status === 'in process'));
+      if (!inStatusView) return;
+      counts.all += 1;
+      if (doc.folder_id) counts[doc.folder_id] = (counts[doc.folder_id] || 0) + 1;
+      else counts[NO_FOLDER] += 1;
+    });
+    return counts;
+  })();
+
   const clearAllFilters = () => {
+    if (folderIdParam) setFolderFilter('');
     setColumnFilters({
       name: '',
       folder: '',
@@ -859,7 +888,7 @@ export default function DocumentsList() {
   };
 
   const hasActiveFilters =
-    Object.values(columnFilters).some((v) => v !== '') || searchQuery !== '';
+    Object.values(columnFilters).some((v) => v !== '') || searchQuery !== '' || Boolean(folderIdParam);
 
   return (
     <div className="space-y-4 font-sans">
@@ -971,6 +1000,9 @@ export default function DocumentsList() {
                 className="w-full pl-8 pr-3 py-2 text-sm border border-slate-300 rounded-lg bg-white outline-none focus:border-[#007355] focus:ring-2 focus:ring-emerald-100"
               />
             </div>
+            {!isTrashView && (
+              <FolderFilterSelect value={folderIdParam} folders={folders} counts={folderCounts} onChange={setFolderFilter} align="right" className="w-32 shrink-0 [&>button]:py-2 [&>button]:rounded-lg" />
+            )}
           </div>
           {paginatedDocs.length === 0 ? (
             <div className="py-12 px-4 text-center text-slate-400">
@@ -1154,18 +1186,9 @@ export default function DocumentsList() {
                 )}
 
                 {isColVisible('folder') && (
-                  <th className="p-2 text-center">
-                    <select
-                      value={columnFilters.folder}
-                      onChange={(e) => {
-                        setColumnFilters({ ...columnFilters, folder: e.target.value });
-                        setCurrentPage(1);
-                      }}
-                      className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 font-normal focus:outline-none focus:border-[#007355] shadow-2xs text-center cursor-pointer"
-                    >
-                      <option value="">All folders</option>
-                      {folders.map((f) => <option key={f.id} value={f.name}>{f.name}</option>)}
-                    </select>
+                  <th className="p-2">
+                    {/* Capped: a long folder name is cut with "…" (full name in the tooltip) instead of widening the column */}
+                    <FolderFilterSelect value={folderIdParam} folders={folders} counts={folderCounts} onChange={setFolderFilter} className="max-w-[11.5rem]" />
                   </th>
                 )}
 

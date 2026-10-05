@@ -33,9 +33,13 @@ Start with [01 — Installation](01-installation.md); to put it on a server, go 
 | | |
 |---|---|
 | [14 — Integrations](14-integrations.md) | Bexcode CRM, Google / Microsoft sign-in, Stripe Identity, Dropbox, Zapier, Slack, custom webhooks |
+| [27 — Google and Microsoft Sign-in](27-google-microsoft-sign-in.md) | Creating the Google and Microsoft credentials and entering them, step by step |
+| [28 — Cloud Storage Import](28-cloud-storage-import.md) | Add document > Cloud: setting up Google Drive, Dropbox, OneDrive and Box |
+| [29 — Mail Merge Template](29-mail-merge.md) | One template, a personal signature request for every recipient row |
 | [15 — API Reference](15-api.md) | Every endpoint |
 | [25 — OAuth Apps](25-oauth-apps.md) | OAuth client credentials for external apps: tokens, revoke, introspect |
 | [16 — Database](16-database.md) | Every table, who writes it, how to query it |
+| [30 — Database Migration](30-database-migration.md) | `npm run db:migrate`: create or update the database on any server, safely |
 | [17 — Email](17-email.md) | SMTP, the messages, dry-run mode |
 | [18 — Storage and PDFs](18-storage.md) | Uploads, signed PDFs, certificates, fingerprints |
 | [19 — Security](19-security.md) | Roles, the 34 permissions, what is logged |

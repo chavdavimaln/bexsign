@@ -579,7 +579,8 @@ function loadPdfjs() {
 async function pdfText(buffer) {
   const pdfjs = await loadPdfjs();
   const fontFolder = `${path.join(path.dirname(require.resolve('pdfjs-dist/legacy/build/pdf.mjs')), '..', '..', 'standard_fonts').replace(/\\/g, '/')}/`;
-  const pdf = await pdfjs.getDocument({ data: new Uint8Array(buffer), useSystemFonts: true, isEvalSupported: false, standardFontDataUrl: fontFolder, verbosity: 0 }).promise;
+  const loadingTask = pdfjs.getDocument({ data: new Uint8Array(buffer), useSystemFonts: true, isEvalSupported: false, standardFontDataUrl: fontFolder, verbosity: 0 });
+  const pdf = await loadingTask.promise;
   const pages = [];
   try {
     for (let n = 1; n <= Math.min(pdf.numPages, 150); n++) {
@@ -628,7 +629,7 @@ async function pdfText(buffer) {
       pages.push(text);
     }
   } finally {
-    await pdf.destroy().catch(() => {});
+    await loadingTask.destroy().catch(() => {});
   }
   return pages.join('\n\n').trim();
 }
@@ -654,7 +655,7 @@ function docxText(buffer) {
     const extraLength = buffer.readUInt16LE(pointer + 30);
     const commentLength = buffer.readUInt16LE(pointer + 32);
     const localOffset = buffer.readUInt32LE(pointer + 42);
-    const name = buffer.toString('utf8', pointer + 46, pointer + 46 + nameLength);
+    const name = buffer.toString('utf8', pointer + 46, pointer + 46 + nameLength).replace(/\\/g, '/');
     if (name === 'word/document.xml') {
       const dataStart = localOffset + 30 + buffer.readUInt16LE(localOffset + 26) + buffer.readUInt16LE(localOffset + 28);
       const data = buffer.subarray(dataStart, dataStart + compressedSize);

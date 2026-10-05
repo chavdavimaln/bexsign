@@ -5,7 +5,10 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "db:migrate": "node scripts/migrate.js",
+    "db:status": "node scripts/migrate.js --status",
+    "db:snapshot": "node scripts/snapshot-schema.js"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.9",
