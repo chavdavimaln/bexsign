@@ -11,7 +11,7 @@ const SMTP_CONFIG = {
   secure: process.env.SMTP_SECURE ? process.env.SMTP_SECURE === 'true' : smtpPort === 465, // SSL on 465, STARTTLS otherwise
   auth: {
     user: process.env.SMTP_USER || 'info@bexcodeservices.com',
-    pass: process.env.SMTP_PASSWORD || process.env.SMTP_PASS || 'tbwffkmwugtbaiuw'
+    pass: process.env.SMTP_PASSWORD || process.env.SMTP_PASS || ''
   },
   tls: {
     rejectUnauthorized: false
@@ -41,10 +41,30 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+/** What went wrong with the mail server, in words the sender can act on (the raw SMTP text follows in brackets). */
+function describeSmtpError(err) {
+  const raw = String(err?.message || err || '').split(/\r?\n/)[0].trim();
+  const code = err?.responseCode;
+  let reason;
+  if (code === 535 || /invalid login|username and password not accepted|authentication failed|auth(entication)? unsuccessful/i.test(raw)) {
+    reason = `The mail server rejected the sign-in of ${SMTP_CONFIG.auth.user}. Check SMTP_USER and SMTP_PASSWORD in server/.env${/gmail/i.test(SMTP_CONFIG.host) ? ' - Gmail needs an App Password (Google Account > Security > 2-Step Verification > App passwords), not the account password' : ''}.`;
+  } else if (!SMTP_CONFIG.auth.pass) {
+    reason = 'No mail password is set: add SMTP_USER and SMTP_PASSWORD to server/.env, or set EMAIL_DRY_RUN=true while testing.';
+  } else if (/ECONNREFUSED|ENOTFOUND|ETIMEDOUT|ESOCKET|ECONNRESET|greeting never received/i.test(raw) || err?.code === 'ESOCKET') {
+    reason = `The mail server ${SMTP_CONFIG.host}:${SMTP_CONFIG.port} could not be reached. Check SMTP_HOST, SMTP_PORT and SMTP_SECURE in server/.env and the network.`;
+  } else if (/recipient|rcpt|does not exist|no such user|mailbox/i.test(raw)) {
+    reason = 'The mail server refused the recipient address.';
+  } else {
+    reason = 'The email could not be sent.';
+  }
+  return raw ? `${reason} (${raw})` : reason;
+}
+
 async function deliverMail(mailOptions, label) {
   try {
     const info = await getTransporter().sendMail({
-      from: `"BexSign" <${SMTP_CONFIG.auth.user}>`,
+      // Sender shown in the inbox: SMTP_FROM_NAME / SMTP_FROM in server/.env, else BexSign and the SMTP account
+      from: `"${(process.env.SMTP_FROM_NAME || "BexSign").replace(/"/g, "")}" <${process.env.SMTP_FROM || SMTP_CONFIG.auth.user}>`,
       ...mailOptions
     });
     const attachmentCount = (mailOptions.attachments || []).length;
@@ -60,8 +80,36 @@ async function deliverMail(mailOptions, label) {
     return { success: true, messageId: info.messageId };
   } catch (err) {
     console.error(`[SMTP Error] Failed to send ${label}:`, err.message);
-    return { success: false, error: err.message };
+    return { success: false, error: describeSmtpError(err), smtpError: err.message };
   }
+}
+
+/**
+ * Whether emails can really leave this server right now: { ready, dryRun, configured, error, checkedAt }.
+ * The mail server is asked at most once a minute; callers get the last answer at once.
+ */
+let mailStatus = null;
+let mailStatusPromise = null;
+async function getMailStatus({ refresh = false } = {}) {
+  const stale = !mailStatus || Date.now() - mailStatus.checkedAt > 60 * 1000;
+  if ((stale || refresh) && !mailStatusPromise) {
+    mailStatusPromise = (async () => {
+      const check = await verifySmtpConnection();
+      mailStatus = {
+        ready: Boolean(check.success),
+        dryRun: Boolean(check.dryRun),
+        configured: DRY_RUN || Boolean(SMTP_CONFIG.auth.user && SMTP_CONFIG.auth.pass),
+        error: check.success ? null : check.error,
+        checkedAt: Date.now()
+      };
+      mailStatusPromise = null;
+      return mailStatus;
+    })();
+  }
+  // The first caller waits for the answer; later callers never wait longer than a few seconds
+  if (!mailStatus) return mailStatusPromise;
+  if (mailStatusPromise) await Promise.race([mailStatusPromise, new Promise((resolve) => setTimeout(resolve, 3000))]);
+  return mailStatus;
 }
 
 async function verifySmtpConnection() {
@@ -70,7 +118,7 @@ async function verifySmtpConnection() {
     await getTransporter().verify();
     return { success: true };
   } catch (err) {
-    return { success: false, error: err.message };
+    return { success: false, error: describeSmtpError(err), smtpError: err.message };
   }
 }
 
@@ -633,6 +681,7 @@ async function sendOtpEmail({ to, name = '', code, documentName = 'Document', ex
 }
 
 module.exports = {
+  getMailStatus,
   sendNotificationEmail,
   sendOtpEmail,
   sendReportEmail,

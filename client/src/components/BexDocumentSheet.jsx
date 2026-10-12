@@ -2,9 +2,10 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Copy, PenTool, CheckCircle2, Calendar, Check, Clock, X } from 'lucide-react';
 import SignatureStamp from './SignatureStamp';
 import DocumentPage, { PAGE_WIDTH } from './documents/DocumentPage';
-import PlacedField from './documents/PlacedField';
+import PlacedField, { DateFieldInput } from './documents/PlacedField';
 import { generateBexsignId } from '../utils/documentId';
 import { getStampImage, DEFAULT_COMPANY_NAME } from '../utils/documentFields';
+import { DEFAULT_DATE_FORMAT, formatDate } from '../utils/dateFormat';
 import { fieldBelongsTo } from '../utils/recipientColors';
 import { isAutoResizeField, autoResizeWidth, getFieldBox } from '../utils/fieldSizing';
 
@@ -335,23 +336,21 @@ export default function BexDocumentSheet({
                 }
 
                 if (field.type === 'Sign date') {
-                  const dateVal = field.value || new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                  // Same date input as a placed field: typed or picked from the calendar, in the field's format
+                  const dateVal = field.value || formatDate(new Date(), field.dateFormat || DEFAULT_DATE_FORMAT);
                   return (
                     <div key={key} id={id} className={fieldBoxClass(field)} style={fieldBoxStyle(field)} title={hint}>
                       {!isLocked(field) ? (
-                        <>
-                          <input
-                            type="text"
-                            value={field.value !== undefined ? field.value : dateVal}
-                            onChange={(e) => onUpdateField && onUpdateField(field.id, e.target.value)}
-                            className={inputClass('pl-8')}
-                            placeholder={hint}
-                            aria-label={hint}
-                            aria-required={Boolean(field.required)}
+                        <div className="relative">
+                          <DateFieldInput
+                            field={field}
+                            hint={hint}
+                            fontSize={12}
+                            inputClass={inputClass('pl-3')}
+                            onChange={(value) => onUpdateField && onUpdateField(field.id, value)}
                           />
-                          <Calendar size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-emerald-700/70 pointer-events-none" />
-                          <RequiredMark field={field} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-sm" />
-                        </>
+                          <RequiredMark field={field} className="absolute right-6 top-1/2 -translate-y-1/2 text-sm pointer-events-none" />
+                        </div>
                       ) : (
                         <div className={`${valueClass} flex items-center gap-2`}>
                           <Calendar size={14} className="text-slate-400 shrink-0" />

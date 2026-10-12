@@ -7,6 +7,42 @@ For a live server see [21 — Live Server Deployment](21-live-server-deployment.
 
 ---
 
+## 0. Quick start — two commands on any platform
+
+With Node.js and MySQL/MariaDB installed and MySQL running:
+
+```bash
+npm install
+```
+
+```bash
+npm start
+```
+
+Both run in the **project root** and behave the same on Windows, macOS and Linux:
+
+- `npm install` installs the dependencies of `server/` and `client/`, and creates `server/.env` and `client/.env`
+  from their `.env.example` files when they do not exist yet. Open `server/.env` and fill in your database user and
+  password if they differ from the defaults (`root`, no password).
+- `npm start` brings the database up to date (creates it and its tables when missing, see
+  [30 — Database Migration](30-database-migration.md)), then starts the API on <http://localhost:5000> and the client
+  on <http://localhost:3003> in one terminal, with `[api]` and `[web]` in front of each line. Ctrl+C stops both.
+
+Other root commands:
+
+| Command | What it does |
+|---|---|
+| `npm run start:api` | only the API |
+| `npm run start:web` | only the client dev server |
+| `npm run serve` | production style: builds the client once and the API serves it too, everything on port 5000 (`-- --build` rebuilds) |
+| `npm run build` | build the client into `client/dist` |
+| `npm run db:migrate`, `npm run db:status` | the database migration on its own |
+| `npm run setup` | repeat the install/.env step |
+
+`npm start -- --no-migrate` skips the database check. The sections below describe the same steps one by one.
+
+---
+
 ## 1. Prerequisites
 
 | | Version | Notes |
@@ -114,6 +150,7 @@ The first account created takes the **manager** role, which holds every permissi
 ## 6. Everyday commands
 
 ```bash
+npm start                     # project root: API + client together (see section 0)
 cd server && npm start        # API
 cd server && npm run dev      # API with nodemon (restarts on save)
 cd client && npm run dev      # client with hot reload

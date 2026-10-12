@@ -1909,6 +1909,7 @@ export default function DocumentEditor() {
         ? data.dispatched
         : (data.dispatchedEmails || []).map((email) => ({ email }));
       const failed = (data.failedEmails || []).map((f) => f.email).join(', ');
+      const failedReason = (data.failedEmails || []).find((f) => f.error)?.error || '';
       if (dispatched.length === 0 && !failed) {
         throw new Error('No signature request email was sent. Check that at least one recipient needs to sign, then try again.');
       }
@@ -1937,7 +1938,7 @@ export default function DocumentEditor() {
       const hasWarning = Boolean(failed) || notTexted.length > 0;
       showPopupAlert(
         failed
-          ? `The document was sent, but the email could not be delivered to: ${failed}.${laterNote}${smsNote}`
+          ? `The document was sent, but the email could not be delivered to: ${failed}.${failedReason ? ` ${failedReason}` : ''} Fix the mail settings, then use "Send reminder" on the document page to email them.${laterNote}${smsNote}`
           : `Signature request ${dispatched.some((r) => r.emailed !== false) ? 'emailed' : 'sent'} to: ${sentTo}.${laterNote}${restartNote}${smsNote}`,
         { title: failed ? 'Sent with email errors' : (notTexted.length > 0 ? 'Sent, but not by SMS' : 'Document sent'), type: hasWarning ? 'warning' : 'success' }
       );

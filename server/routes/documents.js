@@ -967,7 +967,7 @@ router.post('/send/:id', guardDocument({ permission: 'documents.send' }), async 
             signingMode: flow.mode,
             signingModeLabel: flow.label,
             message: failedEmails.length
-                ? `Document sent. Email could not be delivered to: ${failedEmails.map((f) => f.email).join(', ')}`
+                ? `Document sent. Email could not be delivered to: ${failedEmails.map((f) => f.email).join(', ')}. ${failedEmails[0].error || ''}`.trim()
                 : `Document dispatched to: ${dispatchedEmails.join(', ')}`,
             dispatchedEmails,
             dispatched: results.filter((r) => r.success).map((r) => ({ name: r.name, email: r.email, emailed: r.emailed !== false })),
@@ -1077,7 +1077,7 @@ router.post('/mail-merge', guardDocument({ permission: 'documents.create' }), as
                 const assignee = { assignee: name, assigneeEmail: email };
                 const fields = [{ type: 'Signature', label: 'Signature', required: true, x: null, y: null, page: 1, width: 200, height: 70, value: 'Signature', ...assignee }];
                 if (TRUE_VALUES.includes(body.addSignDate)) {
-                    fields.push({ type: 'Sign date', label: 'Sign date', required: true, x: null, y: null, page: 1, width: 150, height: 36, ...assignee });
+                    fields.push({ type: 'Sign date', label: 'Sign date', required: true, x: null, y: null, page: 1, width: 150, height: 36, dateFormat: 'MMM dd yyyy', ...assignee });
                 }
                 await requestHelpers.saveDocumentFields(documentId, { fieldsByDoc: { 0: fields } }, recipients);
 
@@ -1326,9 +1326,14 @@ router.post(['/:id/remind', '/remind/:id'], guardDocument({ permission: 'documen
             ...await requestHelpers.sendSigningInvitations(doc, group.filter((r) => !notInvited.includes(r)), { req, isReminder: true })
         ];
         const sent = results.filter((r) => r.success).map((r) => r.email);
+        if (sent.length === 0) {
+            // Nothing left the server: say why (usually the mail server refused the sign-in or the address)
+            const reason = results.find((r) => r.error)?.error || 'The mail server did not accept the email.';
+            return res.status(502).json({ success: false, error: `The reminder could not be sent. ${reason}`, results });
+        }
         res.json({
-            success: sent.length > 0,
-            message: sent.length > 0 ? `Reminder email sent to ${sent.join(', ')}` : 'Reminder email could not be sent.',
+            success: true,
+            message: `Reminder email sent to ${sent.join(', ')}`,
             results
         });
     } catch (err) {
@@ -1555,11 +1560,15 @@ router.post('/:id/email-copy', guardDocument({ permission: 'documents.download',
             });
         }
 
+        if (sent.length === 0) {
+            const reason = results.find((r) => r.error)?.error || 'The mail server did not accept the email.';
+            return res.status(502).json({ success: false, error: `The copy could not be emailed. ${reason}`, results });
+        }
+        const failed = results.filter((r) => !r.success);
         res.json({
-            success: sent.length > 0,
-            message: sent.length > 0
-                ? `A copy of "${docTitle}" was emailed to ${sent.join(', ')}${attachments.length ? ` with ${attachments.length} PDF attachment(s)` : ''}.`
-                : 'The email could not be sent.',
+            success: true,
+            message: `A copy of "${docTitle}" was emailed to ${sent.join(', ')}${attachments.length ? ` with ${attachments.length} PDF attachment(s)` : ''}.`
+                + (failed.length ? ` Not delivered to ${failed.map((r) => r.email).join(', ')}: ${failed[0].error}` : ''),
             results
         });
     } catch (err) {

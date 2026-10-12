@@ -58,7 +58,7 @@ function FitToBox({ width, height, children }) {
 }
 
 /** Date input of a "Sign date" field: type the date or pick it from the calendar; shown in the field's format. */
-function DateFieldInput({ field, hint, fontSize, inputClass, onChange }) {
+export function DateFieldInput({ field, hint, fontSize, inputClass, onChange }) {
   const pattern = field.dateFormat || DEFAULT_DATE_FORMAT;
   const boxRef = useRef(null);
   const [draft, setDraft] = useState(null); // the text while the signer is typing

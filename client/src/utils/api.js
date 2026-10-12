@@ -72,7 +72,7 @@ export async function apiFetch(path, { method = 'GET', body, headers = {}, raw =
     if (res.status === 404 && !data.error) {
       throw new Error('This feature needs the latest BexSign server. Restart the server (npm start in the server folder).');
     }
-    const error = new Error(data.error || `Request failed (HTTP ${res.status}).`);
+    const error = new Error(data.error || data.message || (res.ok ? 'The request did not succeed.' : `Request failed (HTTP ${res.status}).`));
     error.status = res.status;
     throw error;
   }

@@ -335,11 +335,15 @@ export default function SendForSignatures() {
 
   // Whether the server can really send text messages (an SMS provider is set up). null until known.
   const [smsReady, setSmsReady] = useState(null);
+  // Whether emails leave the server: { ready, dryRun, error } or null until known
+  const [mailStatus, setMailStatus] = useState(null);
   useEffect(() => {
     let cancelled = false;
     apiFetch('/platform-settings/general')
       .then((data) => {
-        if (!cancelled && typeof data?.smsReady === 'boolean') setSmsReady(data.smsReady);
+        if (cancelled) return;
+        if (typeof data?.smsReady === 'boolean') setSmsReady(data.smsReady);
+        if (data?.email && typeof data.email.ready === 'boolean') setMailStatus(data.email);
       })
       .catch(() => {});
     return () => {
@@ -1960,6 +1964,26 @@ export default function SendForSignatures() {
             <Plus size={14} />
             <span>Add recipient</span>
           </button>
+
+          {/* The mail server refuses or is not set up: the request can be created, but nobody is emailed */}
+          {mailStatus && !mailStatus.ready && (
+            <div className="rounded-lg border border-rose-200 bg-rose-50 px-3.5 py-2.5 flex items-start gap-2 text-xs text-rose-800" role="alert">
+              <AlertCircle size={14} className="mt-0.5 shrink-0" />
+              <p className="leading-relaxed break-words">
+                <span className="font-bold">Emails cannot be sent from this server right now.</span>{' '}
+                {mailStatus.error || 'The mail server is not set up.'} The request can still be created and sent, but recipients receive no email until an
+                administrator fixes the mail settings (SMTP_* in server/.env, see doc/17-email.md); "Send reminder" on the document page emails them afterwards.
+              </p>
+            </div>
+          )}
+          {mailStatus?.ready && mailStatus.dryRun && (
+            <div className="rounded-lg border border-sky-200 bg-sky-50 px-3.5 py-2.5 flex items-start gap-2 text-xs text-sky-800" role="status">
+              <AlertCircle size={14} className="mt-0.5 shrink-0" />
+              <p className="leading-relaxed">
+                <span className="font-bold">Email dry run is on (EMAIL_DRY_RUN=true).</span> Emails are written to server/email_outbox on the server instead of being delivered.
+              </p>
+            </div>
+          )}
 
           {/* SMS delivery is chosen, but this server cannot send texts yet */}
           {smsReady === false && recipients.some(usesSms) && (

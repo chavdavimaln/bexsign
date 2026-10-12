@@ -49,6 +49,10 @@ cd client && npm ci && cd ..
 
 `npm ci` installs exactly what the lock file says. Use `npm install` only if there is no lock file.
 
+Shortcut: `npm install` in the project root installs both folders and creates the two `.env` files from their
+examples (see [01 — Installation](01-installation.md), section 0). `npm run serve` in the root then builds the
+client and starts the API serving it, which is the single-origin setup of sections 5 and 7 without NGINX in front.
+
 ---
 
 ## 4. Create the database
@@ -331,6 +335,9 @@ keeps the old code in memory, which is the usual reason a new endpoint answers `
 ---
 
 ## 13. Running locally (unchanged by any of the above)
+
+The short way, in the project root: `npm install`, then `npm start` (API and client together, any platform).
+Step by step:
 
 ```bash
 # 1. MySQL (XAMPP on Windows)

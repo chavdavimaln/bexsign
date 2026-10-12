@@ -87,6 +87,7 @@ never arrives without its documents.
 |---|---|---|
 | Nothing arrives, no error | `EMAIL_DRY_RUN=true` | `server/email_outbox/` and the boot `[SMTP]` line |
 | `Invalid login` / `535` | Wrong credentials; Gmail needs an app password | `SMTP_USER`, `SMTP_PASSWORD` |
+| "The mail server rejected the sign-in of …" when emailing or sending a document | Same cause as `535`: the stored Gmail App Password was revoked or changed. Google revokes App Passwords when the account password changes or 2-Step Verification is turned off | Create a new App Password and put it in `SMTP_PASSWORD`; restart the API |
 | `ETIMEDOUT` on send | The host blocks outbound SMTP | Try port 587, or ask the hosting provider |
 | Links point at localhost | `CLIENT_URL` unset | Set it and restart |
 | Mail lands in spam | No SPF/DKIM for the sending domain | Configure DNS for the domain in `SMTP_USER` |

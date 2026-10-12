@@ -156,8 +156,9 @@ const server = app.listen(PORT, () => {
 
 server.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
-        console.error(`\n[BexSign Port Conflict] Port ${PORT} is already occupied by an existing process.`);
-        console.error(`Please make sure previous process on port ${PORT} is closed.\n`);
+        console.error(`\n[BexSign Port Conflict] Port ${PORT} is already in use - most likely another copy of the BexSign API started from a different terminal or console window.`);
+        console.error('Close that window (or stop that process) and run npm start again; a second copy is never needed.');
+        console.error(`To run this copy on another port instead, set PORT=${Number(PORT) + 1} in server/.env and VITE_API_URL=http://localhost:${Number(PORT) + 1} in client/.env, then restart both.\n`);
         process.exit(1);
     } else {
         console.error('Server error:', err);

@@ -229,6 +229,8 @@ router.get('/general', async (req, res) => {
       updatedBy: await updaterName(row.updated_by),
       // Whether text messages really leave the server (an SMS provider is set up in server/.env)
       smsReady: require('../utils/smsService').isSmsLive(),
+      // Whether emails leave the server: the Send page warns before a request is sent into the void
+      email: await require('../utils/emailService').getMailStatus().catch(() => null),
       options: {
         dateFormats: DATE_FORMATS,
         timeFormats: TIME_FORMATS,

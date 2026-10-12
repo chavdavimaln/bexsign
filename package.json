@@ -1,0 +1,21 @@
+{
+  "name": "bexsign",
+  "version": "1.0.0",
+  "private": true,
+  "description": "BexSign e-signature suite: React client (client/) and Express API (server/). `npm install` then `npm start` runs everything.",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "postinstall": "node scripts/setup.js",
+    "setup": "node scripts/setup.js",
+    "start": "node scripts/start.js",
+    "dev": "node scripts/start.js",
+    "start:api": "node scripts/start.js --api-only",
+    "start:web": "node scripts/start.js --web-only",
+    "serve": "node scripts/start.js --serve",
+    "build": "npm run build --prefix client",
+    "db:migrate": "npm run db:migrate --prefix server",
+    "db:status": "npm run db:status --prefix server"
+  }
+}
