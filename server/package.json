@@ -8,7 +8,8 @@
     "dev": "nodemon index.js",
     "db:migrate": "node scripts/migrate.js",
     "db:status": "node scripts/migrate.js --status",
-    "db:snapshot": "node scripts/snapshot-schema.js"
+    "db:snapshot": "node scripts/snapshot-schema.js",
+    "db:make": "node scripts/migrate.js --make"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.9",

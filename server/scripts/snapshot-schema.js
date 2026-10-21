@@ -41,7 +41,7 @@ const sqlValue = (value) => {
     }
 
     const [tables] = await connection.query(
-      "SELECT TABLE_NAME AS name FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE' AND TABLE_NAME <> 'schema_migrations' ORDER BY TABLE_NAME",
+      "SELECT TABLE_NAME AS name FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE' AND TABLE_NAME NOT IN ('schema_migrations', 'migration_files') ORDER BY TABLE_NAME",
       [DB_NAME]
     );
     const [[{ version }]] = await connection.query('SELECT VERSION() AS version');

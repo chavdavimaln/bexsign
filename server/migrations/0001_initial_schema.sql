@@ -1,0 +1,1330 @@
+-- BexSign migration 0001: the complete database structure (68 tables).
+-- Generated from database/schema.sql on 2026-10-21. Every statement is CREATE TABLE IF NOT EXISTS, so
+-- applying it to a database that already has the tables changes nothing and only records the file as applied.
+-- Later changes go in new files in this folder (npm run db:make <name>), applied in name order by npm run db:migrate.
+
+SET NAMES utf8mb4;
+SET FOREIGN_KEY_CHECKS = 0;
+
+-- ----------------------------------------------------------------
+-- activity_history
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `activity_history` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `document_id` int(11) NOT NULL,
+  `activity_description` text NOT NULL,
+  `ip_address` varchar(45) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `document_id` (`document_id`),
+  KEY `idx_activity_history_time` (`created_at`),
+  CONSTRAINT `activity_history_ibfk_1` FOREIGN KEY (`document_id`) REFERENCES `documents` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- activity_logs
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `activity_logs` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) DEFAULT NULL,
+  `action` varchar(255) NOT NULL,
+  `ip_address` varchar(45) DEFAULT NULL,
+  `browser_info` varchar(255) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `user_email` varchar(255) DEFAULT NULL,
+  `category` varchar(40) NOT NULL DEFAULT 'system',
+  `entity_type` varchar(40) DEFAULT NULL,
+  `entity_id` int(11) DEFAULT NULL,
+  `details` text DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_activity_logs_time` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- announcements
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `announcements` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `title` varchar(255) NOT NULL,
+  `content` text NOT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- api_keys
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `api_keys` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `name` varchar(100) NOT NULL,
+  `api_key` varchar(255) NOT NULL,
+  `permissions` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`permissions`)),
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `key_prefix` varchar(24) DEFAULT NULL,
+  `key_hash` char(64) DEFAULT NULL,
+  `environment` varchar(20) NOT NULL DEFAULT 'live',
+  `last_used_at` datetime DEFAULT NULL,
+  `expires_at` datetime DEFAULT NULL,
+  `revoked_at` datetime DEFAULT NULL,
+  `request_count` int(11) NOT NULL DEFAULT 0,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `api_key` (`api_key`),
+  KEY `user_id` (`user_id`),
+  CONSTRAINT `api_keys_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- api_logs
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `api_logs` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `api_key_id` int(11) DEFAULT NULL,
+  `endpoint` varchar(255) NOT NULL,
+  `method` varchar(10) NOT NULL,
+  `status_code` int(11) NOT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `ip_address` varchar(45) DEFAULT NULL,
+  `duration_ms` int(11) DEFAULT NULL,
+  `user_agent` varchar(255) DEFAULT NULL,
+  `oauth_app_id` int(11) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_api_logs_time` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- audit_logs
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `audit_logs` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `document_id` int(11) NOT NULL,
+  `action_summary` text NOT NULL,
+  `checksum_hash` varchar(255) NOT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `document_id` (`document_id`),
+  CONSTRAINT `audit_logs_ibfk_1` FOREIGN KEY (`document_id`) REFERENCES `documents` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- cloud_connections
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `cloud_connections` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `provider` varchar(40) NOT NULL,
+  `account_email` varchar(255) DEFAULT NULL,
+  `account_name` varchar(255) DEFAULT NULL,
+  `access_token` text DEFAULT NULL,
+  `refresh_token` text DEFAULT NULL,
+  `expires_at` datetime DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_cloud_user_provider` (`user_id`,`provider`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- contacts
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `contacts` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `name` varchar(150) NOT NULL,
+  `email` varchar(255) NOT NULL,
+  `company` varchar(150) DEFAULT NULL,
+  `phone` varchar(50) DEFAULT NULL,
+  `last_used` timestamp NULL DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `user_id` (`user_id`),
+  CONSTRAINT `contacts_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- delegates
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `delegates` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `delegate_to_email` varchar(255) NOT NULL,
+  `start_date` date NOT NULL,
+  `end_date` date NOT NULL,
+  `reason` text DEFAULT NULL,
+  `status` enum('active','inactive') DEFAULT 'active',
+  PRIMARY KEY (`id`),
+  KEY `user_id` (`user_id`),
+  CONSTRAINT `delegates_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- developer_settings
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `developer_settings` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `api_enabled` tinyint(1) DEFAULT 1,
+  `sandbox_mode` tinyint(1) DEFAULT 1,
+  `rate_limit_per_minute` int(11) DEFAULT 60,
+  `allowed_origins` text DEFAULT NULL,
+  `ip_allowlist` text DEFAULT NULL,
+  `webhook_signing_secret` varchar(128) DEFAULT NULL,
+  `webhook_retry_count` int(11) DEFAULT 3,
+  `webhook_timeout_seconds` int(11) DEFAULT 10,
+  `default_callback_url` varchar(500) DEFAULT NULL,
+  `log_retention_days` int(11) DEFAULT 30,
+  `updated_by` int(11) DEFAULT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- documents
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `documents` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `document_name` varchar(255) NOT NULL,
+  `file_path` varchar(255) DEFAULT NULL,
+  `folder_name` varchar(150) DEFAULT 'General',
+  `status` varchar(50) DEFAULT 'Draft',
+  `signing_order` enum('parallel','sequential') DEFAULT 'parallel',
+  `recipient_email` varchar(255) DEFAULT NULL,
+  `template_used` varchar(150) DEFAULT NULL,
+  `custom_message` text DEFAULT NULL,
+  `reminder_days` int(11) DEFAULT 3,
+  `expiration_days` int(11) DEFAULT 30,
+  `scheduled_at` datetime DEFAULT NULL,
+  `completed_at` datetime DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `sent_at` datetime DEFAULT NULL,
+  `document_type` varchar(50) DEFAULT NULL,
+  `description` text DEFAULT NULL,
+  `validity` varchar(50) DEFAULT NULL,
+  `auto_reminders` tinyint(1) DEFAULT 1,
+  `allow_comments` tinyint(1) DEFAULT 0,
+  `folder_id` int(11) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `user_id` (`user_id`),
+  CONSTRAINT `documents_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- document_fields
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `document_fields` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `document_id` int(11) NOT NULL,
+  `recipient_id` int(11) DEFAULT NULL,
+  `page_number` int(11) DEFAULT 1,
+  `field_type` varchar(50) NOT NULL,
+  `label` varchar(100) DEFAULT NULL,
+  `description` varchar(255) DEFAULT NULL,
+  `is_required` tinyint(1) DEFAULT 1,
+  `pos_x` float NOT NULL,
+  `pos_y` float NOT NULL,
+  `width` float DEFAULT 150,
+  `height` float DEFAULT 40,
+  `options` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`options`)),
+  PRIMARY KEY (`id`),
+  KEY `document_id` (`document_id`),
+  CONSTRAINT `document_fields_ibfk_1` FOREIGN KEY (`document_id`) REFERENCES `documents` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- document_field_values
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `document_field_values` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `field_id` int(11) NOT NULL,
+  `recipient_id` int(11) NOT NULL,
+  `field_value` text DEFAULT NULL,
+  `submitted_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `field_id` (`field_id`),
+  KEY `recipient_id` (`recipient_id`),
+  CONSTRAINT `document_field_values_ibfk_1` FOREIGN KEY (`field_id`) REFERENCES `document_fields` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `document_field_values_ibfk_2` FOREIGN KEY (`recipient_id`) REFERENCES `document_recipients` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- document_files
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `document_files` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `document_id` int(11) NOT NULL,
+  `file_name` varchar(255) NOT NULL,
+  `file_path` varchar(255) NOT NULL,
+  `file_size` int(11) DEFAULT NULL,
+  `file_type` varchar(100) DEFAULT NULL,
+  `uploaded_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `document_text` longtext DEFAULT NULL,
+  `signed_file_path` varchar(255) DEFAULT NULL,
+  `sort_order` int(11) DEFAULT 0,
+  `layout_snapshot` longtext DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `document_id` (`document_id`),
+  CONSTRAINT `document_files_ibfk_1` FOREIGN KEY (`document_id`) REFERENCES `documents` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- document_identifiers
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `document_identifiers` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `document_id` int(11) NOT NULL,
+  `bexsign_doc_id` varchar(100) NOT NULL,
+  `prefix` varchar(20) DEFAULT 'BEX-DOC',
+  `year` int(11) DEFAULT 2026,
+  `seq_number` int(11) NOT NULL,
+  `unique_hash` varchar(64) NOT NULL,
+  `signer_name` varchar(150) DEFAULT 'Vimal Chavda',
+  `signer_email` varchar(255) DEFAULT 'vimal@bexcodeservices.com',
+  `signature_style` varchar(50) DEFAULT 'font-signature-1',
+  `signature_image` longtext DEFAULT NULL,
+  `signature_status` enum('Draft','In Progress','Completed','Recalled','Expired') DEFAULT 'Draft',
+  `audit_ip` varchar(45) DEFAULT '223.181.69.208',
+  `audit_hash` varchar(100) DEFAULT 'SHA256-CERTIFIED-ELECTRONIC-RECORD',
+  `qr_payload` text DEFAULT NULL,
+  `signed_at` datetime DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `bexsign_doc_id` (`bexsign_doc_id`),
+  KEY `idx_bexsign_doc_id` (`bexsign_doc_id`),
+  KEY `idx_document_id` (`document_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- document_recipients
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `document_recipients` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `document_id` int(11) NOT NULL,
+  `name` varchar(150) NOT NULL,
+  `email` varchar(255) NOT NULL,
+  `role` enum('signer','approver','viewer','cc','reviewer') DEFAULT 'signer',
+  `signing_order_index` int(11) DEFAULT 1,
+  `status` enum('pending','sent','viewed','signed','declined') DEFAULT 'pending',
+  `secure_token` varchar(255) DEFAULT NULL,
+  `otp_code` varchar(10) DEFAULT NULL,
+  `signed_at` datetime DEFAULT NULL,
+  `role_label` varchar(50) DEFAULT NULL,
+  `delivery_mode` varchar(30) DEFAULT NULL,
+  `private_note` text DEFAULT NULL,
+  `sent_at` datetime DEFAULT NULL,
+  `viewed_at` datetime DEFAULT NULL,
+  `signed_ip` varchar(45) DEFAULT NULL,
+  `signed_user_agent` varchar(255) DEFAULT NULL,
+  `signature_image` longtext DEFAULT NULL,
+  `declined_at` datetime DEFAULT NULL,
+  `decline_reason` text DEFAULT NULL,
+  `physical_copy_path` varchar(255) DEFAULT NULL,
+  `delegated_from` varchar(255) DEFAULT NULL,
+  `delegated_reason` text DEFAULT NULL,
+  `consent_at` datetime DEFAULT NULL,
+  `consent_ip` varchar(45) DEFAULT NULL,
+  `phone` varchar(20) DEFAULT NULL,
+  `auth_type` varchar(20) DEFAULT 'None',
+  `access_passcode` varchar(50) DEFAULT NULL,
+  `otp_expires_at` datetime DEFAULT NULL,
+  `otp_verified_at` datetime DEFAULT NULL,
+  `correction_note` varchar(1000) DEFAULT NULL,
+  `correction_requested_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `secure_token` (`secure_token`),
+  KEY `document_id` (`document_id`),
+  CONSTRAINT `document_recipients_ibfk_1` FOREIGN KEY (`document_id`) REFERENCES `documents` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- document_signing_flow
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `document_signing_flow` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `document_id` int(11) NOT NULL,
+  `mode` varchar(30) NOT NULL DEFAULT 'sequential_shared',
+  `signing_order` varchar(20) NOT NULL DEFAULT 'sequential',
+  `show_previous_fields` tinyint(1) NOT NULL DEFAULT 1,
+  `current_step` int(11) NOT NULL DEFAULT 1,
+  `updated_by` int(11) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_signing_flow_document` (`document_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- document_validity
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `document_validity` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `document_id` int(11) DEFAULT NULL,
+  `certificate_id` varchar(100) DEFAULT NULL,
+  `hash_signature` varchar(255) DEFAULT NULL,
+  `is_valid` tinyint(1) DEFAULT 1,
+  `checked_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `file_name` varchar(255) DEFAULT NULL,
+  `sha256` char(64) DEFAULT NULL,
+  `result` varchar(30) NOT NULL DEFAULT 'unknown',
+  `message` varchar(500) DEFAULT NULL,
+  `source` varchar(30) NOT NULL DEFAULT 'upload',
+  `checked_by` int(11) DEFAULT NULL,
+  `ip_address` varchar(45) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `certificate_id` (`certificate_id`),
+  KEY `document_id` (`document_id`),
+  KEY `idx_document_validity_time` (`checked_at`),
+  KEY `idx_document_validity_sha256` (`sha256`),
+  CONSTRAINT `document_validity_ibfk_1` FOREIGN KEY (`document_id`) REFERENCES `documents` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- document_verification
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `document_verification` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `document_id` int(11) NOT NULL,
+  `required` tinyint(1) NOT NULL DEFAULT 1,
+  `status` varchar(20) NOT NULL DEFAULT 'pending',
+  `integrity_result` varchar(20) DEFAULT NULL,
+  `integrity_message` varchar(500) DEFAULT NULL,
+  `confirmed_by` int(11) DEFAULT NULL,
+  `confirmed_at` datetime DEFAULT NULL,
+  `note` varchar(1000) DEFAULT NULL,
+  `rejected_reason` varchar(1000) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `correction_details` mediumtext DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_document_verification_document` (`document_id`),
+  KEY `idx_document_verification_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- document_verification_events
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `document_verification_events` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `document_id` int(11) NOT NULL,
+  `action` varchar(30) NOT NULL,
+  `actor_id` int(11) DEFAULT NULL,
+  `actor_name` varchar(150) DEFAULT NULL,
+  `result` varchar(20) DEFAULT NULL,
+  `message` varchar(500) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_verification_events_document` (`document_id`,`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- document_versions
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `document_versions` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `document_id` int(11) NOT NULL,
+  `version_number` int(11) DEFAULT 1,
+  `file_path` varchar(255) NOT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `version_label` varchar(20) DEFAULT '1.0',
+  `created_by` varchar(150) DEFAULT 'Manu Yadav',
+  `details` text DEFAULT NULL,
+  `action_type` varchar(50) DEFAULT 'Completed',
+  PRIMARY KEY (`id`),
+  KEY `document_id` (`document_id`),
+  CONSTRAINT `document_versions_ibfk_1` FOREIGN KEY (`document_id`) REFERENCES `documents` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- emails
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `emails` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `recipient_email` varchar(255) NOT NULL,
+  `subject` varchar(255) NOT NULL,
+  `body` text NOT NULL,
+  `sent_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- email_logs
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `email_logs` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `recipient_email` varchar(255) NOT NULL,
+  `email_type` varchar(100) NOT NULL,
+  `status` enum('success','failed') NOT NULL,
+  `error_message` text DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- email_queue
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `email_queue` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `recipient_email` varchar(255) NOT NULL,
+  `subject` varchar(255) NOT NULL,
+  `body` text NOT NULL,
+  `status` enum('pending','processing','sent','failed') DEFAULT 'pending',
+  `attempts` int(11) DEFAULT 0,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- email_templates
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `email_templates` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `template_key` varchar(100) NOT NULL,
+  `subject_line` varchar(255) NOT NULL,
+  `html_body` text NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `template_key` (`template_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- employee_signatures
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `employee_signatures` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `employee_id` varchar(50) NOT NULL,
+  `employee_name` varchar(150) NOT NULL,
+  `employee_email` varchar(255) NOT NULL,
+  `designation` varchar(100) DEFAULT 'Software Specialist',
+  `department` varchar(100) DEFAULT 'Engineering',
+  `initials` varchar(10) DEFAULT 'VC',
+  `signature_id` varchar(100) NOT NULL,
+  `signature_image` longtext DEFAULT NULL,
+  `signature_style` varchar(50) DEFAULT 'font-signature-1',
+  `status` enum('Active','Inactive','Revoked') DEFAULT 'Active',
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `employee_id` (`employee_id`),
+  UNIQUE KEY `signature_id` (`signature_id`),
+  KEY `idx_employee_id` (`employee_id`),
+  KEY `idx_signature_id` (`signature_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- failed_access_logs
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `failed_access_logs` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `ip_address` varchar(45) NOT NULL,
+  `reason` varchar(255) NOT NULL,
+  `attempt_time` timestamp NOT NULL DEFAULT current_timestamp(),
+  `email` varchar(255) DEFAULT NULL,
+  `user_id` int(11) DEFAULT NULL,
+  `source` varchar(40) NOT NULL DEFAULT 'login',
+  `user_agent` varchar(255) DEFAULT NULL,
+  `document_id` int(11) DEFAULT NULL,
+  `resolved` tinyint(1) NOT NULL DEFAULT 0,
+  `resolved_by` int(11) DEFAULT NULL,
+  `resolved_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_failed_access_time` (`attempt_time`),
+  KEY `idx_failed_access_ip` (`ip_address`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- folders
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `folders` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `name` varchar(150) NOT NULL,
+  `color` varchar(20) DEFAULT '#00a884',
+  `created_by` int(11) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_folder_name` (`name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- general_settings
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `general_settings` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `organization_name` varchar(150) DEFAULT 'BexSign',
+  `organization_email` varchar(255) DEFAULT NULL,
+  `logo_url` varchar(500) DEFAULT NULL,
+  `brand_color` varchar(20) DEFAULT '#E71414',
+  `timezone` varchar(80) DEFAULT 'Asia/Kolkata',
+  `date_format` varchar(30) DEFAULT 'MMM dd, yyyy',
+  `time_format` varchar(10) DEFAULT '12h',
+  `language` varchar(20) DEFAULT 'en',
+  `default_expiry_days` int(11) DEFAULT 15,
+  `reminder_frequency_days` int(11) DEFAULT 5,
+  `auto_reminders` tinyint(1) DEFAULT 1,
+  `default_signing_order` varchar(30) DEFAULT 'sequential_shared',
+  `allow_decline` tinyint(1) DEFAULT 1,
+  `allow_reassign` tinyint(1) DEFAULT 1,
+  `allow_print_sign` tinyint(1) DEFAULT 1,
+  `require_signer_otp` tinyint(1) DEFAULT 0,
+  `session_timeout_minutes` int(11) DEFAULT 60,
+  `email_footer` text DEFAULT NULL,
+  `updated_by` int(11) DEFAULT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `trash_retention_days` int(11) NOT NULL DEFAULT 30,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- integrations
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `integrations` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `provider` varchar(100) NOT NULL,
+  `access_token` text DEFAULT NULL,
+  `status` enum('connected','disconnected') DEFAULT 'connected',
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `user_id` (`user_id`),
+  CONSTRAINT `integrations_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- integration_activity
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `integration_activity` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `connection_id` int(11) NOT NULL,
+  `action` varchar(40) NOT NULL,
+  `event` varchar(60) DEFAULT NULL,
+  `success` tinyint(1) NOT NULL DEFAULT 1,
+  `message` varchar(500) DEFAULT NULL,
+  `status_code` int(11) DEFAULT NULL,
+  `duration_ms` int(11) DEFAULT NULL,
+  `document_id` int(11) DEFAULT NULL,
+  `user_id` int(11) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_integration_activity_conn` (`connection_id`,`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- integration_connections
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `integration_connections` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `provider_key` varchar(80) NOT NULL,
+  `name` varchar(120) NOT NULL,
+  `description` varchar(255) DEFAULT NULL,
+  `category` varchar(40) NOT NULL DEFAULT 'custom',
+  `is_custom` tinyint(1) NOT NULL DEFAULT 0,
+  `status` varchar(20) NOT NULL DEFAULT 'connected',
+  `config` longtext DEFAULT NULL,
+  `secrets` longtext DEFAULT NULL,
+  `events` longtext DEFAULT NULL,
+  `options` longtext DEFAULT NULL,
+  `last_tested_at` datetime DEFAULT NULL,
+  `last_test_ok` tinyint(1) DEFAULT NULL,
+  `last_test_message` varchar(500) DEFAULT NULL,
+  `last_event_at` datetime DEFAULT NULL,
+  `event_count` int(11) NOT NULL DEFAULT 0,
+  `failure_count` int(11) NOT NULL DEFAULT 0,
+  `created_by` int(11) DEFAULT NULL,
+  `updated_by` int(11) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_integration_provider` (`provider_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- issued_pdf_fingerprints
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `issued_pdf_fingerprints` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `sha256` char(64) NOT NULL,
+  `document_id` int(11) NOT NULL,
+  `file_index` int(11) DEFAULT NULL,
+  `kind` varchar(20) NOT NULL,
+  `file_name` varchar(255) DEFAULT NULL,
+  `recipient_email` varchar(255) DEFAULT NULL,
+  `file_path` varchar(255) DEFAULT NULL,
+  `layout_version` int(11) NOT NULL DEFAULT 1,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_sha256` (`sha256`),
+  KEY `idx_document` (`document_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- notifications
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `notifications` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `title` varchar(255) NOT NULL,
+  `message` text NOT NULL,
+  `is_read` tinyint(1) DEFAULT 0,
+  `type` varchar(50) DEFAULT 'info',
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `category` varchar(40) NOT NULL DEFAULT 'system',
+  `severity` varchar(20) NOT NULL DEFAULT 'info',
+  `link` varchar(255) DEFAULT NULL,
+  `entity_type` varchar(40) DEFAULT NULL,
+  `entity_id` int(11) DEFAULT NULL,
+  `actor_name` varchar(150) DEFAULT NULL,
+  `read_at` datetime DEFAULT NULL,
+  `email_sent` tinyint(1) NOT NULL DEFAULT 0,
+  PRIMARY KEY (`id`),
+  KEY `user_id` (`user_id`),
+  KEY `idx_notifications_user_read` (`user_id`,`is_read`,`created_at`),
+  CONSTRAINT `notifications_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- notification_preferences
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `notification_preferences` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `notify_doc_sent` tinyint(1) DEFAULT 1,
+  `notify_doc_viewed` tinyint(1) DEFAULT 1,
+  `notify_doc_signed` tinyint(1) DEFAULT 1,
+  `notify_doc_completed` tinyint(1) DEFAULT 1,
+  `notify_doc_declined` tinyint(1) DEFAULT 1,
+  `notify_doc_expired` tinyint(1) DEFAULT 1,
+  `notify_reminders` tinyint(1) DEFAULT 1,
+  `preferences` longtext DEFAULT NULL,
+  `email_digest` varchar(20) NOT NULL DEFAULT 'off',
+  `muted_until` datetime DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `user_id` (`user_id`),
+  CONSTRAINT `notification_preferences_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- oauth_access_tokens
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `oauth_access_tokens` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `app_id` int(11) NOT NULL,
+  `user_id` int(11) NOT NULL,
+  `token_hash` char(64) NOT NULL,
+  `token_prefix` varchar(24) NOT NULL,
+  `scopes` longtext DEFAULT NULL,
+  `grant_type` varchar(40) NOT NULL DEFAULT 'client_credentials',
+  `expires_at` datetime NOT NULL,
+  `revoked_at` datetime DEFAULT NULL,
+  `last_used_at` datetime DEFAULT NULL,
+  `request_count` int(11) NOT NULL DEFAULT 0,
+  `created_ip` varchar(45) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_oauth_token_hash` (`token_hash`),
+  KEY `idx_oauth_tokens_app` (`app_id`,`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- oauth_apps
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `oauth_apps` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `name` varchar(120) NOT NULL,
+  `description` varchar(255) DEFAULT NULL,
+  `homepage_url` varchar(500) DEFAULT NULL,
+  `redirect_uris` longtext DEFAULT NULL,
+  `client_id` varchar(64) NOT NULL,
+  `client_secret_hash` char(64) NOT NULL,
+  `secret_last4` varchar(8) DEFAULT NULL,
+  `scopes` longtext DEFAULT NULL,
+  `token_ttl_minutes` int(11) NOT NULL DEFAULT 60,
+  `is_active` tinyint(1) NOT NULL DEFAULT 1,
+  `last_used_at` datetime DEFAULT NULL,
+  `token_count` int(11) NOT NULL DEFAULT 0,
+  `secret_rotated_at` datetime DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_oauth_client_id` (`client_id`),
+  KEY `idx_oauth_apps_user` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- password_reset_tokens
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `password_reset_tokens` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `token_hash` char(64) NOT NULL,
+  `expires_at` datetime NOT NULL,
+  `used_at` datetime DEFAULT NULL,
+  `requested_ip` varchar(64) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_token_hash` (`token_hash`),
+  KEY `idx_reset_user` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- permissions
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `permissions` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `permission_key` varchar(80) NOT NULL,
+  `module` varchar(60) NOT NULL,
+  `label` varchar(120) NOT NULL,
+  `description` varchar(255) DEFAULT NULL,
+  `sort_order` int(11) DEFAULT 0,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_permission_key` (`permission_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- portals
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `portals` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `portal_name` varchar(150) NOT NULL,
+  `status` enum('active','inactive') DEFAULT 'active',
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- portal_users
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `portal_users` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `portal_id` int(11) NOT NULL,
+  `user_id` int(11) NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `portal_id` (`portal_id`),
+  KEY `user_id` (`user_id`),
+  CONSTRAINT `portal_users_ibfk_1` FOREIGN KEY (`portal_id`) REFERENCES `portals` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `portal_users_ibfk_2` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- reports
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `reports` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `report_type` varchar(100) NOT NULL,
+  `report_data` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`report_data`)),
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `user_id` (`user_id`),
+  CONSTRAINT `reports_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- report_runs
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `report_runs` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `scheduled_report_id` int(11) DEFAULT NULL,
+  `report_type` varchar(60) DEFAULT NULL,
+  `triggered_by` varchar(20) DEFAULT 'schedule',
+  `status` varchar(20) DEFAULT 'success',
+  `row_count` int(11) DEFAULT 0,
+  `recipients` text DEFAULT NULL,
+  `file_name` varchar(255) DEFAULT NULL,
+  `error` text DEFAULT NULL,
+  `run_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_report_runs_schedule` (`scheduled_report_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- roles
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `roles` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `role_key` varchar(50) NOT NULL,
+  `role_name` varchar(100) NOT NULL,
+  `description` text DEFAULT NULL,
+  `permissions` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`permissions`)),
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `is_system` tinyint(1) NOT NULL DEFAULT 0,
+  `color` varchar(20) DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `role_key` (`role_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- role_permissions
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `role_permissions` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `role_key` varchar(50) NOT NULL,
+  `permission_key` varchar(80) NOT NULL,
+  `allowed` tinyint(1) NOT NULL DEFAULT 1,
+  `updated_by` int(11) DEFAULT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_role_permission` (`role_key`,`permission_key`),
+  KEY `idx_role_permissions_role` (`role_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- scheduled_reports
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `scheduled_reports` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `name` varchar(150) NOT NULL,
+  `frequency` enum('daily','weekly','monthly') DEFAULT 'weekly',
+  `recipient_email` varchar(255) NOT NULL,
+  `report_type` varchar(60) NOT NULL DEFAULT 'document_summary',
+  `format` varchar(10) NOT NULL DEFAULT 'csv',
+  `recipients` text DEFAULT NULL,
+  `filters` text DEFAULT NULL,
+  `day_of_week` tinyint(4) DEFAULT NULL,
+  `day_of_month` tinyint(4) DEFAULT NULL,
+  `time_of_day` varchar(5) NOT NULL DEFAULT '09:00',
+  `is_active` tinyint(1) NOT NULL DEFAULT 1,
+  `last_run_at` datetime DEFAULT NULL,
+  `next_run_at` datetime DEFAULT NULL,
+  `last_status` varchar(20) DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `user_id` (`user_id`),
+  CONSTRAINT `scheduled_reports_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- self_sign_documents
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `self_sign_documents` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `document_id` int(11) NOT NULL,
+  `title` varchar(255) NOT NULL,
+  `stage` enum('draft','prepared','signed') NOT NULL DEFAULT 'draft',
+  `source` enum('upload','template','created','merged') NOT NULL DEFAULT 'upload',
+  `template_name` varchar(255) DEFAULT NULL,
+  `has_fields` tinyint(1) NOT NULL DEFAULT 0,
+  `field_count` int(11) NOT NULL DEFAULT 0,
+  `page_count` int(11) NOT NULL DEFAULT 1,
+  `signed_at` datetime DEFAULT NULL,
+  `signed_file_path` varchar(255) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_self_sign_document` (`document_id`),
+  KEY `idx_self_sign_user_stage` (`user_id`,`stage`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- self_sign_events
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `self_sign_events` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `self_sign_id` int(11) NOT NULL,
+  `document_id` int(11) DEFAULT NULL,
+  `action` varchar(40) NOT NULL,
+  `detail` varchar(500) DEFAULT NULL,
+  `actor_id` int(11) DEFAULT NULL,
+  `actor_name` varchar(150) DEFAULT NULL,
+  `ip_address` varchar(45) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_self_sign_events_doc` (`self_sign_id`,`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- self_sign_shares
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `self_sign_shares` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `self_sign_id` int(11) NOT NULL,
+  `document_id` int(11) DEFAULT NULL,
+  `recipient_email` varchar(255) NOT NULL,
+  `recipient_name` varchar(150) DEFAULT NULL,
+  `message` text DEFAULT NULL,
+  `status` varchar(20) NOT NULL DEFAULT 'sent',
+  `error_message` varchar(500) DEFAULT NULL,
+  `shared_by` int(11) DEFAULT NULL,
+  `shared_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_self_sign_shares_doc` (`self_sign_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- signatures
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `signatures` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `signature_name` varchar(100) DEFAULT 'My Signature',
+  `signature_type` enum('draw','type','upload') DEFAULT 'draw',
+  `signature_data` text NOT NULL,
+  `is_default` tinyint(1) DEFAULT 0,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `user_id` (`user_id`),
+  CONSTRAINT `signatures_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- signature_events
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `signature_events` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `document_id` int(11) NOT NULL,
+  `recipient_id` int(11) DEFAULT NULL,
+  `event_type` varchar(100) NOT NULL,
+  `ip_address` varchar(45) DEFAULT NULL,
+  `user_agent` varchar(255) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `document_id` (`document_id`),
+  CONSTRAINT `signature_events_ibfk_1` FOREIGN KEY (`document_id`) REFERENCES `documents` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- signature_requests
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `signature_requests` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `document_id` int(11) NOT NULL,
+  `recipient_id` int(11) NOT NULL,
+  `token` varchar(255) NOT NULL,
+  `status` enum('pending','opened','completed','expired') DEFAULT 'pending',
+  `sent_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `token` (`token`),
+  KEY `document_id` (`document_id`),
+  KEY `recipient_id` (`recipient_id`),
+  CONSTRAINT `signature_requests_ibfk_1` FOREIGN KEY (`document_id`) REFERENCES `documents` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `signature_requests_ibfk_2` FOREIGN KEY (`recipient_id`) REFERENCES `document_recipients` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- signature_usage_log
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `signature_usage_log` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `signature_id` int(11) DEFAULT NULL,
+  `owner_email` varchar(255) NOT NULL,
+  `document_id` int(11) DEFAULT NULL,
+  `document_name` varchar(255) DEFAULT NULL,
+  `context` enum('signing_request','self_sign','directory_prefill','manual') NOT NULL DEFAULT 'manual',
+  `recipient_id` int(11) DEFAULT NULL,
+  `signer_name` varchar(150) DEFAULT NULL,
+  `signer_email` varchar(255) DEFAULT NULL,
+  `field_count` int(11) DEFAULT NULL,
+  `ip_address` varchar(64) DEFAULT NULL,
+  `used_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_usage_signature` (`signature_id`,`used_at`),
+  KEY `idx_usage_document` (`document_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- signing_contacts
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `signing_contacts` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `owner_id` int(11) NOT NULL,
+  `name` varchar(150) NOT NULL,
+  `email` varchar(255) NOT NULL,
+  `company` varchar(150) DEFAULT NULL,
+  `job_title` varchar(120) DEFAULT NULL,
+  `phone` varchar(40) DEFAULT NULL,
+  `country_code` varchar(8) DEFAULT NULL,
+  `notes` text DEFAULT NULL,
+  `tags` longtext DEFAULT NULL,
+  `is_favorite` tinyint(1) NOT NULL DEFAULT 0,
+  `source` varchar(20) NOT NULL DEFAULT 'manual',
+  `documents_sent` int(11) NOT NULL DEFAULT 0,
+  `documents_signed` int(11) NOT NULL DEFAULT 0,
+  `last_sent_at` datetime DEFAULT NULL,
+  `last_signed_at` datetime DEFAULT NULL,
+  `deleted_at` datetime DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_contact_owner_email` (`owner_id`,`email`),
+  KEY `idx_contacts_owner` (`owner_id`,`deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- signing_email_dispatch
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `signing_email_dispatch` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `document_id` int(11) NOT NULL,
+  `recipient_id` int(11) DEFAULT NULL,
+  `recipient_email` varchar(255) NOT NULL,
+  `recipient_name` varchar(150) DEFAULT NULL,
+  `step_index` int(11) NOT NULL DEFAULT 1,
+  `email_type` varchar(20) NOT NULL DEFAULT 'invitation',
+  `trigger_source` varchar(30) DEFAULT NULL,
+  `status` varchar(20) NOT NULL DEFAULT 'sent',
+  `error_message` varchar(500) DEFAULT NULL,
+  `sent_at` datetime DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `idx_dispatch_document` (`document_id`,`step_index`),
+  KEY `idx_dispatch_status` (`status`),
+  KEY `idx_dispatch_created` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- templates
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `templates` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `title` varchar(255) NOT NULL,
+  `description` text DEFAULT NULL,
+  `file_path` varchar(255) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `category` varchar(60) DEFAULT NULL,
+  `content` longtext DEFAULT NULL,
+  `is_shared` tinyint(1) NOT NULL DEFAULT 1,
+  `usage_count` int(11) NOT NULL DEFAULT 0,
+  `source_template` varchar(120) DEFAULT NULL,
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `user_id` (`user_id`),
+  CONSTRAINT `templates_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- template_fields
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `template_fields` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `template_id` int(11) NOT NULL,
+  `role_name` varchar(100) NOT NULL,
+  `field_type` varchar(50) NOT NULL,
+  `pos_x` float NOT NULL,
+  `pos_y` float NOT NULL,
+  `is_required` tinyint(1) DEFAULT 1,
+  PRIMARY KEY (`id`),
+  KEY `template_id` (`template_id`),
+  CONSTRAINT `template_fields_ibfk_1` FOREIGN KEY (`template_id`) REFERENCES `templates` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- template_roles
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `template_roles` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `template_id` int(11) NOT NULL,
+  `role_name` varchar(100) NOT NULL,
+  `signing_order_index` int(11) DEFAULT 1,
+  PRIMARY KEY (`id`),
+  KEY `template_id` (`template_id`),
+  CONSTRAINT `template_roles_ibfk_1` FOREIGN KEY (`template_id`) REFERENCES `templates` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- trash
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `trash` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `document_id` int(11) NOT NULL,
+  `deleted_by` int(11) NOT NULL,
+  `deleted_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `document_id` (`document_id`),
+  KEY `deleted_by` (`deleted_by`),
+  CONSTRAINT `trash_ibfk_1` FOREIGN KEY (`document_id`) REFERENCES `documents` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `trash_ibfk_2` FOREIGN KEY (`deleted_by`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- trash_items
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `trash_items` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `item_type` varchar(30) NOT NULL,
+  `item_id` int(11) NOT NULL,
+  `title` varchar(255) NOT NULL,
+  `subtitle` varchar(255) DEFAULT NULL,
+  `owner_id` int(11) DEFAULT NULL,
+  `deleted_by` int(11) DEFAULT NULL,
+  `deleted_by_name` varchar(150) DEFAULT NULL,
+  `previous_status` varchar(40) DEFAULT NULL,
+  `snapshot` longtext DEFAULT NULL,
+  `size_hint` varchar(60) DEFAULT NULL,
+  `deleted_at` datetime NOT NULL,
+  `purge_after` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_trash_item` (`item_type`,`item_id`),
+  KEY `idx_trash_deleted` (`deleted_at`),
+  KEY `idx_trash_owner` (`owner_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- users
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `users` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `first_name` varchar(100) NOT NULL,
+  `last_name` varchar(100) NOT NULL,
+  `email` varchar(255) NOT NULL,
+  `username` varchar(100) DEFAULT NULL,
+  `password_hash` varchar(255) NOT NULL,
+  `company` varchar(150) DEFAULT NULL,
+  `phone` varchar(50) DEFAULT NULL,
+  `role` varchar(50) DEFAULT 'team_member',
+  `is_verified` tinyint(1) DEFAULT 0,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `job_title` varchar(100) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `email` (`email`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- user_login_logs
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `user_login_logs` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) DEFAULT NULL,
+  `email` varchar(255) NOT NULL,
+  `role` varchar(50) NOT NULL,
+  `ip_address` varchar(50) DEFAULT NULL,
+  `user_agent` text DEFAULT NULL,
+  `status` enum('success','failed') DEFAULT 'success',
+  `login_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `user_id` (`user_id`),
+  KEY `idx_user_login_logs_time` (`login_at`),
+  CONSTRAINT `user_login_logs_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- user_permissions
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `user_permissions` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `permission_key` varchar(80) NOT NULL,
+  `allowed` tinyint(1) NOT NULL DEFAULT 1,
+  `reason` varchar(255) DEFAULT NULL,
+  `expires_at` datetime DEFAULT NULL,
+  `granted_by` int(11) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_user_permission` (`user_id`,`permission_key`),
+  KEY `idx_user_permissions_user` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- user_profiles
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `user_profiles` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `profile_image` varchar(255) DEFAULT NULL,
+  `timezone` varchar(100) DEFAULT 'UTC',
+  `language` varchar(20) DEFAULT 'en',
+  `date_format` varchar(20) DEFAULT 'YYYY-MM-DD',
+  `department` varchar(100) DEFAULT 'General',
+  `designation` varchar(100) DEFAULT 'Team Member',
+  `phone` varchar(50) DEFAULT NULL,
+  `avatar_url` varchar(255) DEFAULT NULL,
+  `status` enum('active','inactive','invited') DEFAULT 'active',
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `user_id` (`user_id`),
+  CONSTRAINT `user_profiles_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- user_sessions
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `user_sessions` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `token` varchar(500) NOT NULL,
+  `ip_address` varchar(45) DEFAULT NULL,
+  `user_agent` varchar(255) DEFAULT NULL,
+  `expires_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `user_id` (`user_id`),
+  CONSTRAINT `user_sessions_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- user_signatures
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `user_signatures` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `owner_user_id` int(11) DEFAULT NULL,
+  `owner_email` varchar(255) NOT NULL,
+  `display_name` varchar(150) NOT NULL,
+  `employee_code` varchar(50) DEFAULT NULL,
+  `designation` varchar(100) DEFAULT NULL,
+  `department` varchar(100) DEFAULT NULL,
+  `initials` varchar(10) DEFAULT NULL,
+  `signature_id` varchar(100) NOT NULL,
+  `method` enum('type','draw','upload') NOT NULL DEFAULT 'type',
+  `signature_image` longtext DEFAULT NULL,
+  `signature_style` varchar(50) NOT NULL DEFAULT 'font-signature-1',
+  `is_default` tinyint(1) NOT NULL DEFAULT 0,
+  `status` varchar(20) NOT NULL DEFAULT 'Active',
+  `legacy_employee_id` int(11) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_user_signature_id` (`signature_id`),
+  UNIQUE KEY `uniq_user_signature_legacy` (`legacy_employee_id`),
+  KEY `idx_user_signature_owner` (`owner_user_id`),
+  KEY `idx_user_signature_email` (`owner_email`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- webhooks
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `webhooks` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `url` varchar(500) NOT NULL,
+  `events` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`events`)),
+  `secret_token` varchar(255) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `name` varchar(120) DEFAULT NULL,
+  `is_active` tinyint(1) NOT NULL DEFAULT 1,
+  `last_status` int(11) DEFAULT NULL,
+  `last_delivery_at` datetime DEFAULT NULL,
+  `failure_count` int(11) NOT NULL DEFAULT 0,
+  PRIMARY KEY (`id`),
+  KEY `user_id` (`user_id`),
+  CONSTRAINT `webhooks_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
+-- webhook_deliveries
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `webhook_deliveries` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `webhook_id` int(11) NOT NULL,
+  `event` varchar(80) NOT NULL,
+  `payload` longtext DEFAULT NULL,
+  `status_code` int(11) DEFAULT NULL,
+  `response_body` text DEFAULT NULL,
+  `success` tinyint(1) DEFAULT 0,
+  `duration_ms` int(11) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `delivery_id` varchar(40) DEFAULT NULL,
+  `attempt` int(11) NOT NULL DEFAULT 1,
+  `error` varchar(255) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_webhook_deliveries_webhook` (`webhook_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+SET FOREIGN_KEY_CHECKS = 1;

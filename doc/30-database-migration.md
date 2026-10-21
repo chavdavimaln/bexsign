@@ -8,9 +8,9 @@ cd server
 npm run db:migrate
 ```
 
-Files: `server/scripts/migrate.js` (the migration), `server/database/schema.sql` (the target structure, 68 tables),
-`server/database/seed.sql` (the three built-in roles), `server/scripts/snapshot-schema.js` (regenerates the two
-SQL files).
+Files: `server/scripts/migrate.js` (the migration), `server/migrations/` (the versioned history: `0001_initial_schema.sql`
+and one file per later change), `server/database/schema.sql` (the target structure, 68 tables), `server/database/seed.sql`
+(the three built-in roles), `server/scripts/snapshot-schema.js` (regenerates the two SQL files).
 
 ---
 
@@ -18,15 +18,17 @@ SQL files).
 
 1. Connects with `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD` from `server/.env`.
 2. **Creates the database** `DB_NAME` (utf8mb4) when it does not exist.
-3. **Creates every missing table** exactly as defined in `schema.sql`.
-4. For tables that exist: **adds missing columns** (in schema order), **missing indexes** and **missing foreign
+3. **Applies the migration files** in `server/migrations/` that this database has not run yet, in name order, and
+   records each one in the `migration_files` table (section 7a).
+4. **Creates every missing table** exactly as defined in `schema.sql`.
+5. For tables that exist: **adds missing columns** (in schema order), **missing indexes** and **missing foreign
    keys**.
-5. Makes a required (`NOT NULL`) column **optional** when the schema says it now is — the only change ever made to
+6. Makes a required (`NOT NULL`) column **optional** when the schema says it now is — the only change ever made to
    an existing column, and one that cannot lose data.
-6. Adds the **built-in roles** (Manager, Leader, Team Member) if they are missing.
-7. Runs the **application's own setup**: the 34 permissions, the default permissions of each role, the default
+7. Adds the **built-in roles** (Manager, Leader, Team Member) if they are missing.
+8. Runs the **application's own setup**: the 34 permissions, the default permissions of each role, the default
    general and developer settings.
-8. Writes one row to the `schema_migrations` table describing what was done.
+9. Writes one row to the `schema_migrations` table describing what was done.
 
 ### What it never does
 
@@ -52,6 +54,7 @@ Run them in `server/`.
 | `npm run db:migrate -- --verbose` | Also list column definitions that differ and things only in the database |
 | `npm run db:migrate -- --database other_db` | Use another database than `DB_NAME` (same server and user) |
 | `npm run db:migrate -- --no-app-setup` | Structure and roles only; skip step 7 |
+| `npm run db:make <name>` | Developers: write a new migration file with the SQL this database still needs (section 7a) |
 | `npm run db:snapshot` | Developers: regenerate `schema.sql` and `seed.sql` from the development database |
 
 (The `--` before the options is how npm passes them through to the script.)
@@ -181,9 +184,37 @@ History of runs: `SELECT * FROM schema_migrations ORDER BY id DESC;` (or `npm ru
 
 ---
 
+## 7a. The migrations folder (`server/migrations/`)
+
+The folder is the **history** of structure changes, one SQL file each, applied in name order and remembered per
+database in the `migration_files` table (`npm run db:status` lists them). `schema.sql` remains the **current
+state**: after the files have run, the comparison with it adds anything a file missed, so the two never fight.
+
+| File | Content |
+|---|---|
+| `0001_initial_schema.sql` | the complete structure, generated from `schema.sql`; all `CREATE TABLE IF NOT EXISTS`, so on an existing database it changes nothing and is only recorded |
+| `YYYYMMDDHHMM_<name>.sql` | one change, written by `npm run db:make <name>` |
+
+**Writing a new migration file**
+
+1. Make the change in the application (an `ensure…Schema` helper) and run the app once, or run the `ALTER TABLE`
+   by hand on your development database.
+2. `npm run db:snapshot` — `schema.sql` now has the change.
+3. `npm run db:make <name>` against a database that does **not** have the change yet, for example a copy of the
+   live database: `npm run db:make -- --database live_copy add_invoice_number`. The file receives exactly the SQL
+   that database still needs (the same statements a dry run would list). Against an up-to-date database you get
+   an empty file with a header, to fill in by hand.
+4. Commit the file with `schema.sql`. Every server applies it on its next `npm run db:migrate`.
+
+**Rules for the files:** one statement per `;`; add tables, columns, indexes or rows, or loosen a column — never
+drop data. A statement whose change already exists (duplicate table, column, index or row) is skipped and the file
+still counts as applied, so a file can meet a database that was updated another way. Any other error stops at
+that statement: the file is not recorded, later files are not run, and the warning names the statement to fix.
+
 ## 8. Good to know
 
-- **Tested on** MariaDB 10.4 (XAMPP): an empty database (68 tables created), a second run (nothing to do), and the
+- **Tested on** MariaDB 10.4 (XAMPP): an empty database (68 tables created from the migration files), a second run
+  (nothing to do), a generated migration file applied where it was needed and skipped where it was not, and the
   oldest project dump `db_bex_sign_170926.sql` (43 tables → 25 tables, 88 columns and 9 indexes added, data kept).
   The schema file uses MariaDB's `SHOW CREATE TABLE` wording, which MySQL 8.0.16+ also accepts; it has not been run
   against MySQL 8 here, so do the first run there with `--dry-run` and a backup.
