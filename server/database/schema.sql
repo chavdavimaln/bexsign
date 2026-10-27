@@ -188,6 +188,8 @@ CREATE TABLE IF NOT EXISTS `documents` (
   `user_id` int(11) NOT NULL,
   `document_name` varchar(255) NOT NULL,
   `file_path` varchar(255) DEFAULT NULL,
+  `storage_provider` varchar(20) NOT NULL DEFAULT 'local',
+  `storage_key` varchar(400) DEFAULT NULL,
   `folder_name` varchar(150) DEFAULT 'General',
   `status` varchar(50) DEFAULT 'Draft',
   `signing_order` enum('parallel','sequential') DEFAULT 'parallel',
@@ -251,6 +253,33 @@ CREATE TABLE IF NOT EXISTS `document_field_values` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- ----------------------------------------------------------------
+-- doc_bucket_objects
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `doc_bucket_objects` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `object_key` varchar(400) NOT NULL,
+  `provider` varchar(20) NOT NULL DEFAULT 'local',
+  `bucket_name` varchar(190) DEFAULT NULL,
+  `area` varchar(40) DEFAULT NULL,
+  `byte_size` bigint(20) DEFAULT NULL,
+  `content_type` varchar(100) DEFAULT NULL,
+  `checksum_sha256` char(64) DEFAULT NULL,
+  `source_table` varchar(64) DEFAULT NULL,
+  `source_id` int(11) DEFAULT NULL,
+  `status` varchar(20) NOT NULL DEFAULT 'stored',
+  `has_local_copy` tinyint(1) NOT NULL DEFAULT 1,
+  `error_text` varchar(500) DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `verified_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_doc_bucket_object` (`object_key`(191),`provider`),
+  KEY `idx_doc_bucket_status` (`status`),
+  KEY `idx_doc_bucket_area` (`area`),
+  KEY `idx_doc_bucket_source` (`source_table`,`source_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ----------------------------------------------------------------
 -- document_files
 -- ----------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `document_files` (
@@ -258,11 +287,14 @@ CREATE TABLE IF NOT EXISTS `document_files` (
   `document_id` int(11) NOT NULL,
   `file_name` varchar(255) NOT NULL,
   `file_path` varchar(255) NOT NULL,
+  `storage_provider` varchar(20) NOT NULL DEFAULT 'local',
+  `storage_key` varchar(400) DEFAULT NULL,
   `file_size` int(11) DEFAULT NULL,
   `file_type` varchar(100) DEFAULT NULL,
   `uploaded_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `document_text` longtext DEFAULT NULL,
   `signed_file_path` varchar(255) DEFAULT NULL,
+  `signed_storage_key` varchar(400) DEFAULT NULL,
   `sort_order` int(11) DEFAULT 0,
   `layout_snapshot` longtext DEFAULT NULL,
   PRIMARY KEY (`id`),
@@ -323,6 +355,7 @@ CREATE TABLE IF NOT EXISTS `document_recipients` (
   `declined_at` datetime DEFAULT NULL,
   `decline_reason` text DEFAULT NULL,
   `physical_copy_path` varchar(255) DEFAULT NULL,
+  `physical_copy_storage_key` varchar(400) DEFAULT NULL,
   `delegated_from` varchar(255) DEFAULT NULL,
   `delegated_reason` text DEFAULT NULL,
   `consent_at` datetime DEFAULT NULL,
@@ -428,6 +461,8 @@ CREATE TABLE IF NOT EXISTS `document_versions` (
   `document_id` int(11) NOT NULL,
   `version_number` int(11) DEFAULT 1,
   `file_path` varchar(255) NOT NULL,
+  `storage_provider` varchar(20) NOT NULL DEFAULT 'local',
+  `storage_key` varchar(400) DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `version_label` varchar(20) DEFAULT '1.0',
   `created_by` varchar(150) DEFAULT 'Manu Yadav',
@@ -652,6 +687,8 @@ CREATE TABLE IF NOT EXISTS `issued_pdf_fingerprints` (
   `file_name` varchar(255) DEFAULT NULL,
   `recipient_email` varchar(255) DEFAULT NULL,
   `file_path` varchar(255) DEFAULT NULL,
+  `storage_provider` varchar(20) NOT NULL DEFAULT 'local',
+  `storage_key` varchar(400) DEFAULT NULL,
   `layout_version` int(11) NOT NULL DEFAULT 1,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   PRIMARY KEY (`id`),
@@ -917,6 +954,8 @@ CREATE TABLE IF NOT EXISTS `self_sign_documents` (
   `page_count` int(11) NOT NULL DEFAULT 1,
   `signed_at` datetime DEFAULT NULL,
   `signed_file_path` varchar(255) DEFAULT NULL,
+  `storage_provider` varchar(20) NOT NULL DEFAULT 'local',
+  `signed_storage_key` varchar(400) DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
   PRIMARY KEY (`id`),
@@ -1089,6 +1128,8 @@ CREATE TABLE IF NOT EXISTS `templates` (
   `title` varchar(255) NOT NULL,
   `description` text DEFAULT NULL,
   `file_path` varchar(255) DEFAULT NULL,
+  `storage_provider` varchar(20) NOT NULL DEFAULT 'local',
+  `storage_key` varchar(400) DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `category` varchar(60) DEFAULT NULL,
   `content` longtext DEFAULT NULL,

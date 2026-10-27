@@ -42,6 +42,10 @@ Start with [01 — Installation](01-installation.md); to put it on a server, go 
 | [30 — Database Migration](30-database-migration.md) | `npm run db:migrate`: create or update the database on any server, safely |
 | [17 — Email](17-email.md) | SMTP, the messages, dry-run mode |
 | [18 — Storage and PDFs](18-storage.md) | Uploads, signed PDFs, certificates, fingerprints |
+| [34 — Reading an Uploaded Document](34-document-contents.md) | How a PDF, Word file, scan or picture becomes the text on the page |
+| [31 — The Doc Bucket](31-doc-bucket.md) | One setting decides where documents are kept: this server, S3, Azure or Google Cloud — and how to use it from backend code |
+| [33 — Popup Modals](33-popup-modals.md) | Messages, confirmations and prompts: no browser `alert`, `confirm` or `prompt` anywhere |
+| [35 — Recovering a Deleted Document](35-document-archive.md) | The archive under "delete for good" for requests, self-sign documents and templates, and how a developer hands one back |
 | [19 — Security](19-security.md) | Roles, the 34 permissions, what is logged |
 
 ## Running it for real
@@ -49,6 +53,7 @@ Start with [01 — Installation](01-installation.md); to put it on a server, go 
 |---|---|
 | [20 — Deployment Overview](20-deployment.md) | The shape of a deployment, in one page |
 | [21 — Live Server Deployment](21-live-server-deployment.md) | Full instructions, NGINX, backups, troubleshooting |
+| [32 — Documents in AWS S3](32-s3-document-storage-live.md) | The runbook for storing documents in S3 on the live server, and moving the existing ones |
 | [Local vs Live](server_integration_local_live.md) | Exactly what differs between a laptop and a server |
 
 ## The rule that keeps it portable

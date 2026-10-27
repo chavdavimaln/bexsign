@@ -425,7 +425,7 @@ async function syncDocumentFiles(documentId, metaDocs, uploadedFiles = [], { all
     const previous = previousRef && !keptIds.has(String(previousRef.row.id)) ? previousRef : null;
     const name = String(d.name || d.file_name || `Document ${i + 1}.pdf`).trim().slice(0, 255);
     const filePath = upload
-      ? `/uploads/${upload.filename}`
+      ? `/uploads/${upload.key || upload.filename}`
       : (previous?.row.file_path || d.filePath || d.file_path || '/uploads/sample.pdf');
     const fileSize = upload ? Math.round(upload.size / 1024) : (previous?.row.file_size || null);
     const fileType = upload

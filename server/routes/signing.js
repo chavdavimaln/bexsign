@@ -26,6 +26,7 @@ const signingFlow = require('../utils/signingFlow');
 const documentVerification = require('../utils/documentVerification');
 const signatureStore = require('../utils/signatureStore');
 const otpService = require('../utils/otpService');
+const docBucket = require('../utils/docBucket');
 
 /**
  * Everything that happens once a recipient has completed their part: their field values are stored, they are
@@ -250,11 +251,10 @@ async function completeRecipientSigning({
 // Scanned copies uploaded from "Print and physically sign"
 const physicalCopyDir = path.join(__dirname, '..', 'uploads', 'physical');
 if (!fs.existsSync(physicalCopyDir)) fs.mkdirSync(physicalCopyDir, { recursive: true });
+// Scans go into the doc bucket's "physical" folder - the same /uploads/physical/... address as before, on the
+// server's own disk or in S3 when one is configured (doc/31-doc-bucket.md)
 const physicalCopyUpload = multer({
-    storage: multer.diskStorage({
-        destination: (req, file, cb) => cb(null, physicalCopyDir),
-        filename: (req, file, cb) => cb(null, `${Date.now()}-${String(file.originalname || 'signed-copy.pdf').replace(/[^\w.-]+/g, '_')}`)
-    }),
+    storage: docBucket.multerStorage({ area: 'physical' }),
     limits: { fileSize: 25 * 1024 * 1024, files: 1 }
 });
 
@@ -1027,7 +1027,7 @@ router.post('/physical-copy', (req, res, next) => {
         if (context.error) return res.status(context.error.status).json({ success: false, error: context.error.message });
         const { docId, doc, recipient } = context;
 
-        const filePath = `/uploads/physical/${req.file.filename}`;
+        const filePath = `/uploads/${req.file.key}`;
         const name = String(signerName || recipient.name || recipient.email).trim();
         const ip = requestHelpers.getRequestIp(req);
         const submittedFields = requestHelpers.parseJsonInput(req.body.fields, []) || [];

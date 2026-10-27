@@ -6,6 +6,7 @@ database; `migration_files` in the database remembers which ones ran.
 | File | Purpose |
 |---|---|
 | `0001_initial_schema.sql` | the complete structure (68 tables), generated from `database/schema.sql` |
+| `202610261200_doc_bucket_storage.sql` | doc bucket: `storage_provider` / `storage_key` next to every stored path, plus the `doc_bucket_objects` ledger ([doc/31](../../doc/31-doc-bucket.md)) |
 | `YYYYMMDDHHMM_<name>.sql` | one change each, created with `npm run db:make <name>` |
 
 ## Adding a change

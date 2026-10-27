@@ -12,6 +12,7 @@
  * back with their type, and only columns that still exist are written back.
  */
 const db = require('../db');
+const documentArchive = require('./documentArchive');
 
 const TYPES = {
   document: { label: 'Document', plural: 'Documents' },
@@ -304,7 +305,13 @@ async function restoreItem(item) {
   await db.query('DELETE FROM trash_items WHERE id = ?', [item.id]);
 }
 
-async function deleteItemForGood(item) {
+async function deleteItemForGood(item, { user = null, reason = 'deleted from the trash' } = {}) {
+  // The last copy, before the rows, the snapshot and their files stop being identifiable
+  // (doc/35-document-archive.md). Documents, self-sign documents and templates are kept; a signature
+  // and a contact carry no stored file and are skipped. It never blocks the delete: somebody who asked
+  // for a thing to be gone is not held up by storage.
+  await documentArchive.archiveTrashItem(item, { reason, user });
+
   if (item.item_type === 'document') {
     try {
       await db.query('DELETE FROM document_identifiers WHERE document_id = ?', [item.item_id]);
@@ -342,7 +349,7 @@ async function purgeExpired(force = false) {
   lastPurge = Date.now();
   try {
     const [items] = await db.query('SELECT * FROM trash_items WHERE purge_after IS NOT NULL AND purge_after <= NOW()');
-    for (const item of items) await deleteItemForGood(item);
+    for (const item of items) await deleteItemForGood(item, { reason: 'retention period ended' });
     if (items.length) console.log(`[Trash] Removed ${items.length} item(s) whose retention period ended`);
     return items.length;
   } catch (err) {

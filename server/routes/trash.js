@@ -160,7 +160,7 @@ router.post('/items/delete', async (req, res) => {
     try {
         const items = await accessibleItems(req, idList(req.body?.ids));
         if (!items.length) return res.status(400).json({ success: false, error: 'Select the items to delete.' });
-        const { done, failed } = await runEach(items, trash.deleteItemForGood);
+        const { done, failed } = await runEach(items, (item) => trash.deleteItemForGood(item, { user: req.user }));
         if (done.length) {
             await logActivity({ req, category: 'trash', action: `Permanently deleted ${plural(done.length, 'item')} from the trash`, entityType: 'trash', details: items.filter((i) => done.includes(i.id)).map((i) => `${i.item_type}: ${i.title}`) });
         }
@@ -186,7 +186,7 @@ router.post('/empty', async (req, res) => {
             params.push(req.body.type);
         }
         const [items] = await db.query(`SELECT * FROM trash_items ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`, params);
-        const { done } = await runEach(items, trash.deleteItemForGood);
+        const { done } = await runEach(items, (item) => trash.deleteItemForGood(item, { user: req.user }));
         if (done.length) await logActivity({ req, category: 'trash', action: `Emptied the trash (${plural(done.length, 'item')})`, entityType: 'trash' });
         res.json({ success: true, deleted: done.length, message: done.length ? `The trash was emptied: ${plural(done.length, 'item')} deleted.` : 'The trash is already empty.' });
     } catch (err) {
@@ -276,7 +276,7 @@ const deleteDocuments = async (req, res, ids) => {
     try {
         // Only trash rows the caller owns or deleted (everyone's with Organization trash)
         const items = await accessibleItems(req, (await trash.documentItems(ids, req.user)).map((i) => i.id));
-        const { done } = await runEach(items, trash.deleteItemForGood);
+        const { done } = await runEach(items, (item) => trash.deleteItemForGood(item, { user: req.user }));
         res.json({ success: true, message: `${plural(done.length, 'document')} permanently deleted.` });
     } catch (err) {
         console.error('Permanent Delete Error:', err);

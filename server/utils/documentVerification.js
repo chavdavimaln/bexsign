@@ -22,9 +22,9 @@
  *   document_verification         the choice and the state of one request (one row per document)
  *   document_verification_events  every check, confirmation and rejection, so the decision is auditable
  */
-const fs = require('fs');
 const path = require('path');
 const db = require('../db');
+const bucket = require('./docBucket');
 const { verifyPdfBuffer, recordValidityCheck } = require('./validityLog');
 const { ensureFingerprintTable } = require('./pdfFingerprints');
 const { notify, logActivity } = require('./platformEvents');
@@ -240,7 +240,7 @@ async function getIssuedFiles(documentId) {
   });
   return [...newest.values()].map((row) => ({
     ...row,
-    diskPath: path.join(__dirname, '..', String(row.file_path).replace(/^\/+/, '').split('/').join(path.sep))
+    diskName: path.basename(String(row.file_path || ''))
   }));
 }
 
@@ -269,25 +269,24 @@ async function runIntegrityCheck(documentId, { req = null, persist = true } = {}
 
   const files = [];
   for (const item of issued) {
-    let buffer = null;
-    try {
-      buffer = fs.readFileSync(item.diskPath);
-    } catch (err) {
+    // Read through the doc bucket, so a file kept in S3 is checked exactly like one on this disk
+    const buffer = await bucket.readByPath(item.file_path);
+    if (!buffer) {
       files.push({
         kind: item.kind,
-        fileName: item.file_name || path.basename(item.diskPath),
+        fileName: item.file_name || item.diskName,
         filePath: item.file_path,
         result: 'unknown',
-        message: 'This issued file is no longer on the server, so it could not be checked.',
+        message: 'This issued file is no longer in storage, so it could not be checked.',
         sha256: null,
         expectedSha256: item.sha256
       });
       continue;
     }
-    const outcome = await verifyPdfBuffer(buffer, item.file_name || path.basename(item.diskPath));
+    const outcome = await verifyPdfBuffer(buffer, item.file_name || item.diskName);
     files.push({
       kind: item.kind,
-      fileName: item.file_name || path.basename(item.diskPath),
+      fileName: item.file_name || item.diskName,
       filePath: item.file_path,
       result: outcome.result,
       message: outcome.message,
@@ -298,7 +297,7 @@ async function runIntegrityCheck(documentId, { req = null, persist = true } = {}
       await recordValidityCheck({
         req,
         documentId: id,
-        fileName: item.file_name || path.basename(item.diskPath),
+        fileName: item.file_name || item.diskName,
         sha256: outcome.sha256,
         result: outcome.result,
         message: outcome.message,

@@ -12,12 +12,10 @@
  * A document that has no uploaded file (a document written in BexSign or added from a template) is first
  * rendered into a PDF from its text, then merged the same way.
  */
-const fs = require('fs');
 const path = require('path');
 const PDFDocument = require('pdfkit');
 const { rasterizePdf } = require('./pdfLock');
-
-const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
+const bucket = require('./docBucket');
 
 const COLORS = { text: '#1e293b', muted: '#64748b', border: '#cbd5e1' };
 
@@ -39,17 +37,20 @@ function toPlainText(value) {
 }
 
 /** Absolute path of a stored file ("/uploads/x.pdf"), or null when it is not on this server. */
-function resolveStoredFile(filePath) {
+/**
+ * The bytes of a stored document, from the doc bucket - so a merge works the same whether the file is on this
+ * disk or in S3. Null when the row points at nothing (a document that is text only, or a file since removed).
+ */
+function readStoredFile(filePath) {
   const value = String(filePath || '').trim();
-  if (!value) return null;
-  const abs = path.isAbsolute(value) && fs.existsSync(value)
-    ? value
-    : path.join(__dirname, '..', value.replace(/^\/+/, ''));
-  try {
-    return fs.existsSync(abs) && fs.statSync(abs).isFile() ? abs : null;
-  } catch (err) {
-    return null;
-  }
+  if (!value || /\/sample\.pdf$/i.test(value)) return Promise.resolve(null);
+  return bucket.readByPath(value);
+}
+
+/** Whether a row points at a real uploaded file, judged by its path alone (no call to the bucket). */
+function hasStoredFile(filePath) {
+  const value = String(filePath || '').trim();
+  return Boolean(value) && !/\/sample\.pdf$/i.test(value);
 }
 
 function collect(doc) {
@@ -105,14 +106,15 @@ async function pagesOf(source) {
   if (Buffer.isBuffer(source)) return rasterizePdf(source);
   if (Buffer.isBuffer(source.buffer)) return rasterizePdf(source.buffer);
 
-  const stored = resolveStoredFile(source.filePath || source.file_path);
+  const storedPath = source.filePath || source.file_path;
+  const stored = await readStoredFile(storedPath);
   if (stored) {
     try {
-      return await rasterizePdf(fs.readFileSync(stored));
+      return await rasterizePdf(stored);
     } catch (err) {
       // Not a readable PDF (e.g. a Word file): fall back to the text BexSign holds for this document
       if (!toPlainText(source.documentText || source.document_text)) {
-        throw new Error(`"${source.name || path.basename(stored)}" could not be merged: it is not a readable PDF.`);
+        throw new Error(`"${source.name || path.basename(String(storedPath))}" could not be merged: it is not a readable PDF.`);
       }
     }
   }
@@ -159,16 +161,16 @@ async function mergeToBuffer(sources = []) {
 /** Merges `sources` and stores the result in server/uploads. Returns { filePath, fileName, ... }. */
 async function mergeToUploads(sources, { fileName = 'Merged document' } = {}) {
   const { buffer, pageCount, pagesPerSource } = await mergeToBuffer(sources);
-  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
   const base = String(fileName || 'Merged document')
     .replace(/\.pdf$/i, '')
     .replace(/[^a-z0-9._-]+/gi, '_')
     .replace(/^_+|_+$/g, '')
     .slice(0, 60) || 'merged';
   const diskName = `${Date.now()}-merged-${base}.pdf`;
-  fs.writeFileSync(path.join(UPLOADS_DIR, diskName), buffer);
+  const filePath = `/uploads/${bucket.keyFor('merged', diskName)}`;
+  await bucket.putByPath(filePath, buffer, { contentType: 'application/pdf' });
   return {
-    filePath: `/uploads/${diskName}`,
+    filePath,
     diskName,
     fileSizeKb: Math.round(buffer.length / 1024),
     pageCount,
@@ -176,4 +178,4 @@ async function mergeToUploads(sources, { fileName = 'Merged document' } = {}) {
   };
 }
 
-module.exports = { mergeToBuffer, mergeToUploads, renderTextPdf, resolveStoredFile, toPlainText };
+module.exports = { mergeToBuffer, mergeToUploads, renderTextPdf, readStoredFile, hasStoredFile, toPlainText };

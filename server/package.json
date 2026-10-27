@@ -9,9 +9,17 @@
     "db:migrate": "node scripts/migrate.js",
     "db:status": "node scripts/migrate.js --status",
     "db:snapshot": "node scripts/snapshot-schema.js",
-    "db:make": "node scripts/migrate.js --make"
+    "db:make": "node scripts/migrate.js --make",
+    "bucket:status": "node scripts/docbucket-migrate.js --status",
+    "bucket:check": "node scripts/docbucket-migrate.js",
+    "bucket:migrate": "node scripts/docbucket-migrate.js --apply",
+    "bucket:verify": "node scripts/docbucket-migrate.js --verify --apply",
+    "bucket:tidy": "node scripts/docbucket-reorganize.js",
+    "bucket:tidy:apply": "node scripts/docbucket-reorganize.js --apply"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.700.0",
+    "@aws-sdk/s3-request-presigner": "^3.700.0",
     "@napi-rs/canvas": "^1.0.9",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",

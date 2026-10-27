@@ -1,12 +1,14 @@
 /**
  * Request Completion (server/utils/requestCompletion.js)
  * When every signer/approver has completed: build the signed PDF of each document plus the
- * Certificate of Completion, store them under uploads/completed/<id>/ and email them to the
- * sender and every recipient.
+ * Certificate of Completion, store them in the doc bucket under completed/<id>/ and email them to
+ * the sender and every recipient.
+ *
+ * These are the files BexSign issues as evidence, so they go through the bucket like every other
+ * document: on S3 they are in S3, and a second server or a restored machine reads the same copies.
  */
-const fs = require('fs');
-const path = require('path');
 const db = require('../db');
+const bucket = require('./docBucket');
 const helpers = require('./requestHelpers');
 const { generateSignedDocumentPdf, generateCompletionCertificatePdf, formatDateTime } = require('./completedPdfGenerator');
 const { sendDocumentCompletedEmail } = require('./emailService');
@@ -49,9 +51,6 @@ async function buildCompletedRequestFiles(documentId) {
     ? files.map((f) => ({ id: f.id, name: f.file_name, text: f.document_text, layout: f.layout_snapshot || null }))
     : [{ id: null, name: doc.document_name, text: doc.custom_message }];
 
-  const outDir = path.join(__dirname, '..', 'uploads', 'completed', String(documentId));
-  fs.mkdirSync(outDir, { recursive: true });
-
   const completedAt = doc.completed_at || new Date();
   const signerSummary = signingRecipients.map((r) => r.name || r.email);
   const usedNames = new Set();
@@ -90,8 +89,8 @@ async function buildCompletedRequestFiles(documentId) {
     usedNames.add(fileName.toLowerCase());
 
     const diskName = `${String(i + 1).padStart(2, '0')}-${slugify(d.name)}.pdf`;
-    fs.writeFileSync(path.join(outDir, diskName), buffer);
-    const publicPath = `/uploads/completed/${documentId}/${diskName}`;
+    const publicPath = `/uploads/${bucket.keyFor('completed', String(documentId), diskName)}`;
+    await bucket.putByPath(publicPath, buffer, { contentType: 'application/pdf' });
     if (d.id) {
       await db.query('UPDATE document_files SET signed_file_path = ? WHERE id = ?', [publicPath, d.id]);
     }
@@ -111,12 +110,13 @@ async function buildCompletedRequestFiles(documentId) {
     events,
     history
   });
-  fs.writeFileSync(path.join(outDir, 'certificate-of-completion.pdf'), certificateBuffer);
+  const certificatePath = `/uploads/${bucket.keyFor('completed', String(documentId), 'certificate-of-completion.pdf')}`;
+  await bucket.putByPath(certificatePath, certificateBuffer, { contentType: 'application/pdf' });
   const certificate = {
     filename: 'Certificate of Completion.pdf',
     content: certificateBuffer,
     contentType: 'application/pdf',
-    publicPath: `/uploads/completed/${documentId}/certificate-of-completion.pdf`
+    publicPath: certificatePath
   };
   certificate.sha256 = await recordFingerprint(certificateBuffer, {
     documentId,
@@ -220,14 +220,13 @@ const downloadName = (name, fallback = 'Document') => {
  * (the original completion date is kept, nothing is emailed).
  */
 async function getCompletedPdfFiles(documentId) {
-  const readPublic = (publicPath) => {
-    if (!publicPath) return null;
-    const abs = path.join(__dirname, '..', publicPath);
-    return fs.existsSync(abs) ? fs.readFileSync(abs) : null;
-  };
+  const readPublic = (publicPath) => (publicPath ? bucket.readByPath(publicPath) : Promise.resolve(null));
   const files = await helpers.getDocumentFiles(documentId);
-  const documents = files.map((f) => ({ name: downloadName(f.file_name), buffer: readPublic(f.signed_file_path) }));
-  const certificate = readPublic(`/uploads/completed/${documentId}/certificate-of-completion.pdf`);
+  const documents = await Promise.all(files.map(async (f) => ({
+    name: downloadName(f.file_name),
+    buffer: await readPublic(f.signed_file_path)
+  })));
+  const certificate = await readPublic(`/uploads/${bucket.keyFor('completed', String(documentId), 'certificate-of-completion.pdf')}`);
 
   const buffers = [...documents.map((d) => d.buffer), certificate];
   let current = files.length > 0 && buffers.every(Boolean);
