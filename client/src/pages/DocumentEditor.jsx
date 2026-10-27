@@ -69,6 +69,7 @@ import {
   EyeOff
 } from 'lucide-react';
 import { showPopupAlert } from '../components/GlobalAlertModal';
+import { showConfirmModal } from '../components/GlobalConfirmModal';
 import { getLoggedInUser } from '../utils/currentUser';
 import { getSelfSignByDocument, completeSelfSign, prepareSelfSign } from '../components/selfsign/selfSignApi';
 import { getDefaultDocContent, DEFAULT_DOCUMENT_TEXTS } from '../utils/documentDefaults';
@@ -3406,7 +3407,7 @@ export default function DocumentEditor() {
               <div className="pt-6 border-t border-slate-800 space-y-2">
                 <button
                   type="button"
-                  onClick={() => alert('Field saved as custom reusable field!')}
+                  onClick={() => showPopupAlert('Field saved as a custom reusable field.', { title: 'Custom field', type: 'success' })}
                   className="w-full py-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 rounded text-xs font-bold"
                 >
                   Save as Custom field
@@ -3942,7 +3943,7 @@ export default function DocumentEditor() {
                 type="button"
                 onClick={() => {
                   if (!selectedFieldTemplate) {
-                    alert('Please select a template');
+                    showPopupAlert('Select a template first.', { title: 'No template selected', type: 'warning' });
                     return;
                   }
                   // Append standard template fields
@@ -5038,14 +5039,19 @@ export default function DocumentEditor() {
                   <button
                     type="button"
                     onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => {
-                      if (window.confirm('Replace document content with Standard Employment Agreement?')) {
-                        const h = convertPlainTextToHtml(DEFAULT_DOCUMENT_TEXTS.employment);
-                        beginEditorChange();
-                        if (wordEditorRef.current) wordEditorRef.current.innerHTML = h;
-                        afterEditorChange();
-                        setShowClausesMenu(false);
-                      }
+                    onClick={async () => {
+                      const ok = await showConfirmModal('Replace the document content with the Standard Employment Agreement?', {
+                        title: 'Replace content',
+                        tone: 'warning',
+                        confirmText: 'Replace content',
+                        note: 'Everything currently written in the document is overwritten.'
+                      });
+                      if (!ok) return;
+                      const h = convertPlainTextToHtml(DEFAULT_DOCUMENT_TEXTS.employment);
+                      beginEditorChange();
+                      if (wordEditorRef.current) wordEditorRef.current.innerHTML = h;
+                      afterEditorChange();
+                      setShowClausesMenu(false);
                     }}
                     className="w-full text-left px-3.5 py-1.5 hover:bg-slate-50 text-[#007355] font-semibold cursor-pointer"
                   >
@@ -5054,14 +5060,19 @@ export default function DocumentEditor() {
                   <button
                     type="button"
                     onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => {
-                      if (window.confirm('Replace document content with Non-Disclosure Agreement (NDA)?')) {
-                        const h = convertPlainTextToHtml(DEFAULT_DOCUMENT_TEXTS.nda);
-                        beginEditorChange();
-                        if (wordEditorRef.current) wordEditorRef.current.innerHTML = h;
-                        afterEditorChange();
-                        setShowClausesMenu(false);
-                      }
+                    onClick={async () => {
+                      const ok = await showConfirmModal('Replace the document content with the Non-Disclosure Agreement (NDA)?', {
+                        title: 'Replace content',
+                        tone: 'warning',
+                        confirmText: 'Replace content',
+                        note: 'Everything currently written in the document is overwritten.'
+                      });
+                      if (!ok) return;
+                      const h = convertPlainTextToHtml(DEFAULT_DOCUMENT_TEXTS.nda);
+                      beginEditorChange();
+                      if (wordEditorRef.current) wordEditorRef.current.innerHTML = h;
+                      afterEditorChange();
+                      setShowClausesMenu(false);
                     }}
                     className="w-full text-left px-3.5 py-1.5 hover:bg-slate-50 text-[#007355] font-semibold cursor-pointer"
                   >
@@ -5070,14 +5081,19 @@ export default function DocumentEditor() {
                   <button
                     type="button"
                     onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => {
-                      if (window.confirm('Replace document content with Master Services Agreement?')) {
-                        const h = convertPlainTextToHtml(DEFAULT_DOCUMENT_TEXTS.service);
-                        beginEditorChange();
-                        if (wordEditorRef.current) wordEditorRef.current.innerHTML = h;
-                        afterEditorChange();
-                        setShowClausesMenu(false);
-                      }
+                    onClick={async () => {
+                      const ok = await showConfirmModal('Replace the document content with the Master Services Agreement?', {
+                        title: 'Replace content',
+                        tone: 'warning',
+                        confirmText: 'Replace content',
+                        note: 'Everything currently written in the document is overwritten.'
+                      });
+                      if (!ok) return;
+                      const h = convertPlainTextToHtml(DEFAULT_DOCUMENT_TEXTS.service);
+                      beginEditorChange();
+                      if (wordEditorRef.current) wordEditorRef.current.innerHTML = h;
+                      afterEditorChange();
+                      setShowClausesMenu(false);
                     }}
                     className="w-full text-left px-3.5 py-1.5 hover:bg-slate-50 text-[#007355] font-semibold cursor-pointer"
                   >

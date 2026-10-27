@@ -1,6 +1,8 @@
 import React, { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getLoggedInUser } from '../utils/currentUser';
+import { showPopupAlert } from './GlobalAlertModal';
+import { showPromptModal } from './GlobalConfirmModal';
 import { API_BASE } from '../utils/api';
 import {
   ArrowLeft,
@@ -200,7 +202,7 @@ export default function RichTextDocumentEditor({ onBack }) {
   const handleSaveAndCreate = async () => {
     const htmlContent = editorRef.current ? editorRef.current.innerHTML : '';
     if (!fileName) {
-      alert('Please enter a document file name.');
+      showPopupAlert('Enter a document file name before saving.', { title: 'File name required', type: 'warning' });
       return;
     }
 
@@ -480,8 +482,13 @@ export default function RichTextDocumentEditor({ onBack }) {
 
         {/* Media, Links & Extras */}
         <button
-          onClick={() => {
-            const url = prompt('Enter Image URL:');
+          onClick={async () => {
+            const url = await showPromptModal('Paste the address of the image to insert.', {
+              title: 'Insert image',
+              inputLabel: 'Image URL',
+              placeholder: 'https://example.com/picture.png',
+              confirmText: 'Insert image'
+            });
             if (url) applyFormat('insertImage', url);
           }}
           className="p-1.5 hover:bg-slate-200 rounded"
@@ -490,8 +497,13 @@ export default function RichTextDocumentEditor({ onBack }) {
           <ImageIcon size={16} />
         </button>
         <button
-          onClick={() => {
-            const url = prompt('Enter Link URL:');
+          onClick={async () => {
+            const url = await showPromptModal('Paste the address the selected text should link to.', {
+              title: 'Insert link',
+              inputLabel: 'Link URL',
+              placeholder: 'https://example.com',
+              confirmText: 'Insert link'
+            });
             if (url) applyFormat('createLink', url);
           }}
           className="p-1.5 hover:bg-slate-200 rounded"
@@ -591,7 +603,7 @@ export default function RichTextDocumentEditor({ onBack }) {
           </button>
           <button
             onClick={() => {
-              alert('Generating PDF preview...');
+              showPopupAlert('Generating the PDF preview...', { title: 'Preview as PDF', type: 'info' });
               handleSaveAndCreate();
             }}
             className="bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 px-3.5 py-1.5 rounded text-xs font-semibold transition cursor-pointer"

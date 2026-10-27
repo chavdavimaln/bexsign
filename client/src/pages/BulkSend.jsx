@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Upload, Layers, CheckCircle2, ArrowRight, Table, FileText } from 'lucide-react';
+import { showPopupAlert } from '../components/GlobalAlertModal';
 
 export default function BulkSend() {
   const navigate = useNavigate();
@@ -31,7 +32,7 @@ export default function BulkSend() {
         clearInterval(interval);
         setTimeout(() => {
           setIsProcessing(false);
-          alert('Bulk Send completed! 5 signature envelopes dispatched.');
+          showPopupAlert('Bulk Send completed: 5 signature envelopes dispatched.', { title: 'Bulk Send', type: 'success' });
           navigate('/documents/sent/in-progress');
         }, 1000);
       }

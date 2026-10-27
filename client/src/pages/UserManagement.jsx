@@ -32,6 +32,7 @@ import {
   History
 } from 'lucide-react';
 import { showPopupAlert } from '../components/GlobalAlertModal';
+import { showConfirmModal } from '../components/GlobalConfirmModal';
 import { API_BASE } from '../utils/api';
 import PasswordInput from '../components/ui/PasswordInput';
 import { usePermissions } from '../utils/permissions';
@@ -322,9 +323,18 @@ export default function UserManagement() {
   };
 
   const handleDeleteUser = async (user) => {
-    if (!window.confirm(`Are you sure you want to delete user ${user.first_name} ${user.last_name} (${user.email})?`)) {
-      return;
-    }
+    const confirmed = await showConfirmModal(
+      `Are you sure you want to delete the user ${user.first_name} ${user.last_name}?`,
+      {
+        title: 'Delete user',
+        tone: 'danger',
+        confirmText: 'Yes, delete user',
+        cancelText: 'No',
+        details: [user.email],
+        note: 'They lose access to the workspace immediately. Documents they sent or signed are kept.'
+      }
+    );
+    if (!confirmed) return;
 
     try {
       const res = await fetch(`${API_BASE}/users/${user.id}`, {

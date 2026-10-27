@@ -14,6 +14,8 @@ import { getDefaultDocContent } from '../utils/documentDefaults';
 import { getDocumentOwner } from '../utils/currentUser';
 import { usePermissions } from '../utils/permissions';
 import EditCopyModal from '../components/EditCopyModal';
+import { showPopupAlert } from '../components/GlobalAlertModal';
+import { showConfirmModal } from '../components/GlobalConfirmModal';
 import { downloadAllSignedDocuments, printAllLockedDocuments } from '../utils/signedPdf';
 import { API_BASE, API_ORIGIN, authHeaders, apiFetch } from '../utils/api';
 import FolderSelect from '../components/folders/FolderSelect';
@@ -729,38 +731,63 @@ export default function DocumentsList() {
     if (selectedDocIds.length === 0) return;
     const count = selectedDocIds.length;
     const idsToDelete = [...selectedDocIds];
+    const names = documents
+      .filter((d) => idsToDelete.includes(d.id))
+      .map((d) => d.document_name || d.name || 'Untitled');
 
     if (isTrashView) {
-      if (window.confirm(`Permanently delete ${count} selected document(s)? This cannot be undone.`)) {
-        setDocuments((prev) => prev.filter((d) => !idsToDelete.includes(d.id)));
-        setSelectedDocIds([]);
-        handleActionToast(`Permanently deleted ${count} document(s).`);
-
-        try {
-          await fetch(`${API_BASE}/trash/bulk-delete`, {
-            method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-            body: JSON.stringify({ ids: idsToDelete })
-          });
-        } catch (e) {
-          console.error('Error bulk deleting:', e);
+      const confirmed = await showConfirmModal(
+        `Are you sure you want to permanently delete ${count} selected document${count === 1 ? '' : 's'}?`,
+        {
+          title: 'Permanently delete',
+          tone: 'danger',
+          confirmText: `Yes, delete ${count === 1 ? 'it' : 'them'}`,
+          cancelText: 'No',
+          details: names,
+          note: 'This action cannot be undone. Signed PDFs already emailed to recipients are not affected.'
         }
+      );
+      if (!confirmed) return;
+
+      setDocuments((prev) => prev.filter((d) => !idsToDelete.includes(d.id)));
+      setSelectedDocIds([]);
+      handleActionToast(`Permanently deleted ${count} document(s).`);
+
+      try {
+        await fetch(`${API_BASE}/trash/bulk-delete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ ids: idsToDelete })
+        });
+      } catch (e) {
+        console.error('Error bulk deleting:', e);
       }
     } else {
-      if (window.confirm(`Move ${count} selected document(s) to trash?`)) {
-        setDocuments((prev) => prev.filter((d) => !idsToDelete.includes(d.id)));
-        setSelectedDocIds([]);
-        handleActionToast(`Moved ${count} document(s) to trash.`);
-
-        try {
-          await fetch(`${API_BASE}/trash/bulk-move`, {
-            method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-            body: JSON.stringify({ ids: idsToDelete })
-          });
-        } catch (e) {
-          console.error('Error bulk moving to trash:', e);
+      const confirmed = await showConfirmModal(
+        `Are you sure you want to move ${count} selected document${count === 1 ? '' : 's'} to trash?`,
+        {
+          title: 'Move to trash',
+          tone: 'danger',
+          confirmText: 'Yes',
+          cancelText: 'No',
+          details: names,
+          note: 'You can restore them from Settings > Trash.'
         }
+      );
+      if (!confirmed) return;
+
+      setDocuments((prev) => prev.filter((d) => !idsToDelete.includes(d.id)));
+      setSelectedDocIds([]);
+      handleActionToast(`Moved ${count} document(s) to trash.`);
+
+      try {
+        await fetch(`${API_BASE}/trash/bulk-move`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ ids: idsToDelete })
+        });
+      } catch (e) {
+        console.error('Error bulk moving to trash:', e);
       }
     }
   };
@@ -1784,7 +1811,7 @@ export default function DocumentsList() {
             </div>
             <div className="grid grid-cols-3 gap-2">
               {['WorkDrive', 'Dropbox', 'Box', 'Google Drive', 'OneDrive', 'SharePoint'].map(c => (
-                <button key={c} onClick={() => alert(`Connected to ${c}`)} className="p-3 border rounded-lg hover:border-[#00a884] text-center font-bold text-slate-700">{c}</button>
+                <button key={c} onClick={() => showPopupAlert(`Connected to ${c}.`, { title: 'Cloud drive', type: 'success' })} className="p-3 border rounded-lg hover:border-[#00a884] text-center font-bold text-slate-700">{c}</button>
               ))}
             </div>
             <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">

@@ -5,6 +5,7 @@ import { downloadAllSignedDocuments } from '../utils/signedPdf';
 import { generateBexsignId } from '../utils/documentId';
 import { getDocumentOwner } from '../utils/currentUser';
 import { API_BASE, API_ORIGIN } from '../utils/api';
+import { showPopupAlert } from './GlobalAlertModal';
 
 export default function DocumentVersionsModal({ doc, onClose, onViewVersion }) {
   const [versions, setVersions] = useState([]);
@@ -54,7 +55,7 @@ export default function DocumentVersionsModal({ doc, onClose, onViewVersion }) {
       try {
         await downloadAllSignedDocuments(doc.id);
       } catch (err) {
-        window.alert(err instanceof TypeError ? `Could not reach the BexSign server at ${API_ORIGIN}.` : err.message);
+        showPopupAlert(err instanceof TypeError ? `Could not reach the BexSign server at ${API_ORIGIN}.` : err.message, { title: 'Download failed', type: 'error' });
       }
       return;
     }
