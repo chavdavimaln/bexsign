@@ -427,7 +427,7 @@ CREATE TABLE IF NOT EXISTS `document_versions` (
   `file_path` varchar(255) NOT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `version_label` varchar(20) DEFAULT '1.0',
-  `created_by` varchar(150) DEFAULT 'Manu Yadav',
+  `created_by` varchar(150) DEFAULT 'Leader',
   `details` text DEFAULT NULL,
   `action_type` varchar(50) DEFAULT 'Completed',
   PRIMARY KEY (`id`),
