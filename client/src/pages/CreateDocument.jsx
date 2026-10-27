@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { HardDrive, Cloud, FileBox, Layers, Upload, ArrowRight, CheckCircle2, FileEdit } from 'lucide-react';
 import RichTextDocumentEditor from '../components/RichTextDocumentEditor';
+import { showPopupAlert } from '../components/GlobalAlertModal';
 import { API_BASE } from '../utils/api';
 
 export default function CreateDocument() {
@@ -24,7 +25,7 @@ export default function CreateDocument() {
   const handleCreateDocument = async (e) => {
     e.preventDefault();
     if (!file && activeTab === 'desktop') {
-      alert('Please select a PDF document file to upload.');
+      showPopupAlert('Select a PDF document file to upload.', { title: 'No file selected', type: 'warning' });
       return;
     }
 

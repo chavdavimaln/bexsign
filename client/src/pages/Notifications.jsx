@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Bell, CheckCheck, Trash2, Settings as SettingsIcon, Megaphone, Mail, MailOpen, ArrowUpRight, Inbox, Send } from 'lucide-react';
 import { apiFetch } from '../utils/api';
+import { showConfirmModal } from '../components/GlobalConfirmModal';
 import { usePermissions } from '../utils/permissions';
 import {
   PageHeader, StatCard, Card, Button, EmptyState, ErrorBanner, LoadingBlock, SearchInput, Tabs, Pagination,
@@ -71,6 +72,13 @@ export default function Notifications() {
   };
 
   const remove = async (item) => {
+    const confirmed = await showConfirmModal(`Are you sure you want to delete the notification "${item.title}"?`, {
+      title: 'Delete notification',
+      tone: 'danger',
+      confirmText: 'Yes, delete',
+      cancelText: 'No'
+    });
+    if (!confirmed) return;
     try {
       await apiFetch(`/notifications/${item.id}`, { method: 'DELETE' });
       refreshBell();

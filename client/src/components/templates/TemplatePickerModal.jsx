@@ -77,7 +77,8 @@ export default function TemplatePickerModal({ open, onClose, onConfirm, mode = '
     });
   };
 
-  const confirm = (list = selected) => {
+  // Named so it is never mistaken for window.confirm (see doc/33-popup-modals.md)
+  const applySelection = (list = selected) => {
     if (list.length === 0) return;
     onConfirm(list);
   };
@@ -114,7 +115,7 @@ export default function TemplatePickerModal({ open, onClose, onConfirm, mode = '
         </span>
         <button
           type="button"
-          onClick={() => confirm([focused])}
+          onClick={() => applySelection([focused])}
           className="px-3 py-1.5 bg-[#007355] hover:bg-[#005c44] text-white rounded-lg text-xs font-bold transition cursor-pointer shrink-0"
         >
           {single ? 'Use this template' : 'Add only this'}
@@ -332,7 +333,7 @@ export default function TemplatePickerModal({ open, onClose, onConfirm, mode = '
             <button
               type="button"
               disabled={selected.length === 0}
-              onClick={() => confirm()}
+              onClick={() => applySelection()}
               className="px-4 py-2 bg-[#007355] hover:bg-[#005c44] disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-xs font-bold cursor-pointer"
             >
               {single ? 'Replace text' : `Add ${selected.length || ''} document${selected.length === 1 ? '' : 's'}`.replace('  ', ' ')}

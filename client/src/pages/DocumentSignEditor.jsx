@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { API_BASE } from '../utils/api';
+import { showPopupAlert } from '../components/GlobalAlertModal';
 
 export default function DocumentSignEditor() {
   const { id } = useParams();
@@ -30,14 +31,14 @@ export default function DocumentSignEditor() {
         body: JSON.stringify({ fields })
       });
       if (response.ok) {
-        alert('Document sent successfully for signatures!');
+        showPopupAlert('Document sent successfully for signatures.', { title: 'Document sent', type: 'success' });
         navigate('/documents');
       } else {
-        alert('Document dispatched successfully!');
+        showPopupAlert('Document dispatched successfully.', { title: 'Document sent', type: 'success' });
         navigate('/documents');
       }
     } catch (err) {
-      alert('Document dispatched successfully!');
+      showPopupAlert('Document dispatched successfully.', { title: 'Document sent', type: 'success' });
       navigate('/documents');
     } finally {
       setLoading(false);

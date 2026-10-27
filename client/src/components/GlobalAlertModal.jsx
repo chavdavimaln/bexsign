@@ -5,6 +5,11 @@ import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
  * Universal Modal Alert System
  * Intercepts window.alert and custom 'bexsign-alert' events
  * Displays a clean, modern popup modal on any device (Web, iPad, Mobile)
+ *
+ * This one is for messages (one OK button). For a yes/no question use its companion,
+ * showConfirmModal() / confirmDelete() from ./GlobalConfirmModal - window.confirm() is
+ * synchronous and cannot be intercepted the way window.alert can, so a question has to
+ * call that helper and await the answer.
  */
 
 export function showPopupAlert(message, options = {}) {
@@ -21,7 +26,10 @@ export function showPopupAlert(message, options = {}) {
 }
 
 export default function GlobalAlertModal() {
-  const [modalState, setModalState] = useState(null);
+  // A queue, not a single message: two alerts in a row both get shown instead of the second
+  // replacing the first before anyone has read it.
+  const [queue, setQueue] = useState([]);
+  const modalState = queue[0] || null;
 
   useEffect(() => {
     // Override window.alert so all alert() calls throughout the app open this popup modal
@@ -32,7 +40,7 @@ export default function GlobalAlertModal() {
 
     const handleAlertEvent = (e) => {
       if (e.detail) {
-        setModalState(e.detail);
+        setQueue((prev) => [...prev, e.detail]);
       }
     };
 
@@ -44,6 +52,25 @@ export default function GlobalAlertModal() {
     };
   }, []);
 
+  // Escape dismisses the message, as it does in the native alert box
+  useEffect(() => {
+    if (queue.length === 0) return undefined;
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return;
+      const top = queue[0];
+      if (top?.onConfirm) {
+        try {
+          top.onConfirm();
+        } catch (err) {
+          console.error(err);
+        }
+      }
+      setQueue((prev) => prev.slice(1));
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [queue]);
+
   if (!modalState) return null;
 
   const handleClose = () => {
@@ -54,7 +81,7 @@ export default function GlobalAlertModal() {
         console.error(err);
       }
     }
-    setModalState(null);
+    setQueue((prev) => prev.slice(1));
   };
 
   const getIcon = () => {

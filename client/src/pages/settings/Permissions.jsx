@@ -4,6 +4,7 @@ import {
   ShieldPlus, ShieldX, RotateCcw, Crown
 } from 'lucide-react';
 import { apiFetch } from '../../utils/api';
+import { showConfirmModal } from '../../components/GlobalConfirmModal';
 import { usePermissions } from '../../utils/permissions';
 import {
   PageHeader, StatCard, Card, Badge, Button, EmptyState, ErrorBanner, LoadingBlock, SearchInput, Tabs, Modal,
@@ -169,8 +170,16 @@ export default function Permissions() {
                     <button
                       key={r.key}
                       type="button"
-                      onClick={() => {
-                        if (changes.length && !window.confirm('Discard the unsaved changes of this role?')) return;
+                      onClick={async () => {
+                        if (changes.length) {
+                          const ok = await showConfirmModal('Opening another role now discards the unsaved changes of this one.', {
+                            title: 'Discard unsaved changes?',
+                            tone: 'warning',
+                            confirmText: 'Discard changes',
+                            cancelText: 'Keep editing'
+                          });
+                          if (!ok) return;
+                        }
                         setSelectedRole(r.key);
                       }}
                       aria-pressed={active}
@@ -527,8 +536,16 @@ function UserPermissions({ modules, roles, canManage, showToast, onChanged }) {
               <li key={u.id} className="shrink-0 w-60 lg:w-auto">
                 <button
                   type="button"
-                  onClick={() => {
-                    if (pendingKeys.length && !window.confirm('Discard the unsaved permission changes of this user?')) return;
+                  onClick={async () => {
+                    if (pendingKeys.length) {
+                      const ok = await showConfirmModal('Opening another user now discards the unsaved permission changes of this one.', {
+                        title: 'Discard unsaved changes?',
+                        tone: 'warning',
+                        confirmText: 'Discard changes',
+                        cancelText: 'Keep editing'
+                      });
+                      if (!ok) return;
+                    }
                     setSelectedId(u.id);
                   }}
                   aria-pressed={active}

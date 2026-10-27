@@ -16,6 +16,7 @@ import {
   Check 
 } from 'lucide-react';
 import { showPopupAlert } from '../components/GlobalAlertModal';
+import { showConfirmModal } from '../components/GlobalConfirmModal';
 import { getLoggedInUser } from '../utils/currentUser';
 import { API_BASE, API_ORIGIN, apiUrl } from '../utils/api';
 
@@ -157,6 +158,14 @@ export default function MyProfile() {
   };
 
   const handleAvatarRemove = async () => {
+    const confirmed = await showConfirmModal('Are you sure you want to remove your profile picture?', {
+      title: 'Remove profile picture',
+      tone: 'danger',
+      confirmText: 'Yes, remove it',
+      cancelText: 'No',
+      note: 'Your initials are shown instead. You can upload a new picture at any time.'
+    });
+    if (!confirmed) return;
     setErrorMsg('');
     setAvatarBusy('remove');
     try {

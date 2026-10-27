@@ -29,6 +29,8 @@ const integrationRoutes = require('./routes/integrations');
 const oauthApps = require('./routes/oauthApps');
 const folderRoutes = require('./routes/folders');
 const cloudRoutes = require('./routes/cloud');
+const docBucketRoutes = require('./routes/docBucket');
+const docBucket = require('./utils/docBucket');
 const { ensurePlatformSchema } = require('./utils/platformSchema');
 const { startReportScheduler } = require('./utils/reportScheduler');
 
@@ -65,13 +67,21 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Serve static uploads
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+/**
+ * Documents kept in a remote doc bucket (DOC_BUCKET_PROVIDER=s3 / azure / gcs) are not on this
+ * disk, so express.static above cannot find them. This answers those requests from the bucket at
+ * the very same /uploads/... address, which keeps every link already saved or emailed working.
+ * With the default local provider it is a no-op. See doc/31-doc-bucket.md.
+ */
+app.use('/uploads', docBucket.uploadsFallback());
 
 // Health Check Endpoint
 app.get('/api/health', (req, res) => {
     res.json({
         status: 'OK',
         message: 'Bexsign Express Server is running.',
-        database: process.env.DB_NAME || 'db_bex_sign'
+        database: process.env.DB_NAME || 'db_bex_sign',
+        documentStorage: docBucket.provider()
     });
 });
 
@@ -98,6 +108,7 @@ app.use('/api/developer', developerRoutes);
 app.use('/api/oauth', oauthApps.tokenRouter);
 app.use('/api/integrations', integrationRoutes);
 app.use('/api/cloud', cloudRoutes);
+app.use('/api/doc-bucket', docBucketRoutes);
 app.use('/api/verification', verificationRoutes);
 app.use('/api/signature-directory', signatureDirectoryRoutes);
 app.use('/api/self-sign', selfSignRoutes);
@@ -127,6 +138,19 @@ if (process.env.SERVE_CLIENT === 'true') {
 const server = app.listen(PORT, () => {
     console.log(`Bexsign Backend Server listening on http://localhost:${PORT}`);
     console.log(`Connected to MySQL Database: ${process.env.DB_NAME || 'db_bex_sign'}`);
+    // Where documents, signed PDFs and certificates are kept (doc/31-doc-bucket.md)
+    const bucketStatus = docBucket.status();
+    if (bucketStatus.error) console.warn('[Doc bucket]', bucketStatus.error);
+    if (bucketStatus.provider === 'local') {
+        console.log(`[Doc bucket] Documents are stored on this server at ${bucketStatus.localRoot}`);
+    } else {
+        const where = bucketStatus.info.bucket || bucketStatus.info.container || bucketStatus.provider;
+        console.log(`[Doc bucket] Documents are stored in ${bucketStatus.provider}: ${where} (local copies: ${bucketStatus.localCopies})`);
+        docBucket.selfTest().then((result) => {
+            if (result.success) console.log('[Doc bucket] Write, read and delete verified');
+            else console.warn('[Doc bucket Warning] The bucket is not writable:', result.error);
+        });
+    }
     // Tables of the platform modules, then the scheduled-report runner
     ensurePlatformSchema()
         .then(() => {

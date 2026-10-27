@@ -1,6 +1,7 @@
 const nodemailer = require('nodemailer');
 const path = require('path');
 const fs = require('fs');
+const bucket = require('./docBucket');
 
 const smtpPort = parseInt(process.env.SMTP_PORT) || 465;
 
@@ -389,22 +390,32 @@ async function sendDocumentRecalledEmail({
   }, 'Recalled email');
 }
 
-function normalizeAttachments(attachments, documentName) {
+/**
+ * Turns what a caller passed - a stored path, a path plus a name, or bytes already in hand - into the
+ * attachments nodemailer sends. A path is read through the doc bucket and attached as bytes, so a document that
+ * lives in S3 reaches the recipient exactly like one on this disk. A file that is in neither is left out rather
+ * than failing the email: the message still goes, without that attachment.
+ */
+async function normalizeAttachments(attachments, documentName) {
   const emailAttachments = [];
   for (const att of attachments) {
     if (typeof att === 'string') {
-      const fullPath = path.isAbsolute(att) ? att : path.join(__dirname, '..', att);
-      if (fs.existsSync(fullPath)) {
-        emailAttachments.push({ filename: path.basename(fullPath), path: fullPath, contentType: 'application/pdf' });
+      const content = await bucket.readByPath(att);
+      if (content) {
+        emailAttachments.push({ filename: path.basename(att), content, contentType: 'application/pdf' });
+      } else {
+        console.warn(`[SMTP] attachment not found, sending without it: ${att}`);
       }
     } else if (att && typeof att === 'object') {
       const cleanName = att.filename ? (att.filename.endsWith('.pdf') ? att.filename : `${att.filename}.pdf`) : `${documentName}.pdf`;
       if (att.content) {
         emailAttachments.push({ filename: cleanName, content: att.content, contentType: att.contentType || 'application/pdf' });
       } else if (att.path) {
-        const fullPath = path.isAbsolute(att.path) ? att.path : path.join(__dirname, '..', att.path);
-        if (fs.existsSync(fullPath)) {
-          emailAttachments.push({ filename: cleanName, path: fullPath, contentType: att.contentType || 'application/pdf' });
+        const content = await bucket.readByPath(att.path);
+        if (content) {
+          emailAttachments.push({ filename: cleanName, content, contentType: att.contentType || 'application/pdf' });
+        } else {
+          console.warn(`[SMTP] attachment not found, sending without it: ${att.path}`);
         }
       }
     }
@@ -430,9 +441,9 @@ async function sendDocumentCompletedEmail({
 }) {
   let emailAttachments = [];
   if (Array.isArray(attachments) && attachments.length > 0) {
-    emailAttachments = normalizeAttachments(attachments, documentName);
+    emailAttachments = await normalizeAttachments(attachments, documentName);
   } else if (attachmentPath) {
-    emailAttachments = normalizeAttachments([{ filename: `${documentName.replace(/\.pdf$/i, '')}.pdf`, path: attachmentPath }], documentName);
+    emailAttachments = await normalizeAttachments([{ filename: `${documentName.replace(/\.pdf$/i, '')}.pdf`, path: attachmentPath }], documentName);
   }
 
   const docCount = Math.max(documentNames.length, 1);
@@ -476,8 +487,8 @@ async function sendDocumentCopyEmail({
   signingUrl = ''
 }) {
   const emailAttachments = Array.isArray(attachments) && attachments.length > 0
-    ? normalizeAttachments(attachments, documentName)
-    : (attachmentPath ? normalizeAttachments([{ filename: `${documentName}.pdf`, path: attachmentPath }], documentName) : []);
+    ? await normalizeAttachments(attachments, documentName)
+    : (attachmentPath ? await normalizeAttachments([{ filename: `${documentName}.pdf`, path: attachmentPath }], documentName) : []);
 
   const mailHtml = getBexSignHtmlTemplate({
     headerTitle: 'Document copy',

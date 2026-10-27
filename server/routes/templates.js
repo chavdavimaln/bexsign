@@ -9,6 +9,8 @@ const { dispatchWebhookEvent } = require('../utils/webhooks');
 const trashStore = require('../utils/trashStore');
 const { authenticateUser, requireSignedIn } = require('../middleware/authMiddleware');
 const { requirePermission, userCan } = require('../utils/permissions');
+const bucket = require('../utils/docBucket');
+const fileText = require('../utils/fileText');
 
 // Ensure uploads directory exists
 const uploadDir = path.join(__dirname, '../uploads');
@@ -18,15 +20,9 @@ if (!fs.existsSync(uploadDir)) {
 
 const ALLOWED_TYPES = /\.(pdf|docx?|txt|rtf|png|jpe?g)$/i;
 
-// Configure upload storage for templates
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, uploadDir);
-    },
-    filename: (req, file, cb) => {
-        cb(null, Date.now() + '-template-' + file.originalname.replace(/[^\w.-]+/g, '_'));
-    }
-});
+// Template files go into the doc bucket (the server's own disk, or S3 when one is configured) - see
+// doc/31-doc-bucket.md. The /uploads/... address a template already stores is unchanged.
+const storage = bucket.multerStorage({ area: 'templates', prefix: 'template' });
 
 const upload = multer({
     storage,
@@ -197,9 +193,11 @@ router.post('/create', requirePermission('templates.create'), uploadTemplateFile
     try {
         await ensureTemplateSchema();
         const input = readTemplateInput(req.body);
-        // A plain-text upload becomes the template text
-        if (req.file && /\.txt$/i.test(req.file.originalname) && !input.content.trim()) {
-            input.content = fs.readFileSync(req.file.path, 'utf8');
+        // An uploaded file becomes the template text, so the template carries the document the user chose rather
+        // than only its name: a PDF, Word, RTF or text file is read the same way an uploaded document is
+        if (req.file && !input.content.trim()) {
+            const buffer = await bucket.get(req.file.key).catch(() => null);
+            if (buffer) input.content = (await fileText.extractText(buffer, req.file.originalname).catch(() => null)) || '';
         }
         const error = validateTemplate(input, Boolean(req.file));
         if (error) return res.status(400).json({ success: false, error });
@@ -207,7 +205,7 @@ router.post('/create', requirePermission('templates.create'), uploadTemplateFile
         const userId = req.user.id;
         // Sharing with the organization needs "Share templates"; without it the template stays private
         if (input.isShared && !(await userCan(req.user, 'templates.share'))) input.isShared = false;
-        const filePath = req.file ? `/uploads/${req.file.filename}` : null;
+        const filePath = req.file ? `/uploads/${req.file.key}` : null;
         const [result] = await db.query(
             `INSERT INTO templates (user_id, title, description, file_path, category, content, is_shared, source_template)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,

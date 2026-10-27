@@ -26,6 +26,7 @@ const helpers = require('../utils/requestHelpers');
 const selfSign = require('../utils/selfSign');
 const pdfMerge = require('../utils/pdfMerge');
 const signatureStore = require('../utils/signatureStore');
+const docBucket = require('../utils/docBucket');
 const { getOrCreateDocumentIdentifier, markDocumentSigned } = require('../utils/documentIdentifier');
 const { buildCompletedRequestFiles, getCompletedPdfFiles } = require('../utils/requestCompletion');
 const { sendDocumentCopyEmail } = require('../utils/emailService');
@@ -34,11 +35,9 @@ const uploadDir = path.join(__dirname, '..', 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
 // Same limits as a signature request: 25 MB per document, 40 documents
+// Documents go into the doc bucket (the server's own disk, or S3 when one is configured) - doc/31-doc-bucket.md
 const upload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, uploadDir),
-    filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname.replace(/\s+/g, '_')}`)
-  }),
+  storage: docBucket.multerStorage({ area: 'documents' }),
   limits: { fileSize: 25 * 1024 * 1024, files: 40 }
 });
 
@@ -86,7 +85,7 @@ async function documentsOf(documentId) {
     fileSize: f.file_size || null,
     fileType: f.file_type || 'pdf',
     documentText: f.document_text || '',
-    hasFile: Boolean(pdfMerge.resolveStoredFile(f.file_path)),
+    hasFile: pdfMerge.hasStoredFile(f.file_path),
     uploadedAt: f.uploaded_at
   }));
 }
@@ -733,8 +732,8 @@ router.get('/:id/download', requirePermission('documents.download'), async (req,
     // Not signed yet: a plain copy of the document as it stands (the stored file, or its text rendered to PDF)
     const target = documents[index];
     if (!target) return fail(res, 404, 'This self-sign document has no documents yet.');
-    const stored = pdfMerge.resolveStoredFile(target.filePath);
-    const buffer = stored ? fs.readFileSync(stored) : await pdfMerge.renderTextPdf({ name: target.name, text: target.documentText });
+    const stored = await pdfMerge.readStoredFile(target.filePath);
+    const buffer = stored || await pdfMerge.renderTextPdf({ name: target.name, text: target.documentText });
     await selfSign.recordEvent({ selfSignId: row.id, documentId: row.document_id, action: 'downloaded', detail: `Downloaded the unsigned "${target.name}"`, req });
     return sendPdf(res, buffer, /\.pdf$/i.test(target.name) ? target.name : `${target.name}.pdf`);
   } catch (err) {
@@ -767,8 +766,8 @@ router.post('/:id/share', requirePermission('documents.download'), async (req, r
       }
     } else {
       for (const target of documents) {
-        const stored = pdfMerge.resolveStoredFile(target.filePath);
-        const buffer = stored ? fs.readFileSync(stored) : await pdfMerge.renderTextPdf({ name: target.name, text: target.documentText });
+        const stored = await pdfMerge.readStoredFile(target.filePath);
+        const buffer = stored || await pdfMerge.renderTextPdf({ name: target.name, text: target.documentText });
         attachments.push({ filename: /\.pdf$/i.test(target.name) ? target.name : `${target.name}.pdf`, content: buffer, contentType: 'application/pdf' });
       }
     }

@@ -16,7 +16,6 @@
  * in cloud_connections and never leave the server.
  */
 const path = require('path');
-const zlib = require('zlib');
 const db = require('../db');
 const integrationStore = require('./integrationStore');
 
@@ -561,128 +560,11 @@ const mimeOf = (name) => MIME_TYPES[extensionOf(name)] || 'application/octet-str
 
 /* ---------------------------------------------------------------- text of an imported file */
 
-let pdfjsPromise = null;
-function loadPdfjs() {
-  if (!pdfjsPromise) {
-    pdfjsPromise = import('pdfjs-dist/legacy/build/pdf.mjs').catch((err) => {
-      pdfjsPromise = null;
-      throw err;
-    });
-  }
-  return pdfjsPromise;
-}
-
 /**
- * The text of a PDF, paragraph by paragraph. Lines that were wrapped at the right margin are joined again, so the
- * text flows in the BexSign page instead of keeping the line breaks of the original page width.
+ * An imported file is read exactly the way a file uploaded from the user's computer is - see
+ * utils/fileText.js, which holds the PDF, Word, RTF and plain-text readers.
  */
-async function pdfText(buffer) {
-  const pdfjs = await loadPdfjs();
-  const fontFolder = `${path.join(path.dirname(require.resolve('pdfjs-dist/legacy/build/pdf.mjs')), '..', '..', 'standard_fonts').replace(/\\/g, '/')}/`;
-  const loadingTask = pdfjs.getDocument({ data: new Uint8Array(buffer), useSystemFonts: true, isEvalSupported: false, standardFontDataUrl: fontFolder, verbosity: 0 });
-  const pdf = await loadingTask.promise;
-  const pages = [];
-  try {
-    for (let n = 1; n <= Math.min(pdf.numPages, 150); n++) {
-      const page = await pdf.getPage(n);
-      const content = await page.getTextContent();
-      const lines = [];
-      let line = null;
-      const close = () => {
-        if (line && line.text.trim()) lines.push(line);
-        line = null;
-      };
-      for (const item of content.items) {
-        if (typeof item.str !== 'string') continue;
-        const x = item.transform[4];
-        const y = item.transform[5];
-        const height = item.height || 0;
-        if (line && Math.abs(y - line.y) > Math.max(2, (line.height || height || 10) * 0.6)) close();
-        if (!line) line = { text: '', y, left: x, right: x, height };
-        // A visible gap between two pieces on the same line is a space the PDF did not store
-        if (line.text && !/\s$/.test(line.text) && !/^\s/.test(item.str) && x - line.right > (height || 10) * 0.2) line.text += ' ';
-        line.text += item.str;
-        line.right = Math.max(line.right, x + (item.width || 0));
-        line.height = Math.max(line.height, height);
-        if (item.hasEOL) close();
-      }
-      close();
-      if (lines.length === 0) continue;
-      const left = Math.min(...lines.map((l) => l.left));
-      const width = Math.max(...lines.map((l) => l.right)) - left;
-      let text = '';
-      lines.forEach((current, i) => {
-        const value = current.text.replace(/\s+/g, ' ').trim();
-        if (i === 0) {
-          text = value;
-          return;
-        }
-        const previous = lines[i - 1];
-        const gap = previous.y - current.y;
-        const lineHeight = Math.max(previous.height, current.height, 8);
-        const wrapped = width > 0 && (previous.right - left) / width > 0.86;
-        // A larger gap (or a new column) starts a paragraph; a line that reached the right margin was wrapped
-        if (gap > lineHeight * 1.9 || gap < 0) text += `\n\n${value}`;
-        else if (wrapped) text += ` ${value}`;
-        else text += `\n${value}`;
-      });
-      pages.push(text);
-    }
-  } finally {
-    await loadingTask.destroy().catch(() => {});
-  }
-  return pages.join('\n\n').trim();
-}
-
-/** word/document.xml of a .docx (a ZIP archive) as plain text, one line per paragraph. */
-function docxText(buffer) {
-  // End of central directory record
-  let eocd = -1;
-  for (let i = buffer.length - 22; i >= Math.max(0, buffer.length - 66000); i--) {
-    if (buffer.readUInt32LE(i) === 0x06054b50) {
-      eocd = i;
-      break;
-    }
-  }
-  if (eocd < 0) return null;
-  const count = buffer.readUInt16LE(eocd + 10);
-  let pointer = buffer.readUInt32LE(eocd + 16);
-  for (let n = 0; n < count && pointer + 46 <= buffer.length; n++) {
-    if (buffer.readUInt32LE(pointer) !== 0x02014b50) break;
-    const method = buffer.readUInt16LE(pointer + 10);
-    const compressedSize = buffer.readUInt32LE(pointer + 20);
-    const nameLength = buffer.readUInt16LE(pointer + 28);
-    const extraLength = buffer.readUInt16LE(pointer + 30);
-    const commentLength = buffer.readUInt16LE(pointer + 32);
-    const localOffset = buffer.readUInt32LE(pointer + 42);
-    const name = buffer.toString('utf8', pointer + 46, pointer + 46 + nameLength).replace(/\\/g, '/');
-    if (name === 'word/document.xml') {
-      const dataStart = localOffset + 30 + buffer.readUInt16LE(localOffset + 26) + buffer.readUInt16LE(localOffset + 28);
-      const data = buffer.subarray(dataStart, dataStart + compressedSize);
-      const xml = (method === 0 ? data : zlib.inflateRawSync(data)).toString('utf8');
-      const decode = (s) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
-      const paragraphs = xml.split(/<\/w:p>/).map((p) => decode(p
-        .replace(/<w:tab\b[^>]*\/>/g, '\t')
-        .replace(/<w:br\b[^>]*\/>/g, '\n')
-        .replace(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>|<[^>]+>/g, (m, t) => (t === undefined ? '' : t))));
-      return paragraphs.map((p) => p.replace(/[ \t]+$/g, '')).join('\n').replace(/\n{3,}/g, '\n\n').trim();
-    }
-    pointer += 46 + nameLength + extraLength + commentLength;
-  }
-  return null;
-}
-
-/** The text BexSign can show and sign for this file; null when it has none (images, old .doc files). */
-async function extractText(buffer, name) {
-  const ext = extensionOf(name);
-  let text = null;
-  if (ext === 'pdf') text = await pdfText(buffer);
-  else if (ext === 'docx') text = docxText(buffer);
-  else if (ext === 'txt' || ext === 'md') text = buffer.toString('utf8').replace(/^﻿/, '');
-  text = text ? String(text).replace(/\r\n?/g, '\n').trim() : '';
-  // A scanned PDF has pages but no text
-  return text.length >= 20 ? text.slice(0, 400000) : null;
-}
+const { extractText } = require('./fileText');
 
 module.exports = {
   CloudError,

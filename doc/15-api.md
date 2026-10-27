@@ -60,6 +60,7 @@ Microsoft 365 integrations first, then `server/.env` — see [14 — Integration
 | GET | `/:id/signed-pdf`, `/:id/certificate-pdf` | Downloads |
 | GET | `/:id/versions`, `/:id/form-data`, `/:id/certificate-data` | Versions, submitted values, certificate data |
 | POST | `/verify` | Check a PDF against the fingerprint registry (multipart) |
+| POST | `/extract-text` | The contents of uploaded files, as the editor shows them (multipart) — [34 — Reading an Uploaded Document](34-document-contents.md) |
 | GET | `/:id/activity` | The audit trail; `?format=csv` downloads it |
 | POST | `/:id/bundle-pdf` | Documents and/or certificate merged into one PDF, optionally password-protected |
 | POST | `/:id/trash`, DELETE `/:id` | Move to the trash; `DELETE /:id?permanent=true` discards an unsent draft at once — [24 — Trash](24-trash.md) |
@@ -228,3 +229,4 @@ curl https://sign.example.com/api/v1/documents -H "Authorization: Bearer bxo_…
 | Contacts | `/api/contacts` | [11 — Contacts](11-contacts.md) |
 | Trash | `/api/trash` | [24 — Trash](24-trash.md) |
 | OAuth apps | `/api/developer/oauth-apps`, `/api/oauth` | [25 — OAuth Apps](25-oauth-apps.md) |
+| Doc bucket (where documents are stored) | `/api/doc-bucket` | [31 — The Doc Bucket](31-doc-bucket.md) |

@@ -3,6 +3,10 @@
 One bin for everything deleted in BexSign: request documents, self-sign documents, templates, saved signatures and
 contacts. Deleted items stay restorable until the retention period ends, then they are deleted for good.
 
+> A **document, self-sign document or template** deleted for good is copied to the archive first, so it can still be
+> handed back from the server afterwards — see [35 — Recovering a Deleted Document](35-document-archive.md). Saved
+> signatures and contacts are not archived. Nothing in the app reads any of it.
+
 Page: `client/src/pages/settings/Trash.jsx`. Server: `server/routes/trash.js` (mounted at `/api/trash`),
 `server/utils/trashStore.js` (moving, restoring, deleting, purging). Tables: `trash_items`, plus
 `general_settings.trash_retention_days` — see [16 — Database](16-database.md).

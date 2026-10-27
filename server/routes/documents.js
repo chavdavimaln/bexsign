@@ -21,6 +21,9 @@ const {
   sendDocumentCopyEmail
 } = require('../utils/emailService');
 const requestHelpers = require('../utils/requestHelpers');
+const docBucket = require('../utils/docBucket');
+const fileText = require('../utils/fileText');
+const documentArchive = require('../utils/documentArchive');
 const { emitDocumentWebhook, notifyRecipientUsers } = require('../utils/documentEvents');
 const trashStore = require('../utils/trashStore');
 const { authenticateUser, authenticateOptional } = require('../middleware/authMiddleware');
@@ -48,18 +51,29 @@ if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-// Configure Multer storage for uploaded documents
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, uploadDir);
-    },
-    filename: (req, file, cb) => {
-        cb(null, Date.now() + '-' + file.originalname.replace(/\s+/g, '_'));
-    }
-});
+// Uploaded documents go into the doc bucket - the server's own disk with DOC_BUCKET_PROVIDER=local, S3 (or
+// Azure/GCS) when one is configured. The engine still fills req.file.filename/.size/.path, so everything after
+// the upload, and every /uploads/... address already stored or emailed, is unchanged. See doc/31-doc-bucket.md.
+const storage = docBucket.multerStorage({ area: 'documents' });
 
 // Zoho Sign limits: 25 MB per document, 40 documents per request
 const upload = multer({ storage: storage, limits: { fileSize: 25 * 1024 * 1024, files: 40 } });
+
+/**
+ * The text of a file that was just uploaded, read back out of the doc bucket. Empty when the file holds no text
+ * BexSign can read (a picture, or a scan): the file itself is stored and sent either way, and the editor shows
+ * the standard text until the sender writes their own.
+ */
+async function readUploadedText(file) {
+    if (!file) return '';
+    try {
+        const buffer = await docBucket.get(file.key || docBucket.keyFromPath(file.path || file.filename));
+        return (await fileText.extractText(buffer, file.originalname)) || '';
+    } catch (err) {
+        console.warn(`[Documents] "${file.originalname}" could not be read: ${err.message}`);
+        return '';
+    }
+}
 
 const uploadRequestFiles = (req, res, next) => {
     upload.any()(req, res, (err) => {
@@ -250,7 +264,7 @@ router.post('/upload', guardDocument({ permission: 'documents.create' }), upload
 
     const uploadedFiles = req.files || [];
     const primaryUploaded = uploadedFiles.find(f => f.fieldname === 'documentFile') || uploadedFiles[0];
-    const filePath = primaryUploaded ? `/uploads/${primaryUploaded.filename}` : (req.body.file_path || '/uploads/sample.pdf');
+    const filePath = primaryUploaded ? `/uploads/${primaryUploaded.key}` : (req.body.file_path || '/uploads/sample.pdf');
 
     try {
         await requestHelpers.ensureRequestSchema();
@@ -310,8 +324,21 @@ router.post('/upload', guardDocument({ permission: 'documents.create' }), upload
 
         // A draft may be emptied only when the client says the user removed every document
         const allowEmptyDocuments = docStatus === 'Draft' && TRUE_VALUES.includes(req.body.documentsCleared);
-        const savedFiles = Array.isArray(metaDocs)
-            ? await requestHelpers.syncDocumentFiles(targetId, metaDocs, uploadedFiles, { allowEmpty: allowEmptyDocuments })
+        // A caller that sent a file but no document list (Create document > Desktop upload, and the API) gets one
+        // entry built for it, with the text read from the file - so the editor opens on the document that was
+        // uploaded, not on the standard text for its name. Only for a new request: an existing one keeps the
+        // documents it already has, which this list would otherwise replace.
+        const impliedMeta = (!Array.isArray(metaDocs) && isNew && primaryUploaded)
+            ? [{
+                name: primaryUploaded.originalname || docName,
+                uploadKey: 'primary',
+                documentText: await readUploadedText(primaryUploaded)
+            }]
+            : null;
+        const effectiveMeta = Array.isArray(metaDocs) ? metaDocs : impliedMeta;
+        const effectiveUploads = impliedMeta ? [{ ...primaryUploaded, fieldname: 'file_primary' }] : uploadedFiles;
+        const savedFiles = Array.isArray(effectiveMeta)
+            ? await requestHelpers.syncDocumentFiles(targetId, effectiveMeta, effectiveUploads, { allowEmpty: allowEmptyDocuments })
             : await requestHelpers.getDocumentFiles(targetId);
 
         if (savedFiles[0]?.file_path) {
@@ -351,6 +378,67 @@ router.post('/upload', guardDocument({ permission: 'documents.create' }), upload
         console.error('Save Document Error:', err);
         res.status(500).json({ success: false, error: 'Database error while saving document' });
     }
+});
+
+/**
+ * Reading a file the user just picked, before anything is saved.
+ *
+ * The editor shows a document as text on an A4 page, so a file added from the computer has to be opened and read:
+ * without this the page would carry a stand-in instead of the contract the sender chose. The file is held in
+ * memory only - the upload that stores it happens separately, when the draft is saved.
+ */
+const contentUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024, files: 40 } });
+
+const acceptContentFiles = (req, res, next) => {
+    contentUpload.any()(req, res, (err) => {
+        if (!err) return next();
+        const message = err.code === 'LIMIT_FILE_SIZE'
+            ? 'Each document must be 25 MB or smaller.'
+            : (err.code === 'LIMIT_FILE_COUNT' ? 'You can read at most 40 documents at a time.' : err.message);
+        return res.status(400).json({ success: false, error: message });
+    });
+};
+
+// @route   POST /api/documents/extract-text
+// @desc    The contents of one or more uploaded files, as the editor should show them: the text of a PDF, Word,
+//          RTF or text file, or - for a picture and for a scan with no text layer - page images saved in the doc
+//          bucket and referenced from the returned HTML.
+// @access  Signed in (documents.create)
+router.post('/extract-text', guardDocument({ permission: 'documents.create' }), acceptContentFiles, async (req, res) => {
+    const files = req.files || [];
+    if (files.length === 0) return res.status(400).json({ success: false, error: 'Add a file to read.' });
+
+    const results = [];
+    for (const file of files) {
+        const name = file.originalname || 'document';
+        // Page pictures of this file, kept together under one name so they are easy to recognise and sweep up
+        const stem = docBucket.safeFileName(name).replace(/\.[^.]*$/, '');
+        let page = 0;
+        const storePage = async (buffer, ext, contentType) => {
+            page += 1;
+            const key = docBucket.keyFor('previews', `${stem}-${page}.${ext}`);
+            await docBucket.put(key, buffer, { contentType });
+            return `/uploads/${key}`;
+        };
+
+        try {
+            const content = await fileText.readDocumentContent(file.buffer, name, { storePage });
+            results.push({
+                field: file.fieldname,
+                name,
+                size: file.size,
+                kind: content.kind,
+                pages: content.pages || 1,
+                text: content.kind === 'text' ? content.text : (content.html || ''),
+                reason: content.reason || null
+            });
+        } catch (err) {
+            console.error(`Extract text error for ${name}:`, err.message);
+            results.push({ field: file.fieldname, name, size: file.size, kind: 'none', pages: 1, text: '', reason: 'failed' });
+        }
+    }
+
+    res.json({ success: true, files: results });
 });
 
 const verifyUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024, files: 1 } });
@@ -1464,7 +1552,7 @@ router.post(['/:id/reminder-settings', '/reminder-settings/:id'], guardDocument(
 router.post(['/:id/upload-signed', '/upload-signed/:id'], guardDocument({ permission: 'documents.send' }), upload.single('signedDocument'), async (req, res) => {
     const { id } = req.params;
     const { signerEmail } = req.body;
-    const filePath = req.file ? `/uploads/${req.file.filename}` : null;
+    const filePath = req.file ? `/uploads/${req.file.key}` : null;
 
     try {
         let updateSql = "UPDATE documents SET status = 'Completed'";
@@ -1787,7 +1875,12 @@ router.delete('/:id', guardDocument(), async (req, res) => {
             return res.status(403).json({ success: false, error: 'You do not have permission for this action (Delete documents). Ask a manager to grant it.' });
         }
         if (permanent === 'true' || permanent === true) {
-            // Discarding an unsent draft: removed at once, never listed in the trash
+            // Discarding an unsent draft: removed at once, never listed in the trash - so the archive is the
+            // only thing standing between a mis-click and the document being gone (doc/35-document-archive.md)
+            await documentArchive.archiveDocument(id, {
+                reason: discardingDraft ? 'draft discarded' : 'deleted permanently',
+                user: req.user
+            });
             try {
                 await db.query('DELETE FROM document_identifiers WHERE document_id = ?', [id]);
             } catch (e) {}

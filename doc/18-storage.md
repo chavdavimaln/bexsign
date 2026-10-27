@@ -2,6 +2,11 @@
 
 Where files live, how signed PDFs are produced, and what must be backed up.
 
+> This page describes the default, `DOC_BUCKET_PROVIDER=local`: documents on this server's own
+> disk. They can instead be kept in AWS S3, Azure Blob Storage or Google Cloud Storage without any
+> change to the layout or the addresses below — see [31 — The Doc Bucket](31-doc-bucket.md), and
+> [32 — Documents in AWS S3](32-s3-document-storage-live.md) for the live S3 setup.
+
 ---
 
 ## 1. Layout on disk
@@ -88,3 +93,6 @@ tar czf /backup/bexsign-uploads-$(date +%F).tar.gz /var/www/bexsign/server/uploa
 
 Deleting a document row without its files leaves orphans on disk, and deleting files without the rows leaves the app
 pointing at missing paths — use the Trash feature, which keeps both sides consistent.
+
+With a remote doc bucket the bucket's own protection replaces this backup: versioning on S3, soft delete on Azure,
+object versioning on Google Cloud. See [31 — The Doc Bucket](31-doc-bucket.md) §9.

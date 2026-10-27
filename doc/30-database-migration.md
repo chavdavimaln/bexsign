@@ -193,6 +193,7 @@ state**: after the files have run, the comparison with it adds anything a file m
 | File | Content |
 |---|---|
 | `0001_initial_schema.sql` | the complete structure, generated from `schema.sql`; all `CREATE TABLE IF NOT EXISTS`, so on an existing database it changes nothing and is only recorded |
+| `202610261200_doc_bucket_storage.sql` | doc bucket: `storage_provider` / `storage_key` beside every stored file path, and the `doc_bucket_objects` ledger. Needed before documents are moved to S3 — see [31](31-doc-bucket.md) §7 and [32](32-s3-document-storage-live.md) |
 | `YYYYMMDDHHMM_<name>.sql` | one change, written by `npm run db:make <name>` |
 
 **Writing a new migration file**

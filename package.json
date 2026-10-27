@@ -16,6 +16,12 @@
     "serve": "node scripts/start.js --serve",
     "build": "npm run build --prefix client",
     "db:migrate": "npm run db:migrate --prefix server",
-    "db:status": "npm run db:status --prefix server"
+    "db:status": "npm run db:status --prefix server",
+    "bucket:status": "npm run bucket:status --prefix server",
+    "bucket:check": "npm run bucket:check --prefix server",
+    "bucket:migrate": "npm run bucket:migrate --prefix server",
+    "bucket:verify": "npm run bucket:verify --prefix server",
+    "bucket:tidy": "npm run bucket:tidy --prefix server",
+    "bucket:tidy:apply": "npm run bucket:tidy:apply --prefix server"
   }
 }

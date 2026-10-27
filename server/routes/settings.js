@@ -1,12 +1,11 @@
 const express = require('express');
 const router = express.Router();
-const path = require('path');
-const fs = require('fs');
 const crypto = require('crypto');
 const multer = require('multer');
 const db = require('../db');
 const { authenticateUser, requireSignedIn } = require('../middleware/authMiddleware');
 const { userCan } = require('../utils/permissions');
+const bucket = require('../utils/docBucket');
 
 // Signed-in users only: your own profile, or anyone's with "Edit users"
 router.use(authenticateUser, requireSignedIn);
@@ -62,8 +61,8 @@ router.put('/profile/:userId', profileGuard, async (req, res) => {
     }
 });
 
-// Profile picture: one image per user, kept in server/uploads/avatars and served from /uploads/avatars/...
-const AVATAR_DIR = path.join(__dirname, '..', 'uploads', 'avatars');
+// Profile picture: one image per user, kept in the doc bucket's avatars/ folder and served from
+// /uploads/avatars/... - so it goes wherever the other documents go (doc/31-doc-bucket.md)
 const avatarUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024, files: 1 } });
 
 /** The image type read from the file's first bytes (the name and the browser's type are not trusted). */
@@ -82,7 +81,7 @@ async function currentAvatar(userId) {
 
 function removeAvatarFile(avatarUrl) {
     if (!avatarUrl || !String(avatarUrl).startsWith('/uploads/avatars/')) return;
-    fs.promises.unlink(path.join(AVATAR_DIR, path.basename(avatarUrl))).catch(() => {});
+    bucket.remove(bucket.keyFromPath(avatarUrl)).catch(() => {});
 }
 
 // @route   POST /api/settings/profile/:userId/avatar
@@ -103,10 +102,10 @@ router.post('/profile/:userId/avatar', profileGuard, (req, res) => {
             if (users.length === 0) return res.status(404).json({ success: false, error: 'User not found.' });
 
             const previous = await currentAvatar(userId);
-            await fs.promises.mkdir(AVATAR_DIR, { recursive: true });
             const fileName = `${userId}-${crypto.randomBytes(8).toString('hex')}.${extension}`;
-            await fs.promises.writeFile(path.join(AVATAR_DIR, fileName), req.file.buffer);
-            const avatarUrl = `/uploads/avatars/${fileName}`;
+            const key = bucket.keyFor('avatars', fileName);
+            await bucket.put(key, req.file.buffer, { contentType: `image/${extension === 'jpg' ? 'jpeg' : extension}` });
+            const avatarUrl = `/uploads/${key}`;
             await db.query(
                 'INSERT INTO user_profiles (user_id, avatar_url) VALUES (?, ?) ON DUPLICATE KEY UPDATE avatar_url = VALUES(avatar_url)',
                 [userId, avatarUrl]

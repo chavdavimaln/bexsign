@@ -4,6 +4,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate, useParams } from 'rea
 // Layout
 import Layout from './components/Layout';
 import GlobalAlertModal from './components/GlobalAlertModal';
+import GlobalConfirmModal from './components/GlobalConfirmModal';
 
 // Auth Pages
 import Login from './pages/Login';
@@ -153,6 +154,7 @@ export default function App() {
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
       <GlobalAlertModal />
+      <GlobalConfirmModal />
     </Router>
   );
 }

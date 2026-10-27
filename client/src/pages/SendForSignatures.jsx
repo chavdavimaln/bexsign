@@ -31,6 +31,7 @@ import {
 } from 'lucide-react';
 import { showPopupAlert } from '../components/GlobalAlertModal';
 import { getDefaultDocContent, DEFAULT_DOCUMENT_TEXTS } from '../utils/documentDefaults';
+import { readUploadedFiles, readUploadedFile, unreadableNames } from '../utils/fileContent';
 import TemplatePickerModal from '../components/templates/TemplatePickerModal';
 import { apiFetch } from '../utils/api';
 import { templatesToDocuments, countTemplateUse, countPlaceholders } from '../components/templates/templateUi';
@@ -692,35 +693,38 @@ export default function SendForSignatures() {
     }
     if (accepted.length === 0) return;
 
-    const newDocs = await Promise.all(
-      accepted.map(async (f, idx) => {
-        let text = '';
-        if (textByFile?.get(f)) {
-          text = textByFile.get(f);
-        } else if (f.name.endsWith('.txt') || f.name.endsWith('.md') || f.type.startsWith('text/')) {
-          try {
-            text = await f.text();
-          } catch (err) {
-            text = getDefaultDocContent(f.name);
-          }
-        } else {
-          text = getDefaultDocContent(f.name);
-        }
-        const cleanName = f.name.endsWith('.pdf') ? f.name : `${f.name.replace(/\.[^/.]+$/, '')}.pdf`;
-        const docId = Date.now() + idx + Math.floor(Math.random() * 1000);
-        return {
-          id: docId,
-          name: cleanName,
-          pages: 1,
-          status: 'Ready',
-          file: f,
-          uploadKey: newUploadKey(docId),
-          fileSize: (f.size / 1024).toFixed(1) + ' KB',
-          documentText: text,
-          customMessage: noteToAll || 'check the document for signature'
-        };
-      })
-    );
+    // What each file actually says: the server opens the PDF, Word file, scan or picture and reads it, so the
+    // page shows the document the user picked instead of the standard text for its name
+    const needReading = accepted.filter((f) => !textByFile?.get(f));
+    const read = needReading.length > 0 ? await readUploadedFiles(needReading) : { ok: true, byFile: new Map() };
+
+    const newDocs = accepted.map((f, idx) => {
+      const content = textByFile?.get(f) ? { text: textByFile.get(f), pages: 1 } : read.byFile.get(f);
+      const text = content?.text || getDefaultDocContent(f.name);
+      const cleanName = f.name.endsWith('.pdf') ? f.name : `${f.name.replace(/\.[^/.]+$/, '')}.pdf`;
+      const docId = Date.now() + idx + Math.floor(Math.random() * 1000);
+      return {
+        id: docId,
+        name: cleanName,
+        pages: content?.pages || 1,
+        status: 'Ready',
+        file: f,
+        uploadKey: newUploadKey(docId),
+        fileSize: (f.size / 1024).toFixed(1) + ' KB',
+        documentText: text,
+        customMessage: noteToAll || 'check the document for signature'
+      };
+    });
+
+    const unread = unreadableNames(needReading, read.byFile);
+    if (unread.length > 0) {
+      showPopupAlert(
+        read.ok
+          ? `${unread.join(', ')} ${unread.length === 1 ? 'has' : 'have'} no readable contents, so the standard text was used. Open "Edit content" to write the document text.`
+          : `${read.error} ${unread.join(', ')} ${unread.length === 1 ? 'was' : 'were'} added with the standard text.`,
+        { title: read.ok ? 'Nothing to read in the file' : 'Could not read the files', type: 'warning' }
+      );
+    }
 
     setDocumentsList((prev) => {
       const room = MAX_DOCUMENTS - prev.length;
@@ -759,15 +763,15 @@ export default function SendForSignatures() {
     addFilesToDocuments(Array.from(e.dataTransfer.files || []));
   };
 
-  // Files picked in "Add document > Cloud": added like uploaded files, with the text the server read from them
+  // Files picked in "Add document > Cloud": added like uploaded files, with the text the server read from them.
+  // A file the import could not read is read again here, which is what turns a picture or a scan into its pages;
+  // whatever is still unreadable after that is reported by addFilesToDocuments, so this only confirms the add.
   const handleCloudImport = async (imported, { provider } = {}) => {
     const texts = new Map(imported.filter((entry) => entry.text).map((entry) => [entry.file, entry.text]));
     await addFilesToDocuments(imported.map((entry) => entry.file), texts);
-    const unread = imported.filter((entry) => !entry.text).length;
     showPopupAlert(
-      `${imported.length === 1 ? `"${imported[0].file.name}" was` : `${imported.length} documents were`} added from ${provider || 'cloud storage'}.`
-        + (unread > 0 ? ` ${unread === 1 ? 'One file has' : `${unread} files have`} no readable text (an image or a scan): check the document text before sending.` : ''),
-      { title: 'Added from cloud storage', type: unread > 0 ? 'info' : 'success' }
+      `${imported.length === 1 ? `"${imported[0].file.name}" was` : `${imported.length} documents were`} added from ${provider || 'cloud storage'}.`,
+      { title: 'Added from cloud storage', type: 'success' }
     );
   };
 
@@ -921,16 +925,8 @@ export default function SendForSignatures() {
       e.target.value = '';
       return;
     }
-    let text = '';
-    if (file.name.endsWith('.txt') || file.name.endsWith('.md') || file.type.startsWith('text/')) {
-      try {
-        text = await file.text();
-      } catch (err) {
-        text = getDefaultDocContent(file.name);
-      }
-    } else {
-      text = getDefaultDocContent(file.name);
-    }
+    const content = await readUploadedFile(file);
+    const text = content?.text || '';
     const cleanName = file.name.endsWith('.pdf') ? file.name : `${file.name.replace(/\.[^/.]+$/, '')}.pdf`;
     setDocumentsList((prev) => {
       const copy = [...prev];
@@ -941,6 +937,8 @@ export default function SendForSignatures() {
           file,
           uploadKey: newUploadKey(copy[targetReplaceDocIndex].id),
           fileSize: (file.size / 1024).toFixed(1) + ' KB',
+          pages: content?.pages || copy[targetReplaceDocIndex].pages || 1,
+          // Nothing readable in the new file: the text already on the page is kept rather than lost
           documentText: text || copy[targetReplaceDocIndex].documentText
         };
       }
